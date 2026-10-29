@@ -1,4 +1,10 @@
-#' Function to extract subject-level coefficients from an FSL group analysis
+#' Extract FSL GLM statistics within spatially aligned masks
+#'
+#' @details Every statistic image must match the mask's spatial dimensions, voxel sizes,
+#'   spatial units, and voxel-to-world transform (absolute tolerance 1e-4). The sform
+#'   is preferred, with qform and voxel-size fallbacks, and is also used for output coordinates.
+#'   A mismatch stops extraction; masks are not automatically resampled. Group-level rows
+#'   have a missing subject id and retain their setup session, including 0 for pooled sessions.
 #' 
 #' @param gpa a \code{glm_pipeline_arguments} object for which results of GLM analyses are already available
 #' @param mask_files vector of filenames for NIfTI-based atlases. The function will loop over each and extract coefficients from
@@ -72,12 +78,10 @@ extract_glm_betas_in_mask <- function(gpa, mask_files, what=c("cope", "zstat"), 
   lg <- lgr::get_logger("glm_pipeline/extract_glm_betas")
   lg$set_threshold(gpa$lgr_threshold)
 
-  # enforce available outputs across GLM levels
-  enforce_glms_complete(gpa, level = 1L, lg)
-  enforce_glms_complete(gpa, level = 3L, lg)
-
-  # in multi-run setup, an l2_model_setup must be present
-  if (isTRUE(gpa$multi_run)) enforce_glms_complete(gpa, level = 2L, lg)
+  # Group maps can be extracted without subject/run setup tables being present.
+  if (extract_l1 != "none") enforce_glms_complete(gpa, level = 1L, lg)
+  if (extract_l3 != "none") enforce_glms_complete(gpa, level = 3L, lg)
+  if (isTRUE(gpa$multi_run) && extract_l2 != "none") enforce_glms_complete(gpa, level = 2L, lg)
 
   # ask user to specify the models from which betas should be extracted
   extract_model_spec <- build_beta_extraction(gpa, extract_l1, extract_l2, extract_l3, lg)
@@ -137,6 +141,7 @@ extract_glm_betas_in_mask <- function(gpa, mask_files, what=c("cope", "zstat"), 
     }
 
     res_list <- rbindlist(res_list)
+    if (nrow(res_list) == 0L) return(data.frame())
     if (isTRUE(write_data)) {
       res_split <- res_list %>%
         mutate(out_file = glue_data(., !!ospec)) %>%
@@ -183,7 +188,6 @@ extract_glm_betas_in_mask <- function(gpa, mask_files, what=c("cope", "zstat"), 
 #' @param lg a Logger object for logging beta extraction
 #'
 #' @keywords internal
-#' @importFrom oro.nifti readNIfTI translateCoordinate
 #' @importFrom checkmate assert_class assert_integerish assert_subset assert_logical assert_file_exists
 #' @importFrom dplyr group_by summarize ungroup left_join inner_join bind_cols filter n
 #' @importFrom tidyr pivot_longer unnest
@@ -250,7 +254,16 @@ extract_fsl_betas <- function(gpa, extract=NULL, level=NULL, what = c("cope", "z
     l2_join_keys <- unique(c("l1_model", "l2_model", l2_join_keys))
     to_extract <- extract %>% dplyr::left_join(gpa$l2_model_setup$fsl, by = l2_join_keys)
   } else if (level == 3L) {
-    to_extract <- extract %>% dplyr::left_join(gpa$l3_model_setup$fsl, by = c("l1_model", "l2_model", "l3_model"))
+    # The shared lookup resolves group contrasts and cope1.feat/stats paths
+    # without joining group maps to subject rows. This also supports L1 -> L3.
+    to_extract <- lookup_feat_outputs_l3(gpa, what = what, lg = lg)
+    selection_keys <- intersect(
+      c("session", "l1_model", "l1_cope_number", "l1_cope_name", "l2_model",
+        "l2_cope_number", "l2_cope_name", "l3_model", "l3_cope_number", "l3_cope_name"),
+      names(extract)
+    )
+    checkmate::assert_subset(c("l1_model", "l3_model"), selection_keys)
+    to_extract <- dplyr::semi_join(to_extract, extract, by = selection_keys)
   }
 
   to_extract <- to_extract %>%
@@ -328,36 +341,37 @@ extract_fsl_betas <- function(gpa, extract=NULL, level=NULL, what = c("cope", "z
         )
     }
   } else if (level == 3L) {
-    browser()
-    stat_results <- to_extract %>%
-      inner_join(get_l3_cope_df(gpa, extract), by = c("id", "session", "l3_model")) %>%
-      inner_join(get_l2_cope_df(gpa, extract), by = c("id", "session", "l2_model")) %>%
-      inner_join(get_l1_cope_df(gpa, extract), by = c("id", "session", "l1_model"))
+    stat_results <- to_extract %>% dplyr::rename(img = "image_file")
   }
 
   stat_results <- stat_results %>%
     dplyr::select(
       "id", "session", all_of(extra), "feat_dir",
       matches("l[1-3]_model"), matches("l[1-3]_cope_number"), matches("l[1-3]_cope_name"),
-      tidyselect::any_of("l2_input_mode"), all_of(what)
+      tidyselect::any_of("l2_input_mode"),
+      all_of(if (level == 3L) c("statistic", "img") else what)
     )
 
-  mask_img <- oro.nifti::readNIfTI(mask_file, reorient = FALSE)
-  if (mask_img@dim_[1L] == 4) {
+  mask_geometry <- roi_image_geometry(mask_file)
+  mask_img <- RNifti::readNifti(mask_file)
+  if (length(dim(mask_img)) == 4L) {
     lg$warn("Mask is a 4D image. Only the first volume will be used")
-    mask_img@.Data <- mask_img[, , , 1]
-    mask_img@dim_[1] <- 3 # 3d image
-    mask_img@dim_[5] <- 1 # 1 volume
+    mask_img <- mask_img[, , , 1L]
   }
+  if (length(dim(mask_img)) != 3L) stop("ROI masks must be 3D or 4D images.", call. = FALSE)
 
   mask_name <- sub("(\\.nii)*(\\.gz)*$", "", basename(mask_file))
 
   # find indices of mask that are not close to zero (use 2* to support single floating point precision)
   m_indices <- which(abs(mask_img) > 2 * .Machine$double.eps, arr.ind = TRUE)
+  if (nrow(m_indices) == 0L) stop("ROI mask contains no nonzero voxels: ", mask_file, call. = FALSE)
 
   m_vals <- unique(mask_img[m_indices])
   is_int_mask <- all(sapply(m_vals, checkmate::test_integerish))
-  m_coordinates <- cbind(m_indices, t(apply(m_indices, 1, function(r) { translateCoordinate(i=r, nim=mask_img, verbose=FALSE) })))
+  # NIfTI transforms use zero-based voxel indices. Use the same sform-first
+  # transform for coordinates that is used to check image alignment below.
+  world_coordinates <- cbind(m_indices - 1L, 1) %*% t(mask_geometry$affine)
+  m_coordinates <- cbind(m_indices, world_coordinates[, 1:3, drop = FALSE])
   m_coordinates <- as.data.frame(m_coordinates) %>%
     setNames(c("i", "j", "k", "x", "y", "z")) %>%
     dplyr::mutate(vnum = 1:n(), mask_value = mask_img[m_indices], mask_name = mask_name) %>%
@@ -365,8 +379,10 @@ extract_fsl_betas <- function(gpa, extract=NULL, level=NULL, what = c("cope", "z
   mask_dim <- dim(mask_img)
 
   # extract each statistic requested
-  stat_results <- stat_results %>%
-    tidyr::pivot_longer(cols = all_of(what), names_to = "statistic", values_to = "img")
+  if (level != 3L) {
+    stat_results <- stat_results %>%
+      tidyr::pivot_longer(cols = all_of(what), names_to = "statistic", values_to = "img")
+  }
 
   # A one-run L2 pass-through has no materialized L2 analysis from which to
   # obtain inferential statistics. Its L1 cope is the only image promoted to
@@ -392,6 +408,13 @@ extract_fsl_betas <- function(gpa, extract=NULL, level=NULL, what = c("cope", "z
 
   stat_results <- stat_results %>%
     dplyr::filter(img_exists == TRUE)
+  if (nrow(stat_results) == 0L) return(NULL)
+
+  # Validate every header before dispatching workers. A geometry error must
+  # stop extraction, rather than be swallowed by per-image error handling.
+  for (img in unique(stat_results$img)) {
+    validate_roi_geometry(mask_geometry, roi_image_geometry(img), mask_file, img)
+  }
 
   # The slow part of beta extraction is the reading of images and calculation of summaries. Use mclapply to help
   # Pre-compute ROI-level center of gravity, rather than computing the means repeatedly for each image
@@ -402,24 +425,6 @@ extract_fsl_betas <- function(gpa, extract=NULL, level=NULL, what = c("cope", "z
       setDT(key = "mask_value")
   } else {
     agg_coordinates <- NULL
-  }
-
-  # peek at the dimensions of the first 5 images and compare against the mask
-  dim_info <- bind_rows(lapply(stat_results$img[1:min(5, nrow(stat_results))], lookup_dim))
-  all_eq <- sapply(dim_info, function(x) all(x == x[1]))
-  if (isFALSE(all(all_eq, na.rm = TRUE))) {
-    msg <- "Dimensions of first images in extract_glm_betas_in_mask do not match. Cannot continue!"
-    lg$error(msg)
-    stop(msg)
-  }
-
-  img_dim <- dim_info[1, seq_along(mask_dim)] %>% unlist(use.names=FALSE)
-  if (!isTRUE(all.equal(img_dim, mask_dim))) {
-    msg <- "Cannot proceed with extract_fsl_betas due to a mismatch between stat image dimensions and mask dimensions."
-    lg$error(msg)
-    lg$error(glue("Mask dimensions: {paste(mask_dim, collapse=', ')}"))
-    lg$error(glue("Stat image dimensions: {paste(img_dim, collapse=', ')}"))
-    stop(msg)
   }
 
   if (scheduler == "local") {

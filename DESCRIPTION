@@ -28,7 +28,7 @@ Imports:
     car,
     checkmate,
     cli,
-    dplyr,
+    dplyr (>= 1.1.1),
     data.table,
     data.tree,
     doParallel,

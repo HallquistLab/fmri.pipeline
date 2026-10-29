@@ -28,7 +28,8 @@
 #' @param tracking_sqlite_db Optional SQLite database used for job tracking.
 #' @param tracking_args Optional job-tracking metadata passed through to the tracking database.
 #'
-#' @return A character string containing the jobid of the scheduled job.
+#' @return A character string containing the jobid of the scheduled job, or NULL
+#'   after a failed submission when fail_on_error is FALSE.
 #'
 #' @examples
 #' \dontrun{
@@ -179,6 +180,7 @@ cluster_job_submit <- function(script, scheduler="slurm", sched_args=NULL,
       stop("Job submission failed: ", script, ", error: ", joberr, ", errcode: ", jobres)
     } else {
       warning("Job submission failed: ", script, ", error: ", joberr, ", errcode: ", jobres)
+      return(NULL) # no job exists to track or attach command metadata to
     }
   } else {
     jobid <- sub("Submitted batch job ", "", jobid, fixed = TRUE) # replace irrelevant details if needed
