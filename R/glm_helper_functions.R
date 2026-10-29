@@ -599,7 +599,7 @@ compute_spike_regressors <- function(mot = NULL, spike_volume = NULL, lg=NULL) {
 
   # we don't want to generate any duplicate columns (linear dependency problems) 
   # due to overlapping expressions or ranges of evaluation
-  spikes <- spikes[, !duplicated(spikes, MARGIN=2)]
+  spikes <- spikes[, !duplicated(spikes, MARGIN=2), drop = FALSE]
 
   return(spikes)
 }
@@ -1519,7 +1519,13 @@ respecify_l2_models_by_subject <- function(mobj, data, split_on = c("id", "sessi
   model_matrix_list <- list()
   n_l2_copes <- rep(NA_integer_, nrow(dsplit))
   for (vv in seq_len(nrow(dsplit))) {
-    lmfit <- lm(model_formula, data = dsplit[[vv, "dt"]])
+    model_data <- as.data.frame(dsplit[[vv, "dt"]])
+    # Match initial specification: remove incomplete observations before computing
+    # transformations, then apply settings within the retained subject/session.
+    complete <- stats::complete.cases(model_data[, all.vars(model_formula), drop = FALSE])
+    model_data <- model_data[complete, , drop = FALSE]
+    model_data <- apply_model_covariate_settings(model_data, mobj, lgr::get_logger())
+    lmfit <- lm(model_formula, data = model_data)
 
     mm <- get_contrasts_from_spec(mobj, lmfit)
     n_contrasts <- if (is.null(mm$contrasts)) 0L else nrow(mm$contrasts)
@@ -1678,6 +1684,41 @@ format_hi_model_alias_message <- function(mobj, model_formula = NULL) {
   ), collapse = "\n")
 }
 
+# Apply the same predictor settings during initial specification and L2 refits.
+# Callers remove incomplete model rows before computing transformation parameters.
+apply_model_covariate_settings <- function(data, mobj, lg) {
+  if (!is.null(mobj$covariate_transform)) {
+    for (cc in seq_along(mobj$covariate_transform)) {
+      cname <- names(mobj$covariate_transform)[cc]
+      ctype <- mobj$covariate_transform[cc]
+      if (ctype == "mean") {
+        data[[cname]] <- data[[cname]] - mean(data[[cname]], na.rm = TRUE)
+      } else if (ctype == "zscore") {
+        data[[cname]] <- as.vector(scale(data[[cname]]))
+      } else if (ctype == "min") {
+        data[[cname]] <- data[[cname]] - min(data[[cname]], na.rm = TRUE)
+      } else if (ctype == "max") {
+        data[[cname]] <- data[[cname]] - max(data[[cname]], na.rm = TRUE)
+      }
+    }
+  }
+
+  if (!is.null(mobj$reference_level)) {
+    for (cc in seq_along(mobj$reference_level)) {
+      cname <- names(mobj$reference_level)[cc]
+      if (!is.factor(data[[cname]])) data[[cname]] <- factor(data[[cname]])
+      ref <- mobj$reference_level[cc]
+      if (!ref %in% levels(data[[cname]])) {
+        default_lev <- names(which.max(table(data[[cname]])))
+        lg$warn("The requested reference level: %s is not available. Defaulting to %s", ref, default_lev)
+        ref <- default_lev
+      }
+      data[[cname]] <- relevel(data[[cname]], ref = ref)
+    }
+  }
+  data
+}
+
 #' internal helper function to setup a linear model for a given l1, l2, or l3 model
 #' 
 #' @param mobj a model object to be populated or modified
@@ -1752,37 +1793,7 @@ mobj_fit_lm <- function(mobj=NULL, model_formula=NULL, data, id_cols=NULL, lg=NU
   # This occurs before mean centering in case one of the id_cols is also in the model (e.g., run_number)
   mobj$metadata <- data %>% dplyr::select(dplyr::all_of(id_cols))
 
-  # apply just-in-time mean centering for requested variables
-  if (!is.null(mobj$covariate_transform)) {
-    for (cc in seq_along(mobj$covariate_transform)) {
-      cname <- names(mobj$covariate_transform)[cc]
-      ctype <- mobj$covariate_transform[cc]
-      if (ctype == "mean") {
-        data[[cname]] <- data[[cname]] - mean(data[[cname]], na.rm=TRUE)
-      } else if (ctype == "zscore") {
-        data[[cname]] <- as.vector(scale(data[[cname]])) # handles NAs automatically
-      } else if (ctype == "min") {
-        data[[cname]] <- data[[cname]] - min(data[[cname]], na.rm=TRUE)
-      } else if (ctype == "max") {
-        data[[cname]] <- data[[cname]] - max(data[[cname]], na.rm=TRUE)
-      }
-    }
-  }
-
-  # apply just-in-time factor reference releveling
-  if (!is.null(mobj$reference_level)) {
-    for (cc in seq_along(mobj$reference_level)) {
-      cname <- names(mobj$reference_level)[cc]
-      if (!is.factor(data[[cname]])) data[[cname]] <- factor(data[[cname]])
-      ref <- mobj$reference_level[cc]
-      if (!ref %in% levels(data[[cname]])) {
-        default_lev <- names(which.max(table(data[[cname]])))
-        lg$warn("The requested reference level: %s is not available. Defaulting to %s", ref, default_lev)
-        ref <- default_lev
-      }
-      data[[cname]] <- relevel(data[[cname]], ref=ref)
-    }
-  }
+  data <- apply_model_covariate_settings(data, mobj, lg)
 
   # keep track of data used for fitting model for refitting in case of missing data
   mobj$model_data <- data %>% dplyr::select(dplyr::all_of(model_vars))
