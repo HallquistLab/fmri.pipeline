@@ -30,7 +30,8 @@ the function prints out status updates for each tracked job so that the user kno
 \item{stop_on_timeout}{Whether to stop if \code{max_wait} is reached.}
 }
 \value{
-Nothing. Just returns when the blocking job completes.
+Invisibly returns TRUE when all jobs complete successfully, or FALSE
+  when any job fails or is cancelled (or a non-stopping timeout occurs).
 }
 \description{
 It is intended to give you control over job dependencies within R when the formal PBS

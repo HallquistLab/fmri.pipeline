@@ -14,7 +14,8 @@
 #'   the function prints out status updates for each tracked job so that the user knows what's holding up progress.
 #' @param stop_on_timeout Whether to stop if \code{max_wait} is reached.
 #'
-#' @return Nothing. Just returns when the blocking job completes.
+#' @return Invisibly returns TRUE when all jobs complete successfully, or FALSE
+#'   when any job fails or is cancelled (or a non-stopping timeout occurs).
 #'
 #' @details Note that for the \code{scheduler} argument, "torque" and "qsub" are the same;
 #'   "slurm" and "sbatch" are the same, and "sh" and "local" are the same.
@@ -48,9 +49,12 @@ wait_for_job <- function(job_ids, repolling_interval = 60, max_wait = 60 * 60 * 
     if (scheduler %in% c("slurm", "sbatch")) {
       status <- slurm_job_status(job_ids)
       state <- vapply(status$State, function(x) {
+        # sacct can append a cancelling user ("CANCELLED by 123") or a
+        # truncation marker. Compare the base state, not that display text.
+        x <- sub("[+[:space:]].*$", "", toupper(trimws(x)))
         switch(x,
           "BOOT_FAIL" = "failed",
-          "CANCELLED" = "cancelled",
+          "CANCELLED" = "failed",
           "COMPLETED" = "complete",
           "DEADLINE" = "failed",
           "FAILED" = "failed",

@@ -43,6 +43,22 @@
   `collect_fwe_results()` and `fwe_result_artifacts()`, providing stable,
   semantically selectable output paths for downstream analyses.
 
+## ROI extraction and scheduler error handling
+
+* ROI extraction now validates every statistic image against the mask's spatial
+  dimensions, voxel sizes, units, and transform before indexing. Misaligned
+  inputs stop extraction with a resampling/registration diagnostic. Reported
+  coordinates use the same sform-first transform as the geometry checks.
+* Completed L3 ROI extraction using the shared group-output lookup, preserving
+  lower-level contrast identities and pooled/per-session metadata without
+  duplicating maps for each subject. Group-only extraction no longer requires
+  lower-level setup tables, and L1-to-L3 analyses are supported.
+* Slurm cancellations, including `CANCELLED by <uid>` responses, are terminal
+  failures in `wait_for_job()`. Failed submissions with `fail_on_error = FALSE`
+  warn and return `NULL` without attempting to track a nonexistent job.
+* Removed the redundant package reload from test setup and added package-local
+  command guards so unit tests fail on unmocked scheduler submissions.
+
 ## Bug fixes in `build_design_matrix` / `fmri.stimulus` convolution
 
 * **Fix: overlapping events silently overwritten during stimulus construction.** `construct_stimulus`

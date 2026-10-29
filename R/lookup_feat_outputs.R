@@ -538,7 +538,7 @@ lookup_feat_outputs_l3 <- function(gpa, what, lg, warn_missing = TRUE) {
   )
 
   base <- setup %>%
-    dplyr::left_join(meta, by = join_cols) %>%
+    dplyr::left_join(meta, by = join_cols, relationship = "many-to-many") %>%
     dplyr::mutate(
       level = 3L,
       id = NA_character_,
@@ -900,7 +900,7 @@ lookup_feat_l3_metadata <- function(gpa, setup) {
   meta <- setup %>%
     dplyr::select(dplyr::any_of(c("l1_model", "l1_cope_name", "l2_model", "l2_cope_name", "l3_model"))) %>%
     dplyr::distinct() %>%
-    dplyr::left_join(l3_df, by = "l3_model")
+    dplyr::left_join(l3_df, by = "l3_model", relationship = "many-to-many")
 
   if (!is.null(l1_df)) {
     meta <- meta %>% dplyr::left_join(l1_df, by = c("l1_model", "l1_cope_name"))

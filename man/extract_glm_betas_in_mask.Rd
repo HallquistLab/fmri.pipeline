@@ -2,7 +2,7 @@
 % Please edit documentation in R/extract_glm_betas_in_mask.R
 \name{extract_glm_betas_in_mask}
 \alias{extract_glm_betas_in_mask}
-\title{Function to extract subject-level coefficients from an FSL group analysis}
+\title{Extract FSL GLM statistics within spatially aligned masks}
 \usage{
 extract_glm_betas_in_mask(
   gpa,
@@ -57,5 +57,12 @@ only pertains to integer-valued masks, not continuous ones.}
 \item{write_data}{if TRUE, then extracted statistics will be written as .csv.gz files to \code{out_dir}.}
 }
 \description{
-Function to extract subject-level coefficients from an FSL group analysis
+Extract FSL GLM statistics within spatially aligned masks
+}
+\details{
+Every statistic image must match the mask's spatial dimensions, voxel sizes,
+  spatial units, and voxel-to-world transform (absolute tolerance 1e-4). The sform
+  is preferred, with qform and voxel-size fallbacks, and is also used for output coordinates.
+  A mismatch stops extraction; masks are not automatically resampled. Group-level rows
+  have a missing subject id and retain their setup session, including 0 for pooled sessions.
 }

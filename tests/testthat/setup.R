@@ -12,14 +12,44 @@
 library(data.table)
 library(dplyr)
 
-# Always prefer the working tree when running tests from source.
+# test_local()/devtools::test() load the source package, and test_check() loads
+# the installed package. Reloading here creates a second namespace and can
+# leave tested functions calling bindings outside local_mocked_bindings().
 pkg_root <- normalizePath(file.path("..", ".."), mustWork = FALSE)
-running_check <- nzchar(Sys.getenv("R_TESTS")) || nzchar(Sys.getenv("R_PACKAGE_NAME"))
-if (!running_check && requireNamespace("pkgload", quietly = TRUE) && file.exists(file.path(pkg_root, "DESCRIPTION"))) {
-  pkgload::load_all(pkg_root, export_all = FALSE, helpers = TRUE)
-} else if (!running_check && file.exists(file.path(pkg_root, "DESCRIPTION"))) {
-  stop("pkgload is required to run tests from the working tree. Install pkgload or run devtools::test().")
+
+# Unit tests must never reach a real cluster. Tests exercising submission can
+# override these package-local guards with their own local_mocked_bindings().
+# Local shell execution remains available for script integration tests.
+scheduler_guard <- function(command, ...) {
+  executable <- tolower(basename(command))
+  if (executable %in% c("sbatch", "salloc", "srun", "qsub")) {
+    stop("Unmocked scheduler command in unit test: ", command, call. = FALSE)
+  }
 }
+# Suite-wide guards are restored by teardown.R. A local mock in a setup file
+# can expire with that file's evaluation frame before later tests execute.
+set_test_command_runners <- function(runners) {
+  ns <- asNamespace("fmri.pipeline")
+  for (name in names(runners)) {
+    locked <- bindingIsLocked(name, ns)
+    if (locked) unlockBinding(name, ns)
+    assign(name, runners[[name]], envir = ns)
+    if (locked) lockBinding(name, ns)
+  }
+}
+scheduler_original_runners <- mget(c("system", "system2"), asNamespace("fmri.pipeline"))
+set_test_command_runners(list(
+  system2 = function(command, ...) {
+    scheduler_guard(command)
+    base::system2(command, ...)
+  },
+  system = function(command, ...) {
+    if (grepl("(^|[[:space:];|&])([^[:space:];|&]*/)?(sbatch|salloc|srun|qsub)([[:space:]]|$)", command)) {
+      stop("Unmocked scheduler command in unit test: ", command, call. = FALSE)
+    }
+    base::system(command, ...)
+  }
+))
 
 source_tree_file <- function(...) {
   parts <- c(...)

@@ -58,7 +58,8 @@ submission fails. Defaults to FALSE (i.e., issue a warning).}
 \item{tracking_args}{Optional job-tracking metadata passed through to the tracking database.}
 }
 \value{
-A character string containing the jobid of the scheduled job.
+A character string containing the jobid of the scheduled job, or NULL
+  after a failed submission when fail_on_error is FALSE.
 }
 \description{
 The function returns the jobid of the scheduled job.
