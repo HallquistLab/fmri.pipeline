@@ -1,7 +1,7 @@
 #' Build concatenated L1 confounds for multi-run analyses
 #'
 #' Internal helper that uses stored confound column metadata to align shared
-#' columns and union spike regressors across runs with zero padding.
+#' columns and keep run-specific spike regressors separate with zero padding.
 #' @keywords internal
 #' @noRd
 read_l1_confound_columns <- function(gpa, id, session, run_number, lg = NULL) {
@@ -69,6 +69,11 @@ concat_l1_confounds <- function(gpa, id, session, run_numbers, confound_files, o
     run_session <- run_sessions[ii]
     col_info <- read_l1_confound_columns(gpa, id, run_session, run_no, lg = lg)
     if (is.null(col_info)) return(NULL)
+    # Spike indices restart in every run. Qualify them by session and run so
+    # unrelated contaminated volumes never share a fitted nuisance coefficient.
+    col_info$col_name[col_info$is_spike] <- paste0(
+      "ses-", run_session, "_run-", run_no, "_", col_info$col_name[col_info$is_spike]
+    )
     list(
       run_number = run_no,
       session = run_session,

@@ -1,5 +1,18 @@
 # fmri.pipeline 0.4-1
 
+## L2 model refitting and concatenated confounds
+
+* L2 refits now preserve configured covariate transformations and factor reference
+  levels. Transformation parameters are recomputed from complete retained runs
+  within each subject/session or pooled subject, according to the L2 scope.
+
+* Concatenated L1 confounds now keep each session/run's spike regressors separate,
+  with zeros outside that run. Single-spike regressors retain their matrix shape
+  and column names so they are correctly identified during concatenation.
+
+* Existing analyses need regenerated per-run confounds (including column metadata),
+  concatenated confounds, and L2 designs, followed by re-estimation of affected models.
+
 ## Declarative FWE correction workflow
 
 * Added a serializable `fwe_spec()` API for describing level-3 FWE corrections
