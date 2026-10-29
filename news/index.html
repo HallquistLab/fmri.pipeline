@@ -44,6 +44,12 @@
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.4-1" id="fmripipeline-04-1">fmri.pipeline 0.4-1<a class="anchor" aria-label="anchor" href="#fmripipeline-04-1"></a></h2>
 <div class="section level3">
+<h3 id="l2-model-refitting-and-concatenated-confounds-0-4-1">L2 model refitting and concatenated confounds<a class="anchor" aria-label="anchor" href="#l2-model-refitting-and-concatenated-confounds-0-4-1"></a></h3>
+<ul><li><p>L2 refits now preserve configured covariate transformations and factor reference levels. Transformation parameters are recomputed from complete retained runs within each subject/session or pooled subject, according to the L2 scope.</p></li>
+<li><p>Concatenated L1 confounds now keep each session/run’s spike regressors separate, with zeros outside that run. Single-spike regressors retain their matrix shape and column names so they are correctly identified during concatenation.</p></li>
+<li><p>Existing analyses need regenerated per-run confounds (including column metadata), concatenated confounds, and L2 designs, followed by re-estimation of affected models.</p></li>
+</ul></div>
+<div class="section level3">
 <h3 id="declarative-fwe-correction-workflow-0-4-1">Declarative FWE correction workflow<a class="anchor" aria-label="anchor" href="#declarative-fwe-correction-workflow-0-4-1"></a></h3>
 <ul><li><p>Added a serializable <code><a href="../reference/fwe_spec.html">fwe_spec()</a></code> API for describing level-3 FWE corrections with semantic model/contrast selectors, method options, correction masks, and scheduler settings. Specifications can be read from and written to YAML.</p></li>
 <li><p>Added pTFCE plan and execution support through <code><a href="../reference/plan_fwe_correction.html">plan_fwe_correction()</a></code>, <code><a href="../reference/run_fwe_plan.html">run_fwe_plan()</a></code>, and <code><a href="../reference/refresh_fwe_plan.html">refresh_fwe_plan()</a></code>. A single specification can fan out across all selected level-3 z-statistic maps, with explicit preflight status for required inputs and optional dry-run command inspection.</p></li>
