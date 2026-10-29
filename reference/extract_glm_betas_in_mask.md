@@ -1,7 +1,6 @@
-# Function to extract subject-level coefficients from an FSL group analysis
+# Extract FSL GLM statistics within spatially aligned masks
 
-Function to extract subject-level coefficients from an FSL group
-analysis
+Extract FSL GLM statistics within spatially aligned masks
 
 ## Usage
 
@@ -100,3 +99,12 @@ extract_glm_betas_in_mask(
 
   if TRUE, then extracted statistics will be written as .csv.gz files to
   `out_dir`.
+
+## Details
+
+Every statistic image must match the mask's spatial dimensions, voxel
+sizes, spatial units, and voxel-to-world transform (absolute tolerance
+1e-4). The sform is preferred, with qform and voxel-size fallbacks, and
+is also used for output coordinates. A mismatch stops extraction; masks
+are not automatically resampled. Group-level rows have a missing subject
+id and retain their setup session, including 0 for pooled sessions.

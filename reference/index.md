@@ -133,8 +133,7 @@
   : Output GLM configuration to a '.yaml' or 'json' file
 
 - [`extract_glm_betas_in_mask()`](https://hallquistlab.github.io/fmri.pipeline/reference/extract_glm_betas_in_mask.md)
-  : Function to extract subject-level coefficients from an FSL group
-  analysis
+  : Extract FSL GLM statistics within spatially aligned masks
 
 - [`extract_l1_collinearity()`](https://hallquistlab.github.io/fmri.pipeline/reference/extract_l1_collinearity.md)
   : Extract collinearity diagnostics from all L1 models

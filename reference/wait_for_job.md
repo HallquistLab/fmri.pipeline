@@ -51,7 +51,8 @@ wait_for_job(
 
 ## Value
 
-Nothing. Just returns when the blocking job completes.
+Invisibly returns TRUE when all jobs complete successfully, or FALSE
+when any job fails or is cancelled (or a non-stopping timeout occurs).
 
 ## Details
 

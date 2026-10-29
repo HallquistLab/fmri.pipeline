@@ -96,7 +96,8 @@ cluster_job_submit(
 
 ## Value
 
-A character string containing the jobid of the scheduled job.
+A character string containing the jobid of the scheduled job, or NULL
+after a failed submission when fail_on_error is FALSE.
 
 ## Author
 

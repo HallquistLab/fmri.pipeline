@@ -97,7 +97,8 @@ the function prints out status updates for each tracked job so that the user kno
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>Nothing. Just returns when the blocking job completes.</p>
+    <p>Invisibly returns TRUE when all jobs complete successfully, or FALSE
+  when any job fails or is cancelled (or a non-stopping timeout occurs).</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
