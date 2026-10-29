@@ -2,7 +2,24 @@
 
 ## fmri.pipeline 0.4-1
 
-### L2 model refitting and concatenated confounds
+### Confound cache invalidation and batch exit status
+
+- Confound caches now record settings, demeaning, run inputs, and
+  source-file fingerprints. Changes rebuild confounds, column metadata,
+  exclusion decisions, and truncation data together, including cached
+  raw confound and motion inputs. Original image provenance prevents
+  repeated volume dropping when finalized run data are reused. Legacy
+  caches rebuild from original inputs; a previously truncated run
+  without provenance requires its original image and volume count.
+  Existing fitted models must still be explicitly re-estimated after
+  changes.
+
+- Generated batch scripts now retain nonzero task exit statuses in both
+  serial and background execution, wait for every background task, and
+  preserve failures through cleanup. Each task runs in its own subshell
+  with `set -e`; setup and cleanup failures also produce a nonzero
+  status. Standard shell rules for conditionals and pipelines still
+  apply. \## L2 model refitting and concatenated confounds
 
 - L2 refits now preserve configured covariate transformations and factor
   reference levels. Transformation parameters are recomputed from

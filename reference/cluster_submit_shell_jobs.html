@@ -98,7 +98,9 @@
 
 
 <dt id="arg-fork-jobs">fork_jobs<a class="anchor" aria-label="anchor" href="#arg-fork-jobs"></a></dt>
-<dd><p>if TRUE, all jobs within a single batch will run simultaneously using the fork (&amp;) approach.</p></dd>
+<dd><p>if TRUE, all jobs within a single batch will run simultaneously using the fork (&amp;) approach.
+Each task runs in its own subshell with `set -e`. The batch waits for every task and returns
+the first nonzero task status in submission order, or the cleanup status if all tasks succeed.</p></dd>
 
 
 <dt id="arg-pre">pre<a class="anchor" aria-label="anchor" href="#arg-pre"></a></dt>
@@ -106,7 +108,7 @@
 
 
 <dt id="arg-post">post<a class="anchor" aria-label="anchor" href="#arg-post"></a></dt>
-<dd><p>user-specified code to include in the job script after job_list.</p></dd>
+<dd><p>user-specified cleanup code run after all tasks finish; its success cannot mask a task failure.</p></dd>
 
 
 <dt id="arg-sched-args">sched_args<a class="anchor" aria-label="anchor" href="#arg-sched-args"></a></dt>

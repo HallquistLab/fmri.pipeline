@@ -58,7 +58,10 @@ cluster_submit_shell_jobs(
 - fork_jobs:
 
   if TRUE, all jobs within a single batch will run simultaneously using
-  the fork (&) approach.
+  the fork (&) approach. Each task runs in its own subshell with \`set
+  -e\`. The batch waits for every task and returns the first nonzero
+  task status in submission order, or the cleanup status if all tasks
+  succeed.
 
 - pre:
 
@@ -67,7 +70,8 @@ cluster_submit_shell_jobs(
 
 - post:
 
-  user-specified code to include in the job script after job_list.
+  user-specified cleanup code run after all tasks finish; its success
+  cannot mask a task failure.
 
 - sched_args:
 
