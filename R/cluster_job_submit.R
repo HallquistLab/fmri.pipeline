@@ -220,8 +220,10 @@ cluster_job_submit <- function(script, scheduler="slurm", sched_args=NULL,
 #' @param time_per_job amount of time requested for each job
 #' @param time_per_command amount of time requested for each individual command
 #' @param fork_jobs if TRUE, all jobs within a single batch will run simultaneously using the fork (&) approach.
+#'   Each task runs in its own subshell with `set -e`. The batch waits for every task and returns
+#'   the first nonzero task status in submission order, or the cleanup status if all tasks succeed.
 #' @param pre user-specified code to include in the job script prior to job_list (e.g., module load commands)
-#' @param post user-specified code to include in the job script after job_list.
+#' @param post user-specified cleanup code run after all tasks finish; its success cannot mask a task failure.
 #' @param sched_args scheduler directives passed to \code{cluster_job_submit()}.
 #' @param env_variables named environment variables passed to \code{cluster_job_submit()}.
 #' @param wait_jobs jobs that must complete before submitted jobs run.
@@ -284,7 +286,7 @@ cluster_submit_shell_jobs <- function(job_list, commands_per_cpu = 1L, cpus_per_
       paste0("#SBATCH -n ", cpus_per_job),
       paste0("#SBATCH --time=", time_per_job),
       paste0("#SBATCH --mem-per-cpu=", memgb_per_command, "G"),
-      "cd $SLURM_SUBMIT_DIR",
+      'cd "$SLURM_SUBMIT_DIR" || exit $?',
       ""
     )
   } else if (scheduler == "torque") {
@@ -294,7 +296,7 @@ cluster_submit_shell_jobs <- function(job_list, commands_per_cpu = 1L, cpus_per_
       paste0("#PBS -l nodes=1:ppn=", cpus_per_job),
       paste0("#PBS -l pmem=", memgb_per_command, "gb"),
       paste0("#PBS -l walltime=", time_per_job),
-      "cd $PBS_O_WORKDIR",
+      'cd "$PBS_O_WORKDIR" || exit $?',
       ""
     )
   } else if (scheduler == "local") {
@@ -302,7 +304,8 @@ cluster_submit_shell_jobs <- function(job_list, commands_per_cpu = 1L, cpus_per_
   }
 
   # add any user-specified code that should precede each job execution
-  preamble <- c(preamble, pre, "")
+  # Fail setup immediately, but collect task failures without abandoning siblings.
+  preamble <- c(preamble, "set -e", pre, "set +e", "batch_status=0", "batch_pids=", "")
 
   job_df <- data.frame(
     job_number = rep(seq_len(n_jobs), each = cpus_per_job * commands_per_cpu, length.out = length(job_list)),
@@ -320,24 +323,39 @@ cluster_submit_shell_jobs <- function(job_list, commands_per_cpu = 1L, cpus_per_
     outfile <- file.path(job_out_dir, paste0(job_script_prefix, "_", j, file_suffix))
     cat(preamble, file = outfile, sep = "\n")
 
-    if (is.list(this_run)) {
-      # for list inputs, each job consists of multiple commands. make sure these are executed together using a subshell
-      job_str <- sapply(this_run, function(x) {
-        c("(", x, paste0(")", ifelse(fork_jobs == TRUE, " &", "")))
-      })
-      cat(job_str, file = outfile, sep = "\n", append = TRUE)
-    } else {
-      cat(paste(this_run, ifelse(fork_jobs == TRUE, "&", "")), file = outfile, sep = "\n", append = TRUE)
+    # Each logical task gets a subshell with errexit, so a later successful
+    # command in a multi-command task cannot mask an earlier failure.
+    for (task in as.list(this_run)) {
+      task_syntax <- c("(", "set -e", task, if (isTRUE(fork_jobs)) ") &" else ")")
+      if (isTRUE(fork_jobs)) {
+        task_syntax <- c(task_syntax, 'batch_pids="$batch_pids $!"')
+      } else {
+        task_syntax <- c(task_syntax, "batch_child_status=$?",
+          'if [ "$batch_status" -eq 0 ]; then batch_status=$batch_child_status; fi')
+      }
+      cat(task_syntax, file = outfile, sep = "\n", append = TRUE)
     }
 
-    # make sure parent script waits for forked jobs to complete before exiting
     if (isTRUE(fork_jobs)) {
-      cat("wait\n\n", file = outfile, append = TRUE)
+      cat(c(
+        'for batch_pid in $batch_pids; do',
+        '  if wait "$batch_pid"; then',
+        '    :',
+        '  else',
+        '    batch_child_status=$?',
+        '    if [ "$batch_status" -eq 0 ]; then batch_status=$batch_child_status; fi',
+        '  fi',
+        'done'
+      ), file = outfile, sep = "\n", append = TRUE)
     }
 
+    # Run cleanup after every task has finished, retaining any earlier failure.
     if (!is.null(post)) {
-      cat(post, file=outfile, sep="\n", append = TRUE)
+      cat(c("(", "set -e", post, ")", "batch_post_status=$?",
+        'if [ "$batch_status" -eq 0 ]; then batch_status=$batch_post_status; fi'),
+        file = outfile, sep = "\n", append = TRUE)
     }
+    cat('exit "$batch_status"\n', file = outfile, append = TRUE)
 
     # in debug mode, we only create the scripts, but we do not submit them
     if (isTRUE(debug)) {

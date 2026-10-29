@@ -37,11 +37,13 @@ cluster_submit_shell_jobs(
 
 \item{time_per_command}{amount of time requested for each individual command}
 
-\item{fork_jobs}{if TRUE, all jobs within a single batch will run simultaneously using the fork (&) approach.}
+\item{fork_jobs}{if TRUE, all jobs within a single batch will run simultaneously using the fork (&) approach.
+Each task runs in its own subshell with `set -e`. The batch waits for every task and returns
+the first nonzero task status in submission order, or the cleanup status if all tasks succeed.}
 
 \item{pre}{user-specified code to include in the job script prior to job_list (e.g., module load commands)}
 
-\item{post}{user-specified code to include in the job script after job_list.}
+\item{post}{user-specified cleanup code run after all tasks finish; its success cannot mask a task failure.}
 
 \item{sched_args}{scheduler directives passed to \code{cluster_job_submit()}.}
 

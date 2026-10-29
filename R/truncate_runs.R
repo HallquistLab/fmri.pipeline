@@ -3,13 +3,14 @@
 #' This occurs because the MB raw transfer of the prior run is occurring, but does not finish before the current run
 #' Thus, truncate mr files to be 12 seconds after final feedback presentation, which is how the paradigm timing files are setup
 #'
+#' @param force whether to replace an existing truncated image when its source has changed.
 #' @keywords internal
 #' @importFrom dplyr filter
 #' @importFrom checkmate assert_data_frame test_directory_exists test_number test_logical
 #' @importFrom data.table fread fwrite
 #' @importFrom glue glue_data
 #' @importFrom tidyselect starts_with
-truncate_runs <- function(mr_df, gpa = NULL, subj_outdir = NULL, truncation_data = NULL, lg = NULL) {
+truncate_runs <- function(mr_df, gpa = NULL, subj_outdir = NULL, truncation_data = NULL, lg = NULL, force = FALSE) {
   checkmate::assert_data_frame(mr_df)
   if (nrow(mr_df) != 1L) {
     lg$warn("The data.frame passed into truncate_runs does not contain exactly one row. Cannot proceed!")
@@ -120,7 +121,7 @@ truncate_runs <- function(mr_df, gpa = NULL, subj_outdir = NULL, truncation_data
     fname <- glue_data("sub-{id}_ses-{session}_run-{run_number}_drop-{drop_volumes}_trunc-{truncate_volumes}{imgext}", .x = mr_df)
     img_odir <- ifelse(is.null(subj_outdir), dirname(mr_df$run_nifti), subj_outdir)
     trunc_file <- file.path(img_odir, fname)
-    if (!file.exists(trunc_file)) {
+    if (isTRUE(force) || !file.exists(trunc_file)) {
       lg$debug("Creating truncated file: %s", trunc_file)
       keep_tpts <- seq.int(mr_df$first_volume, mr_df$last_volume)
       subset_nifti_volumes(mr_df$run_nifti, tpts = keep_tpts, mode = "keep", outfile = trunc_file)

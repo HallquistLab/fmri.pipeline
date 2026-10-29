@@ -12,8 +12,12 @@ truncate_runs(
   gpa = NULL,
   subj_outdir = NULL,
   truncation_data = NULL,
-  lg = NULL
+  lg = NULL,
+  force = FALSE
 )
+}
+\arguments{
+\item{force}{whether to replace an existing truncated image when its source has changed.}
 }
 \description{
 Identify the last valid volume acquired in a given run.
