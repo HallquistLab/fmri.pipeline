@@ -105,6 +105,18 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// extract_nifti_voxel_ts
+Rcpp::NumericMatrix extract_nifti_voxel_ts(std::string infile, Rcpp::NumericVector voxel_indices);
+RcppExport SEXP _fmri_pipeline_extract_nifti_voxel_ts(SEXP infileSEXP, SEXP voxel_indicesSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< std::string >::type infile(infileSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type voxel_indices(voxel_indicesSEXP);
+    rcpp_result_gen = Rcpp::wrap(extract_nifti_voxel_ts(infile, voxel_indices));
+    return rcpp_result_gen;
+END_RCPP
+}
 // gammapdf
 arma::vec gammapdf(const arma::vec& vals, const float mu, const float var);
 RcppExport SEXP _fmri_pipeline_gammapdf(SEXP valsSEXP, SEXP muSEXP, SEXP varSEXP) {
@@ -200,6 +212,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_fmri_pipeline_deconvolve_reglin_cpp", (DL_FUNC) &_fmri_pipeline_deconvolve_reglin_cpp, 13},
     {"_fmri_pipeline_do_convolve", (DL_FUNC) &_fmri_pipeline_do_convolve, 4},
     {"_fmri_pipeline_dsigmoid", (DL_FUNC) &_fmri_pipeline_dsigmoid, 2},
+    {"_fmri_pipeline_extract_nifti_voxel_ts", (DL_FUNC) &_fmri_pipeline_extract_nifti_voxel_ts, 2},
     {"_fmri_pipeline_gammapdf", (DL_FUNC) &_fmri_pipeline_gammapdf, 3},
     {"_fmri_pipeline_generate_feature", (DL_FUNC) &_fmri_pipeline_generate_feature, 2},
     {"_fmri_pipeline_generate_feature_armadillo", (DL_FUNC) &_fmri_pipeline_generate_feature_armadillo, 2},

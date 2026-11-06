@@ -1,5 +1,32 @@
 # fmri.pipeline 0.4-1
 
+## Event alignment and file identity
+
+* Missing/nonfinite event onsets and unsupported windows retain explicit missing
+  epochs with `epoch_status`; nonfinite collision times no longer abort runs.
+  Original event variable mappings are preserved during alignment.
+* Zero-width, one-sided, and sub-sample windows use a unique grid within the
+  requested bounds. An exact singleton observation can be retained without
+  interpolation; duplicate reshape keys cannot silently turn signals into counts.
+* Default deconvolution names are visible, and each new output has an identity
+  metadata sidecar. Alignment supports explicit file manifests, alphanumeric IDs,
+  sessions, and leading-zero labels, with legacy filenames as a fallback.
+  Discovery includes old hidden outputs and excludes sidecars.
+* Alignment records a status for every input file and stops on failures by
+  default. Explicit `fail_on_error = FALSE` permits partial output with a warning.
+  Status is returned in `file_status` and saved beside requested CSV outputs.
+
+## Voxelwise deconvolution correctness
+
+* Replaced `3dmaskdump` with internal RNifti/Rcpp extraction using the same
+  masked voxel indices as the output metadata. Atlas, additional mask, and
+  input spatial geometry are validated before extraction. `afni_dir` remains
+  accepted for compatibility but is ignored.
+* Constant and nonfinite signals are excluded before scaling and fitting, so
+  they cannot invalidate other voxels or influence global tuning. Output rows
+  and columns are preserved with missing estimates and explicit status values
+  (`decon_status` in voxelwise output, `signal_status` in linear diagnostics).
+
 ## Confound cache invalidation and batch exit status
 
 * Confound caches now record settings, demeaning, run inputs, and source-file

@@ -46,3 +46,10 @@ boundary that can help to have sufficient data to interpolate early and late tim
 \description{
 function to get interpolated event locked data
 }
+
+\details{
+Nonfinite target onsets and unsupported windows retain placeholder rows with
+missing time and values and an \code{epoch_status} column. Nonfinite collision
+candidates are ignored. Nearest-event boundaries are strict and do not guarantee
+disjoint trial windows.
+}

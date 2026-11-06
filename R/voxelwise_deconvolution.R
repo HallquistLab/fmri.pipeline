@@ -1,11 +1,12 @@
 #' Function to perform voxelwise deconvolution on an fMRI dataset using the fMRI model arguments object
 #'
 #' @param niftis A vector of processed fMRI timeseries images (4D files) to be deconvolved
-#' @param add_metadata A data.frame with one row per value of \code{niftis}. Columns of this data.frame
-#'   are added to the output file for identification.
+#' @param add_metadata A data.frame with one row per value of \code{niftis}, saved
+#'   as atlas-level metadata. The \code{id}, \code{run}, and optional \code{session}
+#'   columns are also saved in per-file sidecars for event alignment.
 #' @param out_dir Base output directory for deconvolved time series files. Default is \code{getwd()}.
 #' @param out_file_expression Expression evaluated to resolve the filename for the deconvolved csv files. Default is
-#'   to convert the \code{niftis} value for a given subject into a filename by replacing slashes with periods and adding
+#'   to prefix \code{"decon_"}, replace slashes in \code{niftis} with periods, and add
 #'   the atlas image name. Note that the suffix \code{_deconvolved.csv.gz} or \code{_original.csv.gz} will be added
 #'   to the expression, so don't pass this piece.
 #' @param log_file Name (and path) of log file for any deconvolution errors or messages
@@ -21,10 +22,20 @@
 #'   which estimates a continuous latent activity time series using regularized linear deconvolution
 #'   with optional HRF tuning.
 #' @param decon_settings A list of settings passed to the deconvolution algorithm.
-#' @param afni_dir Full path to directory containing AFNI binaries (this function uses 3dMaskdump).
+#' @param afni_dir Retained for compatibility; ignored. NIfTI extraction is internal
+#'   and does not require AFNI.
 #'
 #' @details The Bush 2011 algorithm uses the package's internal RcppArmadillo
 #'   implementation and does not require an external executable.
+#'   Atlas, mask, and input images must share a spatial grid. Constant signals
+#'   and signals containing nonfinite observations are excluded before fitting;
+#'   their output rows are retained with missing estimates. The \code{decon_status}
+#'   column identifies \code{"ok"}, \code{"constant"}, or \code{"nonfinite"} signals.
+#'   Each deconvolution file has a \code{.metadata.csv} sidecar containing its
+#'   source NIfTI path and any \code{id}, \code{run}, and \code{session} columns
+#'   in \code{add_metadata}. These identify files during event alignment, including
+#'   custom filenames. If absent, alignment falls back to the source path or
+#'   requires an explicit \code{file_manifest}.
 #'
 #'   If you want to use subject metadata to name the output file, use \code{this_subj} in your \code{out_file_expression}, which will give you access to a one-row
 #'   data.frame containing the metadata for the current subject in the loop.
@@ -51,8 +62,6 @@
 #' @return Nothing (invisible NULL).
 #' @importFrom doParallel registerDoParallel
 #' @importFrom parallel makeCluster
-#' @importFrom data.table fread
-#' @importFrom oro.nifti readNIfTI translateCoordinate
 #' @importFrom checkmate assert_file_exists
 #' @importFrom foreach %do% foreach
 #' @importFrom dplyr mutate across select left_join
@@ -96,14 +105,14 @@ voxelwise_deconvolution <- function(
   }
   
   zero_thresh <- 1e-4 #for binarizing/indexing
-  atlas_imgs <- lapply(atlas_files, readNIfTI, reorient=FALSE)
+  atlas_imgs <- lapply(atlas_files, RNifti::readNifti)
+  mask_file <- mask
   if (!is.null(mask)) {
     checkmate::assert_file_exists(mask)
-    mask <- readNIfTI(mask, reorient=FALSE) #go from mask as character to the mask image itself
+    mask <- RNifti::readNifti(mask)
     
     #ensure that mask is binary
-    mask[mask < zero_thresh] <- 0.0
-    mask[mask >= zero_thresh] <- 1.0
+    mask <- is.finite(mask) & mask >= zero_thresh
   }
   
   #setup cluster
@@ -119,29 +128,28 @@ voxelwise_deconvolution <- function(
   for (ai in seq_along(atlas_files)) {
     cat("Working on atlas: ", atlas_files[ai], "\n")
     aimg <- atlas_imgs[[ai]]
+
+    atlas_geometry <- roi_image_geometry(atlas_files[ai])
+    if (atlas_geometry$volumes != 1L) stop("Deconvolution atlases must be single-volume images")
+    if (!is.null(mask_file)) {
+      validate_roi_geometry(atlas_geometry, roi_image_geometry(mask_file), atlas_files[ai], mask_file)
+    }
     
     if (!is.null(mask)) { aimg <- aimg*mask } #multiply against binary mask to apply it
     
     
-    #get indices of mask within matrix (ijk)
-    a_indices <- which(aimg > zero_thresh, arr.ind=TRUE)
-    
-    ## allow a 2d matrix to be passed, add additional slice column that creates 3d mat with a single slice. 
-    if (ncol(a_indices) == 2L) {
-      cat("Converting 2d atlas to a single 3d slice\n")
-      a_indices <- cbind(a_indices, rep(1, nrow(a_indices))); colnames(a_indices)[3] <- "slice"  
-      #look up spatial coordinates of voxels in atlas (xyz)
-      a_coordinates <- cbind(a_indices, t(apply(a_indices, 1, function(r) { translateCoordinate(i=r, nim=aimg, verbose=FALSE) })))
-      ## drop k for later indexing
-      a_indices <- a_indices[,-3]
-    } else {
-      #look up spatial coordinates of voxels in atlas (xyz)
-      a_coordinates <- cbind(a_indices, t(apply(a_indices, 1, function(r) { translateCoordinate(i=r, nim=aimg, verbose=FALSE) })))
-    }
+    # One shared index vector defines both metadata and extraction order.
+    # NIfTI and R arrays both store i first, then j, then k within each volume.
+    voxel_indices <- which(is.finite(aimg) & aimg > zero_thresh)
+    if (length(voxel_indices) == 0L) stop("No voxels remain in atlas after masking: ", atlas_files[ai])
+    a_indices <- arrayInd(voxel_indices, dim(aimg)[seq_len(min(3L, length(dim(aimg))))])
+    if (ncol(a_indices) == 2L) a_indices <- cbind(a_indices, 1L)
+    xyz <- cbind(a_indices - 1L, 1) %*% t(atlas_geometry$affine)
+    a_coordinates <- cbind(a_indices, xyz[, 1:3, drop = FALSE])
     
     a_coordinates <- as.data.frame(a_coordinates) %>%
       setNames(c("i", "j", "k", "x", "y", "z")) %>%
-      dplyr::mutate(vnum = 1:n(), atlas_value = aimg[a_indices], atlas_name = basename(atlas_files[ai])) %>%
+      dplyr::mutate(vnum = seq_along(voxel_indices), atlas_value = as.numeric(aimg[voxel_indices]), atlas_name = basename(atlas_files[ai])) %>%
       mutate(across(c("x", "y", "z"), ~round(.x, 2))) %>%
       dplyr::select("vnum", "atlas_value", everything())
     
@@ -153,7 +161,7 @@ voxelwise_deconvolution <- function(
     
     #set a default filename based on the nifti -- hopefully this will not collide with other subjects/runs
     if (is.null(out_file_expression)) {
-      out_file_expression <- expression(paste0(gsub("[/\\]", ".", niftis[si]), "_", atlas_img_name))
+      out_file_expression <- expression(paste0("decon_", gsub("[/\\]", ".", niftis[si]), "_", atlas_img_name))
     }
 
     if (!is.null(add_metadata)) {
@@ -164,7 +172,8 @@ voxelwise_deconvolution <- function(
     #loop over niftis in parallel
     ff <- foreach(si = seq_along(niftis),
       .packages=c("dplyr", "readr", "data.table", "fmri.pipeline", "foreach", "iterators"),
-      .export="mat2df") %dopar% {
+      .export=c("mat2df", "extract_nifti_voxel_ts", "roi_image_geometry",
+        "validate_roi_geometry", "decon_signal_status")) %dopar% {
 
       #get the si-th row of the metadata to match nifti, allow one to use this_subj in out_file_expression
       if (!is.null(add_metadata)) {
@@ -179,20 +188,26 @@ voxelwise_deconvolution <- function(
       }
       
       cat("  Deconvolving subject: ", niftis[si], "\n")
-      dump_out <- tempfile()
-      
-      if (!is.null(afni_dir)) {
-        afnistat <- run_afni_command(paste0("3dmaskdump -mask ", atlas_files[ai], " -o ", dump_out, " ", niftis[si]), afnidir = afni_dir)
-      } else{
-        afnistat <- run_afni_command(paste0("3dmaskdump -mask ", atlas_files[ai], " -o ", dump_out, " ", niftis[si]))
-      }
-      ts_out <- data.table::fread(dump_out) #read time series
+      # Only spatial geometry must match; the input may contain many volumes.
+      input_geometry <- roi_image_geometry(niftis[si])
+      input_geometry$volumes <- 1L
+      validate_roi_geometry(atlas_geometry, input_geometry, atlas_files[ai], niftis[si])
 
       # to_deconvolve is a voxels x time matrix
-      to_deconvolve <- as.matrix(ts_out[, -1:-3]) #remove ijk
+      to_deconvolve <- extract_nifti_voxel_ts(niftis[si], voxel_indices)
 
-      # need to unit normalize for algorithm not to choke on near-constant 100-normed data
-      to_deconvolve <- t(apply(to_deconvolve, 1, scale))
+      # Screen before scaling: a constant signal would otherwise become NaN and
+      # contaminate global tuning. Keep invalid voxels in the output as NA.
+      decon_status <- decon_signal_status(t(to_deconvolve))
+      valid_voxels <- decon_status == "ok"
+      scaled_input <- matrix(NA_real_, nrow(to_deconvolve), ncol(to_deconvolve))
+      if (any(valid_voxels)) {
+        scaled_input[valid_voxels, ] <- t(scale(t(to_deconvolve[valid_voxels, , drop = FALSE])))
+      }
+      to_deconvolve <- scaled_input
+      if (any(!valid_voxels)) {
+        warning(sum(!valid_voxels), " constant or nonfinite voxel signals excluded from deconvolution: ", niftis[si])
+      }
 
       # just demean, which will rescale to percent signal change around 0 (this matches Bush 2015)
       #to_deconvolve <- t(apply(to_deconvolve, 1, function(x) { scale(x, scale=FALSE) }))
@@ -202,69 +217,76 @@ voxelwise_deconvolution <- function(
 
       # Zero pad the tail end to keep the deconvolved signal stable at the
       # boundary and trim the same padding after deconvolution.
-      alg_input <- to_deconvolve %>%
-        cbind(matrix(0, nrow = nrow(to_deconvolve), ncol = hrf_pad)) %>%
+      alg_input <- to_deconvolve[valid_voxels, , drop = FALSE] %>%
+        cbind(matrix(0, nrow = sum(valid_voxels), ncol = hrf_pad)) %>%
         as.matrix()
 
       #test1 <- deconvolve_nlreg(to_deconvolve[117,], kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon)
       #test2 <- deconvolve_nlreg(to_deconvolve[118,], kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon)
       
-      if (algorithm == "bush2015") {
-        #use R implementation of Bush 2015 algorithm
-        deconv_mat <- foreach(vox_ts=iter(alg_input, by="row"), .combine="rbind", .packages=c("fmri.pipeline")) %do% {
-          reg <- tryCatch(deconvolve_nlreg_resample(as.vector(vox_ts), kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon, n_resample=decon_settings$n_resample),
-            error=function(e) { cat("Problem deconvolving: ", niftis[si], as.character(e), "\n", file=log_file, append=TRUE); return(rep(NA, length(vox_ts))) })
+      if (!any(valid_voxels)) {
+        deconv_mat <- matrix(NA_real_, nrow(to_deconvolve), ncol(to_deconvolve))
+      } else {
+        if (algorithm == "bush2015") {
+          #use R implementation of Bush 2015 algorithm
+          deconv_mat <- foreach(vox_ts=iter(alg_input, by="row"), .combine="rbind", .packages=c("fmri.pipeline")) %do% {
+            reg <- tryCatch(deconvolve_nlreg_resample(as.vector(vox_ts), kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon, n_resample=decon_settings$n_resample),
+              error=function(e) { cat("Problem deconvolving: ", niftis[si], as.character(e), "\n", file=log_file, append=TRUE); return(rep(NA, length(vox_ts))) })
 
-          if (is.list(reg)) { reg <- reg$NEVmean } #just keep the mean resampled events vector
-          return(reg)
-        }
-      } else if (algorithm %in% c("reglin", "regularized_linear")) {
-        # Regularized linear deconvolution estimates continuous latent activity without
-        # sigmoid bounding. R function is time x voxels, matching the Rcpp path.
-        alg_input <- t(alg_input)
-        deconv_mat <- tryCatch(
-          deconvolve_reglin(
-            BOLDobs = alg_input,
-            kernel = decon_settings$kernel,
-            lambda = decon_settings$lambda,
-            lambda_grid = if (is.null(decon_settings$lambda_grid)) 10^seq(-4, 2, length.out = 20) else decon_settings$lambda_grid,
-            penalty = if (is.null(decon_settings$penalty)) "diff2" else decon_settings$penalty,
-            kernel_grid = decon_settings$kernel_grid,
-            hrf_lags = if (is.null(decon_settings$hrf_lags)) 0L else decon_settings$hrf_lags,
-            tune_by = if (is.null(decon_settings$tune_by)) "global" else decon_settings$tune_by,
-            normalize = if (is.null(decon_settings$normalize)) FALSE else decon_settings$normalize,
-            demean = if (is.null(decon_settings$demean)) TRUE else decon_settings$demean,
-            prewhiten_gcv = if (is.null(decon_settings$prewhiten_gcv)) FALSE else decon_settings$prewhiten_gcv,
-            prewhiten_rho = decon_settings$prewhiten_rho,
-            backend = if (is.null(decon_settings$backend)) "cpp" else decon_settings$backend,
-            wiener_shrinkage = if (is.null(decon_settings$wiener_shrinkage)) "scalar" else decon_settings$wiener_shrinkage,
-            wiener_psd_smooth = if (is.null(decon_settings$wiener_psd_smooth)) 7L else decon_settings$wiener_psd_smooth,
-            wiener_psd_floor = if (is.null(decon_settings$wiener_psd_floor)) 1e-8 else decon_settings$wiener_psd_floor,
-            gcv_rule = if (is.null(decon_settings$gcv_rule)) "min" else decon_settings$gcv_rule,
-            trim_kernel = TRUE
-          ),
-          error = function(e) {
-            cat("Problem deconvolving: ", niftis[si], as.character(e), "\n", file = log_file, append = TRUE)
-            return(matrix(NA, nrow = nrow(alg_input), ncol = ncol(alg_input)))
+            if (is.list(reg)) { reg <- reg$NEVmean } #just keep the mean resampled events vector
+            return(reg)
           }
-        )
+        } else if (algorithm %in% c("reglin", "regularized_linear")) {
+          # Regularized linear deconvolution estimates continuous latent activity without
+          # sigmoid bounding. R function is time x voxels, matching the Rcpp path.
+          alg_input <- t(alg_input)
+          deconv_mat <- tryCatch(
+            deconvolve_reglin(
+              BOLDobs = alg_input,
+              kernel = decon_settings$kernel,
+              lambda = decon_settings[["lambda"]],
+              lambda_grid = if (is.null(decon_settings$lambda_grid)) 10^seq(-4, 2, length.out = 20) else decon_settings$lambda_grid,
+              penalty = if (is.null(decon_settings$penalty)) "diff2" else decon_settings$penalty,
+              kernel_grid = decon_settings$kernel_grid,
+              hrf_lags = if (is.null(decon_settings$hrf_lags)) 0L else decon_settings$hrf_lags,
+              tune_by = if (is.null(decon_settings$tune_by)) "global" else decon_settings$tune_by,
+              normalize = if (is.null(decon_settings$normalize)) FALSE else decon_settings$normalize,
+              demean = if (is.null(decon_settings$demean)) TRUE else decon_settings$demean,
+              prewhiten_gcv = if (is.null(decon_settings$prewhiten_gcv)) FALSE else decon_settings$prewhiten_gcv,
+              prewhiten_rho = decon_settings$prewhiten_rho,
+              backend = if (is.null(decon_settings$backend)) "cpp" else decon_settings$backend,
+              wiener_shrinkage = if (is.null(decon_settings$wiener_shrinkage)) "scalar" else decon_settings$wiener_shrinkage,
+              wiener_psd_smooth = if (is.null(decon_settings$wiener_psd_smooth)) 7L else decon_settings$wiener_psd_smooth,
+              wiener_psd_floor = if (is.null(decon_settings$wiener_psd_floor)) 1e-8 else decon_settings$wiener_psd_floor,
+              gcv_rule = if (is.null(decon_settings$gcv_rule)) "min" else decon_settings$gcv_rule,
+              trim_kernel = TRUE
+            ),
+            error = function(e) {
+              cat("Problem deconvolving: ", niftis[si], as.character(e), "\n", file = log_file, append = TRUE)
+              return(matrix(NA, nrow = nrow(alg_input), ncol = ncol(alg_input)))
+            }
+          )
 
-        deconv_mat <- t(deconv_mat)
-      } else if (algorithm == "bush2011") {
-        # This should use the new internal RcppArmadillo function
-        # Rcpp function is time x voxels... transpose inputs and outputs to match voxels x time expectations
-        alg_input <- t(alg_input)
-        deconv_mat <- tryCatch(deconvolve_nlreg(BOLDobs = alg_input, kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon, beta=decon_settings$beta),
-          error=function(e) {
-            cat("Problem deconvolving: ", niftis[si], as.character(e), "\n", file=log_file, append=TRUE)
-            return(matrix(NA, nrow=nrow(alg_input), ncol=ncol(alg_input)))
-          })
+          deconv_mat <- t(deconv_mat)
+        } else if (algorithm == "bush2011") {
+          # This should use the new internal RcppArmadillo function
+          # Rcpp function is time x voxels... transpose inputs and outputs to match voxels x time expectations
+          alg_input <- t(alg_input)
+          deconv_mat <- tryCatch(deconvolve_nlreg(BOLDobs = alg_input, kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon, beta=decon_settings$beta),
+            error=function(e) {
+              cat("Problem deconvolving: ", niftis[si], as.character(e), "\n", file=log_file, append=TRUE)
+              return(matrix(NA, nrow=nrow(alg_input), ncol=ncol(alg_input)))
+            })
 
-        deconv_mat <- t(deconv_mat)
-      }
+          deconv_mat <- t(deconv_mat)
+        }
       
-      # Trim the HRF end-padding for all variants.
-      deconv_mat <- deconv_mat[, c(seq(-ncol(deconv_mat), -ncol(deconv_mat)+hrf_pad-1))] #trim trailing padding added above
+        # Trim the HRF end-padding for all variants.
+        deconv_mat <- deconv_mat[, seq_len(ncol(to_deconvolve)), drop = FALSE]
+        restored <- matrix(NA_real_, nrow(to_deconvolve), ncol(to_deconvolve))
+        restored[valid_voxels, ] <- deconv_mat
+        deconv_mat <- restored
+      }
 
       # melt this for combination
       deconv_melt <- mat2df(deconv_mat, value_name="decon", varnames=c("vnum", "volume"))
@@ -276,10 +298,22 @@ voxelwise_deconvolution <- function(
         #mutate(nifti=niftis[si]) %>%
         dplyr::select(-"i", -"j", -"k") #omitting i, j, k for now
 
+      deconv_df$decon_status <- decon_status[deconv_df$vnum]
+
       #add subject metadata, if relevant
       #if (!is.null(add_metadata)) { deconv_df <- deconv_df %>% cbind(this_subj) }
 
       readr::write_csv(deconv_df, file = out_name)
+
+      # A per-file sidecar makes custom filenames independent of identity
+      # parsing. Preserve identifier strings such as "001" and "participantA".
+      identity_metadata <- data.frame(.nifti = niftis[si])
+      if (!is.null(add_metadata)) {
+        for (column in intersect(c("id", "run", "session"), names(this_subj))) {
+          identity_metadata[[column]] <- this_subj[[column]]
+        }
+      }
+      readr::write_csv(identity_metadata, file = paste0(out_name, ".metadata.csv"))
 
       #handle output of original time series (before deconvolution) -- mostly useful for debugging
       if (isTRUE(save_original_ts)) {

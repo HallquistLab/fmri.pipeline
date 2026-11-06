@@ -26,6 +26,7 @@ R6 class representing a multivariate time series object for fMRI analysis
   \itemize{
     \item \href{#method-fmri_ts-initialize}{\code{fmri_ts$new()}}
     \item \href{#method-fmri_ts-get_ts}{\code{fmri_ts$get_ts()}}
+    \item \href{#method-fmri_ts-get_events}{\code{fmri_ts$get_events()}}
     \item \href{#method-fmri_ts-add_keys}{\code{fmri_ts$add_keys()}}
     \item \href{#method-fmri_ts-replace_vm}{\code{fmri_ts$replace_vm()}}
     \item \href{#method-fmri_ts-get_kvars}{\code{fmri_ts$get_kvars()}}
@@ -72,6 +73,21 @@ R6 class representing a multivariate time series object for fMRI analysis
       \item{\code{orig_names}}{boolean indicating whether to return data.table with original naming scheme. Default: FALSE}
     }
     \if{html}{\out{</div>}}
+  }
+}
+
+\if{html}{\out{<hr>}}
+\if{html}{\out{<a id="method-fmri_ts-get_events"></a>}}
+\if{latex}{\out{\hypertarget{method-fmri_ts-get_events}{}}}
+\subsection{\code{fmri_ts$get_events()}}{
+  Get a copy of event data, optionally restoring original variable names.
+  \subsection{Usage}{
+    \preformatted{fmri_ts$get_events(orig_names = FALSE)}
+  }
+  \subsection{Arguments}{
+    \describe{
+      \item{\code{orig_names}}{Whether to restore the input variable names.}
+    }
   }
 }
 

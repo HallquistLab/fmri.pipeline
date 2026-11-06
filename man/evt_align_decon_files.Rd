@@ -14,7 +14,9 @@ evt_align_decon_files(
   atlas_subset = NULL,
   out_file = NULL,
   ncpus = 8,
-  time_audit = FALSE
+  time_audit = FALSE,
+  file_manifest = NULL,
+  fail_on_error = TRUE
 )
 }
 \arguments{
@@ -40,6 +42,20 @@ These cuts are applied to the \code{aggregate_by} column, commonly "atlas_value"
 \item{ncpus}{Number of local worker processes to use.}
 
 \item{time_audit}{If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing}
+
+\item{file_manifest}{Optional data.frame with \code{file}, \code{id}, \code{run},
+and optional \code{session} columns. Overrides per-file metadata and legacy
+filename parsing. Ambiguous identities are errors.}
+
+\item{fail_on_error}{Stop if any file fails alignment (default TRUE). FALSE
+explicitly permits partial output with a warning and a file status manifest.}
+}
+\value{
+Aligned data with a \code{file_status} data.frame attribute. If \code{out_file}
+is supplied, the manifest is saved to \code{paste0(out_file, ".files.csv")},
+including on failure. With \code{fail_on_error = TRUE}, a
+\code{decon_alignment_error} condition includes the manifest, and aligned output
+is not written if any file fails.
 }
 \description{
 Align a set of deconvolved time series files to an event of interest function.

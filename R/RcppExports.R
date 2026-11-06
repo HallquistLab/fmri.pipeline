@@ -105,6 +105,19 @@ dsigmoid <- function(x, beta = 1) {
     .Call(`_fmri_pipeline_dsigmoid`, x, beta)
 }
 
+#' Extract selected voxel time series in a specified order
+#'
+#' @param infile Path to a scalar NIfTI image, optionally gzipped.
+#' @param voxel_indices One-based linear indices within the spatial volume.
+#' @return A voxels by volumes numeric matrix, in the supplied index order.
+#' @details Uses the RNifti C++ API, including NIfTI slope/intercept scaling,
+#'   without creating a full double-precision R array or intermediate text file.
+#'   Spatial alignment with the atlas must be checked by the caller.
+#' @keywords internal
+extract_nifti_voxel_ts <- function(infile, voxel_indices) {
+    .Call(`_fmri_pipeline_extract_nifti_voxel_ts`, infile, voxel_indices)
+}
+
 gammapdf <- function(vals, mu, var) {
     .Call(`_fmri_pipeline_gammapdf`, vals, mu, var)
 }

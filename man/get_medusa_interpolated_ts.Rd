@@ -57,3 +57,13 @@ and (optionally) averaging across voxels/units within a value to derive the mean
 \author{
 Michael Hallquist
 }
+
+\details{
+The interpolation grid includes zero and remains within the requested interval,
+including zero-width and one-sided windows. When trial is a grouping variable,
+missing and unsupported epochs retain missing estimates and an
+\code{epoch_status} column: \code{"ok"}, \code{"partial"},
+\code{"insufficient_data"}, \code{"missing_onset"}, \code{"outside_run"},
+\code{"censored"}, or \code{"no_data"}. These describe timing and available
+output support, not physiological isolation from other trials.
+}

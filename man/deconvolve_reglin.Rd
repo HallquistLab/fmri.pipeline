@@ -101,3 +101,10 @@ A matrix of deconvolved time series, or a list with \code{activity}
 Estimate a continuous latent activity time series by solving a regularized
 inverse convolution problem for one or more BOLD signals.
 }
+\details{
+Constant signals and signals containing nonfinite observations are
+excluded from fitting and tuning. Their activity columns are returned as
+\code{NA}; diagnostics include a per-column \code{signal_status} vector
+(\code{"ok"}, \code{"constant"}, or \code{"nonfinite"}). Partial missingness
+excludes the entire signal; observations are not interpolated or deleted.
+}
