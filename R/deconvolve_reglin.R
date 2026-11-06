@@ -49,6 +49,11 @@
 #'   is within one standard error of the minimum. The standard error is computed
 #'   across signal columns for \code{tune_by = "global"}.
 #'
+#' @param scaling Explicit input scaling: \code{"zscore"}, \code{"demean"},
+#'   \code{"none"}, or \code{"psc"} (percent signal change). When supplied,
+#'   overrides \code{normalize} and \code{demean}. Otherwise those flags retain
+#'   their existing behavior; the default is z-scoring.
+#'
 #' @return A matrix of deconvolved time series, or a list with \code{activity}
 #'   and tuning diagnostics when \code{return_diagnostics = TRUE}.
 #' @details Constant signals and signals containing nonfinite observations are
@@ -56,6 +61,32 @@
 #'   \code{NA}; diagnostics include a per-column \code{signal_status} vector
 #'   (\code{"ok"}, \code{"constant"}, or \code{"nonfinite"}). Partial missingness
 #'   excludes the entire signal; observations are not interpolated or deleted.
+#'   Z-scoring remains the default and is recommended for standardized within-run
+#'   trial responses. For fixed HRF/regularization, the linear inverse is homogeneous
+#'   in its input: rescaling the observations rescales activity without changing the
+#'   conditioning of the inverse matrix. Without z-scoring, global GCV gives signals
+#'   with larger variance more weight. Demeaning retains input units; \code{"none"}
+#'   retains offsets too and is mainly useful for already-centered data or simulations.
+#'   Percent signal change uses \code{100 * (y - mean(y)) / mean(y)} and requires a
+#'   positive baseline well away from zero. It is unsuitable for zero-mean residuals.
+#'   No scaling choice removes HRF uncertainty or regularization-induced attenuation.
+#'
+#'   Scaling is applied once. The matrix attributes \code{scaled:center},
+#'   \code{scaled:scale}, and \code{scaling} record the actual BOLD transformation
+#'   \code{(y - center) / scale}; diagnostics expose the same values. With
+#'   \code{scaling = "none"}, the recorded center is zero. The activity scale depends
+#'   on this transformation and the unit-sum HRF; it is not a calibrated physiological
+#'   neural-amplitude scale. The removed BOLD mean is not an identified neural baseline.
+#'
+#'   Scalar Wiener GCV uses the exact trace of the finite observed smoother, including
+#'   zero extension, latent truncation, and the implemented filtered HRF when whitening.
+#'   This trace is conditional on preprocessing and the AR(1) coefficient; it does not
+#'   include derivatives of estimated preprocessing/noise parameters. Adaptive PSD
+#'   shrinkage requires a fixed lambda and a single HRF. Its diagnostics label the
+#'   filter trace \code{conditional_fixed_psd} and return missing GCV values, because
+#'   the trace holding spectra fixed is not the degrees of freedom of the full
+#'   nonlinear, data-adaptive estimator. Scalar diagnostics use
+#'   \code{df_method = "finite_observation_trace"}.
 #' @importFrom stats fft median mvfft sd
 #' @export
 deconvolve_reglin <- function(
@@ -78,7 +109,8 @@ deconvolve_reglin <- function(
   wiener_shrinkage = c("scalar", "psd"),
   wiener_psd_smooth = 7L,
   wiener_psd_floor = 1e-8,
-  gcv_rule = c("min", "1se")
+  gcv_rule = c("min", "1se"),
+  scaling = NULL
 ) {
   penalty <- match.arg(penalty)
   tune_by <- match.arg(tune_by)
@@ -104,6 +136,7 @@ deconvolve_reglin <- function(
   checkmate::assert_integerish(wiener_psd_smooth, lower = 1L, len = 1L)
   checkmate::assert_number(wiener_psd_floor, lower = .Machine$double.eps)
   wiener_psd_smooth <- as.integer(wiener_psd_smooth)
+  scaling <- resolve_decon_scaling(scaling, normalize, demean)
 
   if (is.null(lambda)) {
     checkmate::assert_numeric(lambda_grid, lower = 0, any.missing = FALSE, min.len = 1L)
@@ -115,6 +148,7 @@ deconvolve_reglin <- function(
 
   kernels <- build_decon_kernel_grid(kernel, kernel_grid = kernel_grid, hrf_lags = hrf_lags)
   kernel_len <- length(kernels[[1L]])
+  validate_wiener_tuning(backend, wiener_shrinkage, length(lambda_grid), length(kernels))
   if (nrow(BOLDobs) < 3L) {
     stop("Need at least 3 timepoints for regularized linear deconvolution")
   }
@@ -159,17 +193,29 @@ deconvolve_reglin <- function(
           if (is.null(prewhiten_rho)) NA_real_ else prewhiten_rho
         } else 0
       )
-      if (backend == "wiener") result$wiener_shrinkage <- wiener_shrinkage
+      if (backend == "wiener") {
+        result$wiener_shrinkage <- wiener_shrinkage
+        result$df_method <- if (wiener_shrinkage == "psd") "conditional_fixed_psd" else "finite_observation_trace"
+      }
     }
 
     attr(activity, "scaled:center") <- centers
     attr(activity, "scaled:scale") <- scales
-    result$activity <- activity
     result$scaled_center <- centers
     result$scaled_scale <- scales
     result$signal_status <- signal_status
+    result$scaling <- scaling
+    attr(activity, "scaling") <- scaling
+    result$activity <- activity
     return(if (return_diagnostics) result else activity)
   }
+
+  # Keep native scaling for the usual C++ modes, avoiding an R column loop
+  # and extra matrix copies. R scaling is needed for PSC or noise estimation.
+  scaled <- if (backend != "cpp" || scaling == "psc" ||
+      (prewhiten_gcv && is.null(prewhiten_rho))) {
+    scale_decon_input(BOLDobs, scaling = scaling)
+  } else NULL
 
   if (isTRUE(prewhiten_gcv) && is.null(prewhiten_rho)) {
     first_pass <- deconvolve_reglin(
@@ -191,11 +237,11 @@ deconvolve_reglin <- function(
       wiener_shrinkage = wiener_shrinkage,
       wiener_psd_smooth = wiener_psd_smooth,
       wiener_psd_floor = wiener_psd_floor,
-      gcv_rule = gcv_rule
+      gcv_rule = gcv_rule,
+      scaling = scaling
     )
-    scaled_first_pass <- scale_decon_input(BOLDobs, normalize = normalize, demean = demean)
     first_resid <- decon_first_pass_residuals(
-      y = scaled_first_pass$y,
+      y = scaled$y,
       activity = first_pass$activity,
       kernels = kernels,
       kernel_index = first_pass$kernel_index,
@@ -205,13 +251,13 @@ deconvolve_reglin <- function(
   }
 
   if (backend == "wiener") {
-    return(deconvolve_reglin_wiener(
-      BOLDobs = BOLDobs,
+    result <- deconvolve_reglin_wiener(
+      BOLDobs = scaled$y,
       kernels = kernels,
       lambda_grid = lambda_grid,
       tune_by = tune_by,
-      normalize = normalize,
-      demean = demean,
+      normalize = FALSE,
+      demean = FALSE,
       trim_kernel = trim_kernel,
       return_diagnostics = return_diagnostics,
       prewhiten_gcv = prewhiten_gcv,
@@ -220,19 +266,20 @@ deconvolve_reglin <- function(
       wiener_psd_smooth = wiener_psd_smooth,
       wiener_psd_floor = wiener_psd_floor,
       gcv_rule = gcv_rule
-    ))
+    )
+    return(set_decon_scaling(result, scaled, scaling))
   }
 
   if (backend == "cpp") {
     kernel_mat <- do.call(cbind, kernels)
     cpp_res <- deconvolve_reglin_cpp(
-      BOLDobs = BOLDobs,
+      BOLDobs = if (is.null(scaled)) BOLDobs else scaled$y,
       kernels = kernel_mat,
       lambda_grid = lambda_grid,
       penalty = penalty,
       tune_by = tune_by,
-      normalize = normalize,
-      demean = demean,
+      normalize = is.null(scaled) && scaling == "zscore",
+      demean = is.null(scaled) && scaling == "demean",
       trim_kernel = trim_kernel,
       ridge_floor = ridge_floor,
       return_diagnostics = return_diagnostics,
@@ -245,10 +292,14 @@ deconvolve_reglin <- function(
       cpp_res$kernels <- kernels
       cpp_res$signal_status <- signal_status
     }
-    return(cpp_res)
+    if (is.null(scaled)) {
+      activity <- if (is.list(cpp_res)) cpp_res$activity else cpp_res
+      scaled <- list(center = as.numeric(attr(activity, "scaled:center")),
+        scale = as.numeric(attr(activity, "scaled:scale")))
+    }
+    return(set_decon_scaling(cpp_res, scaled, scaling))
   }
 
-  scaled <- scale_decon_input(BOLDobs, normalize = normalize, demean = demean)
   y <- scaled$y
   ar1_rho <- resolve_decon_ar1(y, prewhiten_gcv = prewhiten_gcv, prewhiten_rho = prewhiten_rho)
   y_fit <- if (isTRUE(prewhiten_gcv)) apply_ar1_whitening(y, ar1_rho) else y
@@ -335,6 +386,7 @@ deconvolve_reglin <- function(
 
   attr(best_activity, "scaled:center") <- scaled$center
   attr(best_activity, "scaled:scale") <- scaled$scale
+  attr(best_activity, "scaling") <- scaling
 
   if (!isTRUE(return_diagnostics)) {
     return(best_activity)
@@ -353,7 +405,8 @@ deconvolve_reglin <- function(
     ar1_rho = ar1_rho,
     scaled_center = scaled$center,
     scaled_scale = scaled$scale,
-    signal_status = signal_status
+    signal_status = signal_status,
+    scaling = scaling
   )
 }
 
@@ -423,21 +476,55 @@ shift_decon_kernel <- function(lag, kernel) {
   }
 }
 
-scale_decon_input <- function(y, normalize = TRUE, demean = TRUE) {
-  center <- colMeans(y)
-  scale <- rep(1, ncol(y))
-
-  if (isTRUE(normalize)) {
-    scale <- apply(y, 2L, stats::sd)
-    bad_scale <- !is.finite(scale) | scale <= .Machine$double.eps
-    scale[bad_scale] <- 1
-    y <- sweep(y, 2L, center, "-")
-    y <- sweep(y, 2L, scale, "/")
-  } else if (isTRUE(demean)) {
-    y <- sweep(y, 2L, center, "-")
+validate_wiener_tuning <- function(backend, shrinkage, n_lambda, n_kernels) {
+  if (backend == "wiener" && shrinkage == "psd" && (n_lambda > 1L || n_kernels > 1L)) {
+    stop("Automatic GCV tuning is not supported for data-adaptive PSD Wiener filters; ",
+      "supply a fixed lambda and one kernel, or use wiener_shrinkage = 'scalar'.")
   }
+}
 
-  list(y = y, center = center, scale = scale)
+resolve_decon_scaling <- function(scaling = NULL, normalize = TRUE, demean = TRUE) {
+  checkmate::assert_flag(normalize)
+  checkmate::assert_flag(demean)
+  if (is.null(scaling)) {
+    return(if (isTRUE(normalize)) "zscore" else if (isTRUE(demean)) "demean" else "none")
+  }
+  match.arg(scaling, c("zscore", "demean", "none", "psc"))
+}
+
+# Record the actual transform y_scaled = (y - center) / scale. Scaling is
+# independent of the inverse operator; it does not remove regularization bias.
+scale_decon_input <- function(y, normalize = TRUE, demean = TRUE, scaling = NULL) {
+  scaling <- resolve_decon_scaling(scaling, normalize, demean)
+  center <- if (scaling == "none") rep(0, ncol(y)) else colMeans(y)
+  divisor <- rep(1, ncol(y))
+  if (scaling == "zscore") {
+    divisor <- apply(y, 2L, stats::sd)
+    divisor[!is.finite(divisor) | divisor <= .Machine$double.eps] <- 1
+  } else if (scaling == "psc") {
+    spread <- apply(y, 2L, stats::sd)
+    if (any(!is.finite(center) | center <= sqrt(.Machine$double.eps) * spread)) {
+      stop("Percent-signal-change scaling requires a positive baseline mean well away from zero; ",
+        "use zscore or demean for residualized/zero-mean signals.")
+    }
+    divisor <- center / 100
+  }
+  if (scaling != "none") y <- sweep(y, 2L, center, "-")
+  if (scaling %in% c("zscore", "psc")) y <- sweep(y, 2L, divisor, "/")
+  list(y = y, center = center, scale = divisor)
+}
+
+set_decon_scaling <- function(result, scaled, scaling) {
+  activity <- if (is.list(result)) result$activity else result
+  attr(activity, "scaled:center") <- scaled$center
+  attr(activity, "scaled:scale") <- scaled$scale
+  attr(activity, "scaling") <- scaling
+  if (!is.list(result)) return(activity)
+  result$activity <- activity
+  result$scaled_center <- scaled$center
+  result$scaled_scale <- scaled$scale
+  result$scaling <- scaling
+  result
 }
 
 resolve_decon_ar1 <- function(y, prewhiten_gcv = FALSE, prewhiten_rho = NULL) {
@@ -525,10 +612,12 @@ deconvolve_reglin_wiener <- function(
   best_kernel <- if (tune_by == "global") NA_integer_ else rep(NA_integer_, n_signals)
   tuning <- vector("list", length(kernels) * length(lambda_grid))
   tuning_i <- 0L
+  needs_scores <- return_diagnostics || length(kernels) * length(lambda_grid) > 1L
 
   for (ki in seq_along(kernels)) {
     fit_kernel <- if (isTRUE(prewhiten_gcv)) ar1_filter_kernel(kernels[[ki]], ar1_rho) else kernels[[ki]]
-    fft_df_base <- wiener_degrees_base(n_time = n_time, n_latent = n_latent, kernel = fit_kernel)
+    plan <- wiener_fft_plan(n_time, n_latent, fit_kernel)
+    y_fft <- mvfft(rbind(y_fit, matrix(0, plan$n_fft - n_time, n_signals)))
 
     for (lam in lambda_grid) {
       if (wiener_shrinkage == "psd") {
@@ -538,7 +627,8 @@ deconvolve_reglin_wiener <- function(
           lambda = lam,
           n_latent = n_latent,
           smooth_width = wiener_psd_smooth,
-          psd_floor = wiener_psd_floor
+          psd_floor = wiener_psd_floor,
+          fft_plan = plan, y_fft = y_fft
         )
         activity <- wiener_deconvolve_matrix(
           y_fit,
@@ -546,25 +636,31 @@ deconvolve_reglin_wiener <- function(
           lambda = lam,
           n_latent = n_latent,
           signal_psd = psd$signal_psd,
-          noise_psd = psd$noise_psd
+          noise_psd = psd$noise_psd, fft_plan = plan, y_fft = y_fft
         )
-        df <- wiener_degrees_freedom_psd(
-          h_power = fft_df_base,
-          lambda = lam,
-          signal_psd = psd$signal_psd,
-          noise_psd = psd$noise_psd,
-          n_time = n_time
-        )
+        filter <- wiener_inverse_filter(plan$h_fft, lam, psd$signal_psd, psd$noise_psd)
       } else {
-        activity <- wiener_deconvolve_matrix(y_fit, fit_kernel, lambda = lam, n_latent = n_latent)
-        df <- wiener_degrees_freedom(fft_df_base, lambda = lam, n_time = n_time)
+        activity <- wiener_deconvolve_matrix(y_fit, fit_kernel, lambda = lam,
+          n_latent = n_latent, fft_plan = plan, y_fft = y_fft)
+        filter <- wiener_inverse_filter(plan$h_fft, lam)
       }
-      fitted <- wiener_reconvolve_matrix(activity, fit_kernel, n_time = n_time)
+      if (!needs_scores) {
+        best_activity <- activity
+        best_lambda <- lam
+        best_kernel <- ki
+        if (tune_by == "signal") {
+          best_lambda <- rep(lam, n_signals)
+          best_kernel <- rep(ki, n_signals)
+        }
+        next
+      }
+      df <- wiener_degrees_freedom(filter, fit_kernel, n_time)
+      fitted <- wiener_reconvolve_matrix(activity, fit_kernel, n_time = n_time, fft_plan = plan)
       residual <- y_fit - fitted
       rss_by_signal <- colSums(residual^2)
       gcv_denom <- max((n_time - df)^2, .Machine$double.eps)
-      gcv_by_signal <- rss_by_signal / gcv_denom
-      gcv_se <- decon_gcv_se(gcv_by_signal)
+      gcv_by_signal <- if (wiener_shrinkage == "psd") rep(NA_real_, n_signals) else rss_by_signal / gcv_denom
+      gcv_se <- if (wiener_shrinkage == "psd") NA_real_ else decon_gcv_se(gcv_by_signal)
 
       tuning_i <- tuning_i + 1L
       tuning[[tuning_i]] <- data.frame(
@@ -579,14 +675,14 @@ deconvolve_reglin_wiener <- function(
 
       if (tune_by == "global") {
         score <- mean(gcv_by_signal)
-        if (score < best_score) {
+        if (wiener_shrinkage == "psd" || score < best_score) {
           best_score <- score
           best_activity <- activity
           best_lambda <- lam
           best_kernel <- ki
         }
       } else {
-        improved <- gcv_by_signal < best_score
+        improved <- if (wiener_shrinkage == "psd") rep(TRUE, n_signals) else gcv_by_signal < best_score
         if (any(improved)) {
           best_score[improved] <- gcv_by_signal[improved]
           best_activity[, improved] <- activity[, improved, drop = FALSE]
@@ -598,29 +694,12 @@ deconvolve_reglin_wiener <- function(
   }
 
   tuning <- do.call(rbind, tuning)
-  if (gcv_rule == "1se" && tune_by == "global") {
+  if (needs_scores && wiener_shrinkage == "scalar" && gcv_rule == "1se" && tune_by == "global") {
     selected <- select_1se_candidate(tuning)
     fit_kernel <- if (isTRUE(prewhiten_gcv)) ar1_filter_kernel(kernels[[selected$kernel]], ar1_rho) else kernels[[selected$kernel]]
-    if (wiener_shrinkage == "psd") {
-      psd <- estimate_wiener_psd(
-        y = y_fit,
-        kernel = fit_kernel,
-        lambda = selected$lambda,
-        n_latent = n_latent,
-        smooth_width = wiener_psd_smooth,
-        psd_floor = wiener_psd_floor
-      )
-      best_activity <- wiener_deconvolve_matrix(
-        y_fit,
-        fit_kernel,
-        lambda = selected$lambda,
-        n_latent = n_latent,
-        signal_psd = psd$signal_psd,
-        noise_psd = psd$noise_psd
-      )
-    } else {
-      best_activity <- wiener_deconvolve_matrix(y_fit, fit_kernel, lambda = selected$lambda, n_latent = n_latent)
-    }
+    plan <- wiener_fft_plan(n_time, n_latent, fit_kernel)
+    best_activity <- wiener_deconvolve_matrix(y_fit, fit_kernel, lambda = selected$lambda,
+      n_latent = n_latent, fft_plan = plan, y_fft = y_fft)
     best_lambda <- selected$lambda
     best_kernel <- selected$kernel
   }
@@ -647,6 +726,7 @@ deconvolve_reglin_wiener <- function(
     tuning = tuning,
     penalty = "wiener",
     wiener_shrinkage = wiener_shrinkage,
+    df_method = if (wiener_shrinkage == "psd") "conditional_fixed_psd" else "finite_observation_trace",
     tune_by = tune_by,
     gcv_rule = gcv_rule,
     prewhiten_gcv = prewhiten_gcv,
@@ -668,27 +748,34 @@ wiener_fft_length <- function(n_time, n_latent, kernel_len) {
   2^ceiling(log2(n_latent + kernel_len - 1L))
 }
 
-wiener_deconvolve_matrix <- function(y, kernel, lambda, n_latent, signal_psd = NULL, noise_psd = NULL) {
-  y <- as.matrix(y)
-  n_time <- nrow(y)
-  n_fft <- wiener_fft_length(n_time = n_time, n_latent = n_latent, kernel_len = length(kernel))
-  h_fft <- fft(c(kernel, rep(0, n_fft - length(kernel))))
+wiener_fft_plan <- function(n_time, n_latent, kernel) {
+  n_fft <- wiener_fft_length(n_time, n_latent, length(kernel))
+  list(n_fft = n_fft, h_fft = fft(c(kernel, rep(0, n_fft - length(kernel)))))
+}
+
+wiener_inverse_filter <- function(h_fft, lambda, signal_psd = NULL, noise_psd = NULL) {
   h_power <- Mod(h_fft)^2
   if (is.null(signal_psd) || is.null(noise_psd)) {
     denom <- h_power + lambda
-    denom[denom <= .Machine$double.eps] <- .Machine$double.eps
-    filt <- Conj(h_fft) / denom
+    numerator <- Conj(h_fft)
   } else {
-    signal_psd <- rep_len(as.numeric(signal_psd), n_fft)
-    noise_psd <- rep_len(as.numeric(noise_psd), n_fft)
     denom <- h_power * signal_psd + lambda * noise_psd
-    denom[denom <= .Machine$double.eps] <- .Machine$double.eps
-    filt <- Conj(h_fft) * signal_psd / denom
+    numerator <- Conj(h_fft) * signal_psd
   }
+  denom <- pmax(denom, .Machine$double.eps)
+  numerator / denom
+}
 
-  y_pad <- rbind(y, matrix(0, nrow = n_fft - n_time, ncol = ncol(y)))
-  x_fft <- mvfft(y_pad) * filt
-  x <- Re(mvfft(x_fft, inverse = TRUE) / n_fft)
+wiener_deconvolve_matrix <- function(y, kernel, lambda, n_latent, signal_psd = NULL,
+    noise_psd = NULL, fft_plan = NULL, y_fft = NULL) {
+  y <- as.matrix(y)
+  if (is.null(fft_plan)) fft_plan <- wiener_fft_plan(nrow(y), n_latent, kernel)
+  n_fft <- fft_plan$n_fft
+  filt <- wiener_inverse_filter(fft_plan$h_fft, lambda, signal_psd, noise_psd)
+  if (is.null(y_fft)) {
+    y_fft <- mvfft(rbind(y, matrix(0, nrow = n_fft - nrow(y), ncol = ncol(y))))
+  }
+  x <- Re(mvfft(y_fft * filt, inverse = TRUE) / n_fft)
   x[seq_len(n_latent), , drop = FALSE]
 }
 
@@ -700,11 +787,12 @@ align_wiener_activity <- function(activity, n_time, kernel_len, trim_kernel = TR
   rbind(matrix(0, nrow = kernel_len - 1L, ncol = ncol(activity)), trimmed)
 }
 
-wiener_reconvolve_matrix <- function(activity, kernel, n_time) {
+wiener_reconvolve_matrix <- function(activity, kernel, n_time, fft_plan = NULL) {
   activity <- as.matrix(activity)
   n_latent <- nrow(activity)
-  n_fft <- wiener_fft_length(n_time = n_time, n_latent = n_latent, kernel_len = length(kernel))
-  h_fft <- fft(c(kernel, rep(0, n_fft - length(kernel))))
+  if (is.null(fft_plan)) fft_plan <- wiener_fft_plan(n_time, n_latent, kernel)
+  n_fft <- fft_plan$n_fft
+  h_fft <- fft_plan$h_fft
 
   activity_pad <- rbind(activity, matrix(0, nrow = n_fft - n_latent, ncol = ncol(activity)))
   fitted_fft <- mvfft(activity_pad) * h_fft
@@ -712,31 +800,21 @@ wiener_reconvolve_matrix <- function(activity, kernel, n_time) {
   fitted[seq_len(n_time), , drop = FALSE]
 }
 
-wiener_degrees_base <- function(n_time, n_latent, kernel) {
-  n_fft <- wiener_fft_length(n_time = n_time, n_latent = n_latent, kernel_len = length(kernel))
-  h_fft <- fft(c(kernel, rep(0, n_fft - length(kernel))))
-  Mod(h_fft)^2
+# For S = R C_h P C_f E, the observed diagonal at time t is
+# sum_{lag=0}^{min(t,K-1)} h[lag] f[-lag]. Each lag occurs n_time-lag
+# times. This is the exact trace of the implemented zero-extended, truncated
+# smoother, rather than the trace over all padded Fourier modes.
+# With PSD shrinkage it is conditional on the fitted spectra, not a Jacobian df.
+wiener_degrees_freedom <- function(filter, kernel, n_time) {
+  impulse <- Re(fft(filter, inverse = TRUE) / length(filter))
+  lags <- seq_len(min(length(kernel), n_time)) - 1L
+  sum((n_time - lags) * kernel[lags + 1L] * impulse[(-lags) %% length(filter) + 1L])
 }
 
-wiener_degrees_freedom <- function(h_power, lambda, n_time) {
-  denom <- h_power + lambda
-  gain <- h_power / denom
-  gain[!is.finite(gain)] <- 0
-  min(sum(gain), n_time - sqrt(.Machine$double.eps))
-}
-
-wiener_degrees_freedom_psd <- function(h_power, lambda, signal_psd, noise_psd, n_time) {
-  signal_psd <- rep_len(as.numeric(signal_psd), length(h_power))
-  noise_psd <- rep_len(as.numeric(noise_psd), length(h_power))
-  denom <- h_power * signal_psd + lambda * noise_psd
-  gain <- h_power * signal_psd / denom
-  gain[!is.finite(gain)] <- 0
-  min(sum(gain), n_time - sqrt(.Machine$double.eps))
-}
-
-estimate_wiener_psd <- function(y, kernel, lambda, n_latent, smooth_width = 7L, psd_floor = 1e-8) {
-  scalar_activity <- wiener_deconvolve_matrix(y, kernel, lambda = lambda, n_latent = n_latent)
-  scalar_fitted <- wiener_reconvolve_matrix(scalar_activity, kernel, n_time = nrow(y))
+estimate_wiener_psd <- function(y, kernel, lambda, n_latent, smooth_width = 7L, psd_floor = 1e-8, fft_plan = NULL, y_fft = NULL) {
+  scalar_activity <- wiener_deconvolve_matrix(y, kernel, lambda = lambda, n_latent = n_latent,
+    fft_plan = fft_plan, y_fft = y_fft)
+  scalar_fitted <- wiener_reconvolve_matrix(scalar_activity, kernel, n_time = nrow(y), fft_plan = fft_plan)
   residual <- y - scalar_fitted
   n_fft <- wiener_fft_length(n_time = nrow(y), n_latent = n_latent, kernel_len = length(kernel))
   signal_psd <- average_matrix_periodogram(scalar_activity, n_fft = n_fft)

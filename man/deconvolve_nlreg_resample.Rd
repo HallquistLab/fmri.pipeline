@@ -12,7 +12,8 @@ deconvolve_nlreg_resample(
   epsilon = 0.005,
   beta = 40,
   n_resample = 30,
-  trim_kernel = TRUE
+  trim_kernel = TRUE,
+  normalize = TRUE
 )
 }
 \arguments{
@@ -26,10 +27,14 @@ deconvolve_nlreg_resample(
 
 \item{beta}{slope of the sigmoid transfer function. Default: 40}
 
-\item{n_resample}{number of resampling steps for deconvolution. Default: 30}
+\item{n_resample}{number of resampling steps for deconvolution (at least two). Default: 30}
 
 \item{trim_kernel}{whether to remove the first K time points from the deconvolved vector, corresponding to
 kernel leftovers from convolution. Default: TRUE}
+
+\item{normalize}{whether to z-score the input before both the base fit and
+residual resampling. Default: TRUE. FALSE is for inputs already standardized
+by the caller; Bush resampling is not calibrated for arbitrary input units.}
 }
 \value{
 list containing the following fields:

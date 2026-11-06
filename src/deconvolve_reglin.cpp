@@ -30,8 +30,21 @@ arma::mat decon_penalty_crossprod_cpp(int n_latent, const std::string& penalty) 
     stop("Unknown deconvolution penalty: " + penalty);
   }
 
-  arma::mat dmat = arma::diff(arma::eye<arma::mat>(n_latent, n_latent), differences, 0);
-  return dmat.t() * dmat;
+  // Accumulate the short difference stencil directly. This is exactly D'D,
+  // including its boundary entries, without forming D or multiplying dense
+  // matrices that consist almost entirely of zeros.
+  arma::mat crossprod(n_latent, n_latent, arma::fill::zeros);
+  const double diff1[] = {-1.0, 1.0};
+  const double diff2[] = {1.0, -2.0, 1.0};
+  const double* stencil = differences == 1 ? diff1 : diff2;
+  for (int row = 0; row < n_latent - differences; ++row) {
+    for (int j = 0; j <= differences; ++j) {
+      for (int k = 0; k <= differences; ++k) {
+        crossprod(row + j, row + k) += stencil[j] * stencil[k];
+      }
+    }
+  }
+  return crossprod;
 }
 
 arma::mat solve_sympd_fallback(const arma::mat& lhs, const arma::mat& rhs) {
@@ -140,7 +153,8 @@ Rcpp::RObject deconvolve_reglin_cpp(
     stop("At least one lambda value is required");
   }
 
-  arma::rowvec centers = arma::mean(BOLDobs, 0);
+  arma::rowvec centers(n_signals, arma::fill::zeros);
+  if (normalize || demean) centers = arma::mean(BOLDobs, 0);
   arma::rowvec scales(n_signals, arma::fill::ones);
 
   if (normalize) {
@@ -191,6 +205,9 @@ Rcpp::RObject deconvolve_reglin_cpp(
   arma::vec tuning_gcv(n_tuning);
   arma::vec tuning_gcv_se(n_tuning, arma::fill::zeros);
   int tuning_i = 0;
+  // A single candidate needs no residuals, effective df, or GCV unless the
+  // caller requests diagnostics. The inverse problem itself is unchanged.
+  bool needs_scores = return_diagnostics || n_tuning > 1;
 
   for (int ki = 0; ki < n_kernels; ++ki) {
     arma::vec hrf = kernels.col(ki);
@@ -204,12 +221,24 @@ Rcpp::RObject deconvolve_reglin_cpp(
       arma::mat lhs = hth + lambda * penalty_crossprod;
       lhs.diag() += ridge_floor;
 
-      arma::mat activity = solve_sympd_fallback(lhs, hty);
+      arma::mat activity;
+      double df = 0.0;
+      if (!needs_scores) {
+        best_activity = solve_sympd_fallback(lhs, hty);
+        best_lambda_global = lambda;
+        best_kernel_global = ki + 1;
+        best_lambda_signal.fill(lambda);
+        best_kernel_signal.fill(ki + 1);
+        continue;
+      }
+
+      // Keep the band-aware solver for tuned/diagnostic fits. Benchmarks of
+      // explicit dense factors and combined RHSs were slower for long runs.
+      activity = solve_sympd_fallback(lhs, hty);
+      df = arma::trace(solve_sympd_fallback(lhs, hth));
       arma::mat fitted = fit_mat * activity;
       arma::mat residual = y_fit - fitted;
       arma::rowvec rss_by_signal = arma::sum(arma::square(residual), 0);
-      arma::mat lhs_inv_hth = solve_sympd_fallback(lhs, hth);
-      double df = arma::trace(lhs_inv_hth);
       double denom = std::pow(n_time - df, 2.0);
       if (denom < std::numeric_limits<double>::epsilon()) {
         denom = std::numeric_limits<double>::epsilon();
@@ -250,7 +279,7 @@ Rcpp::RObject deconvolve_reglin_cpp(
     }
   }
 
-  if (gcv_rule == "1se" && tune_global) {
+  if (needs_scores && gcv_rule == "1se" && tune_global) {
     arma::uword min_idx = tuning_gcv.index_min();
     double threshold = tuning_gcv(min_idx) + tuning_gcv_se(min_idx);
     int selected_idx = min_idx;

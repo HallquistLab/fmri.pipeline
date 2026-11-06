@@ -1,5 +1,28 @@
 # fmri.pipeline 0.4-1
 
+## Deconvolution scaling, Wiener tuning, and performance
+
+* Linear deconvolution supports explicit `scaling = "zscore"`, `"demean"`,
+  `"none"`, or `"psc"`; z-scoring remains the default. Legacy normalization
+  flags still work. Voxelwise settings now control the actual preprocessing,
+  applied once before padding. Bush voxelwise fits require z-scored input.
+* Per-voxel `.scaling.csv` sidecars record the applied centers and divisors;
+  file metadata records scaling, algorithm, and units. Original-series files
+  expose `BOLD_input`, with `BOLD_z` retained only for z-scored observations.
+  Regenerate existing outputs to adopt these changes.
+* Bush resampling uses the same normalized observations for its base fit and
+  residual construction. Its new `normalize` argument defaults to `TRUE`;
+  voxelwise callers disable redundant normalization. The voxelwise Bush 2015
+  path now forwards `beta` and retains matrix dimensions for single-voxel fits.
+* Scalar Wiener GCV uses the exact finite-observation smoother trace rather
+  than summing padded Fourier gains. Adaptive PSD Wiener requires fixed lambda
+  and HRF; its conditional filter trace is labeled and GCV is missing, avoiding
+  invalid automatic selection from a data-dependent filter.
+* The C++ linear solver builds difference-penalty crossproducts directly
+  and skips scoring for fixed-parameter matrix-only fits. Wiener fitting reuses input/kernel FFTs
+  across candidates and skips unrequested fixed-parameter scoring. The R
+  reference implementation remains available for numerical comparisons.
+
 ## Event alignment and file identity
 
 * Missing/nonfinite event onsets and unsupported windows retain explicit missing

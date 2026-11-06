@@ -6,9 +6,13 @@
 #' @param nev_lr learning rate for the assignment of neural events. Default: .01
 #' @param epsilon relative error change (termination condition). Default: .005
 #' @param beta slope of the sigmoid transfer function. Default: 40
-#' @param n_resample number of resampling steps for deconvolution. Default: 30
+#' @param n_resample number of resampling steps for deconvolution (at least two). Default: 30
 #' @param trim_kernel whether to remove the first K time points from the deconvolved vector, corresponding to
 #'            kernel leftovers from convolution. Default: TRUE
+#'
+#' @param normalize whether to z-score the input before both the base fit and
+#'   residual resampling. Default: TRUE. FALSE is for inputs already standardized
+#'   by the caller; Bush resampling is not calibrated for arbitrary input units.
 #'
 #' @return
 #'   list containing the following fields:
@@ -31,18 +35,20 @@
 #' @importFrom stats t.test
 #' @importFrom checkmate assert_logical
 #' @export
-deconvolve_nlreg_resample <- function(bold_obs, kernel, nev_lr=.01, epsilon=.005, beta=40, n_resample=30, trim_kernel=TRUE) {
+deconvolve_nlreg_resample <- function(bold_obs, kernel, nev_lr=.01, epsilon=.005, beta=40, n_resample=30, trim_kernel=TRUE, normalize=TRUE) {
 
   checkmate::assert_logical(trim_kernel, len=1L)
+  checkmate::assert_flag(normalize)
+  checkmate::assert_integerish(n_resample, lower=2L, len=1L)
 
   #length of HRF
   Kobs <- length(kernel)
 
   #Scale observe via z-scoring
-  bold_obs_scale <- as.vector(scale(bold_obs))
+  bold_obs_scale <- if (normalize) as.vector(scale(bold_obs)) else as.vector(bold_obs)
 
   #Deconvolve observed BOLD
-  nev_dcv <- deconvolve_nlreg(matrix(bold_obs, ncol=1), kernel, nev_lr, epsilon, beta, normalize = FALSE, trim_kernel = FALSE)
+  nev_dcv <- deconvolve_nlreg(matrix(bold_obs_scale, ncol=1), kernel, nev_lr, epsilon, beta, normalize = FALSE, trim_kernel = FALSE)
 
   #Reconvolve estimated true BOLD
   bold_dcv_full <- convolve_dcv_hrf(t(nev_dcv), kernel)
@@ -62,9 +68,9 @@ deconvolve_nlreg_resample <- function(bold_obs, kernel, nev_lr=.01, epsilon=.005
   NEVvariants[1, ] <- nev_dcv
   bold_variants[1, ] <- bold_dcv_scale
 
+  # This residual is fixed across surrogate draws.
+  residuals <- bold_obs_scale - bold_dcv_scale
   for (z in 2:n_resample) {
-    #Compute residual
-    residuals <- bold_obs_scale - bold_dcv_scale
 
     #Randomize the residual order
     RND_residuals <- sample(residuals)

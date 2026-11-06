@@ -80,6 +80,28 @@ implementation and does not require an external executable.
 
   If you want to use subject metadata to name the output file, use \code{this_subj} in your \code{out_file_expression}, which will give you access to a one-row
   data.frame containing the metadata for the current subject in the loop.
+
+Set \code{decon_settings$scaling} explicitly to \code{"zscore"},
+\code{"demean"}, \code{"none"}, or \code{"psc"}. The default is z-scoring.
+An explicit mode overrides \code{normalize}/\code{demean}; otherwise
+\code{normalize = FALSE} selects demeaning unless \code{demean = FALSE} too.
+The voxelwise Bush paths require z-scoring because their learning-rate and
+bounded-encoding/resampling behavior is sensitive to scale. Their output remains
+a bounded encoding. Use the linear algorithm for estimates in alternative units.
+For linear methods, z-scoring is recommended for standardized trial responses;
+demeaning retains input units, and percent signal change requires an appropriate
+positive baseline rather than residualized/zero-mean data. Raw scale does not by
+itself degrade the conditioning of the fixed linear inverse, but it changes
+signal weights during global tuning. See \code{\link{deconvolve_reglin}}.
+
+Scaling uses the observed run once, before the existing zero tail is appended;
+solver normalization is disabled, as is linear-solver demeaning of padded data. Each output has
+a \code{.scaling.csv} sidecar containing voxel number, mode, subtracted center,
+divisor, and validity status. Its \code{.metadata.csv} records algorithm, scaling,
+output units, and the scaling filename. Original-series files contain
+\code{BOLD_input}, the transformed observations supplied before padding, plus
+the legacy \code{BOLD_z} alias only for z-scored inputs. Existing output files
+are skipped; regenerate them to adopt the new scaling behavior and sidecars.
 }
 \examples{
   \dontrun{

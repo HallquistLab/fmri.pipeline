@@ -48,7 +48,7 @@ test_that("internal extraction uses the same masked indices as voxel metadata", 
   y <- as.numeric(scale(matrix(f$data, nrow = 8L)[2L, ]))
   expect_equal(original$BOLD_z[original$vnum == 1L], y, tolerance = 1e-7)
   reference <- deconvolve_reglin(c(y, rep(0, 3L)), kernel = c(0, 0.5, 0.5),
-    lambda_grid = c(0.01, 0.1), normalize = FALSE)[seq_len(30L), 1L]
+    lambda_grid = c(0.01, 0.1), normalize = FALSE, demean = FALSE)[seq_len(30L), 1L]
   expect_equal(d$decon[d$vnum == 1L], reference, tolerance = 1e-7)
   expect_false(file.exists(file.path(f$root, "deconvolve_errors")))
 })
@@ -133,4 +133,94 @@ test_that("default output names and identity sidecars align without filename par
   expect_equal(unique(result$session), "B")
   expect_true(all(is.finite(result$decon_mean[result$atlas_value == 2])))
   expect_equal(attr(result, "file_status")$status, "ok")
+})
+
+
+test_that("voxelwise linear scaling is explicit, recorded and preserves amplitude", {
+  f <- make_decon_fixture()
+  on.exit(unlink(f$root, recursive = TRUE))
+  mask <- array(0, c(2, 2, 2)); mask[2] <- 1
+  RNifti::writeNifti(mask, f$mask)
+  raw <- matrix(f$data, nrow = 8)[2, ]
+  for (mode in c("none", "demean", "psc", "zscore")) {
+    voxelwise_deconvolution(f$bold, TR = 1, atlas_files = f$atlas, mask = f$mask,
+      nprocs = 1, algorithm = "reglin", out_dir = f$root,
+      out_file_expression = substitute(NAME, list(NAME = mode)),
+      decon_settings = list(kernel = c(0, 0.5, 0.5), lambda = 0.1, scaling = mode))
+    file <- file.path(f$root, "atlas", "deconvolved", paste0(mode, "_deconvolved.csv.gz"))
+    d <- data.table::fread(file)
+    transform <- data.table::fread(paste0(file, ".scaling.csv"))
+    expect_equal(transform$scaling, mode)
+    y <- (raw - transform$center) / transform$scale
+    reference <- deconvolve_reglin(c(y, 0, 0, 0), c(0, 0.5, 0.5), lambda = 0.1,
+      scaling = "none")[1:30, 1]
+    expect_equal(d$decon, reference, tolerance = 1e-7)
+    original <- data.table::fread(file.path(f$root, "atlas", "original", paste0(mode, "_original.csv.gz")))
+    expect_equal(original$BOLD_input, y, tolerance = 1e-7)
+    expect_equal("BOLD_z" %in% names(original), mode == "zscore")
+    expect_equal(data.table::fread(paste0(file, ".metadata.csv"))$scaling, mode)
+  }
+  # The legacy opt-out must reach the solver without an earlier hidden z-score.
+  voxelwise_deconvolution(f$bold, TR = 1, atlas_files = f$atlas, mask = f$mask,
+    nprocs = 1, algorithm = "reglin", out_dir = f$root,
+    out_file_expression = expression("legacy"),
+    decon_settings = list(kernel = c(0, 0.5, 0.5), lambda = 0.1, normalize = FALSE, demean = FALSE))
+  legacy <- data.table::fread(file.path(f$root, "atlas", "deconvolved", "legacy_deconvolved.csv.gz"))
+  raw_fit <- data.table::fread(file.path(f$root, "atlas", "deconvolved", "none_deconvolved.csv.gz"))
+  expect_equal(legacy$decon, raw_fit$decon)
+})
+
+test_that("voxelwise Bush inputs are standardized exactly once before padding", {
+  f <- make_decon_fixture()
+  on.exit(unlink(f$root, recursive = TRUE))
+  mask <- array(0, c(2, 2, 2)); mask[2] <- 1
+  RNifti::writeNifti(mask, f$mask)
+  raw <- matrix(f$data, nrow = 8)[2, ]
+  local_mocked_bindings(deconvolve_nlreg = function(BOLDobs, normalize, nev_lr, epsilon, beta, ...) {
+    expect_equal(c(nev_lr, epsilon, beta), c(0.01, 0.005, 60))
+    expect_false(normalize)
+    expect_equal(as.numeric(BOLDobs), c(as.numeric(scale(raw)), 0, 0, 0))
+    BOLDobs
+  })
+  voxelwise_deconvolution(f$bold, TR = 1, atlas_files = f$atlas, mask = f$mask,
+    nprocs = 1, algorithm = "bush2011", out_dir = f$root,
+    decon_settings = list(kernel = c(0, 0.5, 0.5)))
+  local_mocked_bindings(deconvolve_nlreg_resample = function(bold_obs, beta, normalize, ...) {
+    expect_equal(beta, 17)
+    expect_false(normalize)
+    expect_equal(bold_obs, c(as.numeric(scale(raw)), 0, 0, 0))
+    list(NEVmean = bold_obs)
+  })
+  voxelwise_deconvolution(f$bold, TR = 1, atlas_files = f$atlas, mask = f$mask,
+    nprocs = 1, algorithm = "bush2015", out_dir = f$root,
+    out_file_expression = expression("resampled"),
+    decon_settings = list(kernel = c(0, 0.5, 0.5), beta = 17))
+  for (algorithm in c("bush2011", "bush2015")) {
+    expect_error(voxelwise_deconvolution(f$bold, TR = 1, atlas_files = f$atlas,
+      nprocs = 1, algorithm = algorithm,
+      decon_settings = list(kernel = c(0, 0.5, 0.5), scaling = "none")),
+      "requires scaling = 'zscore'")
+  }
+})
+
+test_that("Bush resampling uses the same standardized observations in its base and residual fits", {
+  set.seed(2026)
+  calls <- list()
+  local_mocked_bindings(deconvolve_nlreg = function(BOLDobs, kernel, ..., normalize, trim_kernel) {
+    calls[[length(calls) + 1L]] <<- BOLDobs
+    expect_false(normalize)
+    matrix(rnorm(nrow(BOLDobs) + length(kernel) - 1L), ncol = 1)
+  })
+  y <- 100 + sin(1:30)
+  deconvolve_nlreg_resample(y, c(0.1, 0.6, 0.3), n_resample = 3)
+  expect_equal(as.numeric(calls[[1]]), as.numeric(scale(y)))
+  calls <- list()
+  deconvolve_nlreg_resample(y, c(0.1, 0.6, 0.3), n_resample = 3, normalize = FALSE)
+  expect_equal(as.numeric(calls[[1]]), y)
+})
+
+test_that("invalid PSD tuning settings fail before voxelwise workers run", {
+  expect_error(voxelwise_deconvolution(character(), TR = 1, algorithm = "reglin",
+    decon_settings = list(kernel = c(0.1, 0.6, 0.3), backend = "wiener", wiener_shrinkage = "psd")),
+    "Automatic GCV tuning is not supported")
 })
