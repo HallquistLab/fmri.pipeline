@@ -16,6 +16,10 @@
 #'   boundary that can help to have sufficient data to interpolate early and late times within the epoch.
 #' @param pad_after Number of seconds to include in the epoch time window after the event of interest.
 #' @param time_audit If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing
+#' @details Nonfinite target onsets and unsupported windows retain placeholder
+#'   rows with missing time and values and an \code{epoch_status} column.
+#'   Nonfinite collision candidates are ignored. Nearest-event boundaries remain
+#'   strict and do not guarantee disjoint trial windows.
 #'
 #' @importFrom dplyr filter pull
 #' @importFrom data.table rbindlist
@@ -26,91 +30,90 @@ event_lock_ts <- function(fmri_obj, event=NULL, time_before=-3, time_after=3,
                           collide_before=NULL, collide_after=NULL, pad_before=-1, pad_after=1, time_audit=FALSE) {
 
   ts_data <- fmri_obj$get_ts(orig_names=TRUE) #so that vm pass-through to returned object works
-  run_df <- fmri_obj$event_data
+  run_df <- fmri_obj$get_events(orig_names = TRUE)
   vm <- fmri_obj$vm
 
-  #input validation
-  checkmate::assert_numeric(time_before, upper=0, max.len=1)
-  checkmate::assert_numeric(time_after, lower=0, max.len=1)
-  stopifnot(time_after >= time_before)
+  checkmate::assert_number(time_before, upper = 0, finite = TRUE)
+  checkmate::assert_number(time_after, lower = 0, finite = TRUE)
+  checkmate::assert_number(pad_before, upper = 0, finite = TRUE)
+  checkmate::assert_number(pad_after, lower = 0, finite = TRUE)
   checkmate::assert_data_frame(ts_data)
   checkmate::assert_data_frame(run_df)
+  if (nrow(ts_data) == 0L) stop("No time series samples supplied for event alignment")
   checkmate::assert_string(event)
-  stopifnot(event %in% names(run_df))
-  sapply(collide_before, checkmate::assert_string, null.ok=TRUE)
-  sapply(collide_after, checkmate::assert_string, null.ok=TRUE)
-  if (!is.null(collide_before)) { checkmate::assert_subset(collide_before, names(run_df)) }
-  if (!is.null(collide_after)) { checkmate::assert_subset(collide_after, names(run_df)) }
-  checkmate::assert_numeric(pad_before, upper=0, null.ok=FALSE)
-  checkmate::assert_numeric(pad_after, lower=0, null.ok=FALSE)
-
-  if (any(tt <- table(run_df[[ vm[["trial"]] ]]) > 1L)) {
-    print(tt[tt > 1L])
-    stop("run_df contains duplicated trials. Cannot figure out how to event-lock based on this.")
+  checkmate::assert_subset(c(event, collide_before, collide_after), names(run_df))
+  if (nrow(run_df) == 0L) stop("No trial events supplied for alignment")
+  if (anyNA(run_df[[vm$trial]]) || anyDuplicated(run_df[[vm$trial]])) {
+    stop("Event data must contain unique, nonmissing trial identifiers")
   }
+  for (column in unique(c(event, collide_before, collide_after))) {
+    checkmate::assert_numeric(run_df[[column]], all.missing = TRUE)
+  }
+  run_df <- run_df[order(run_df[[vm$trial]]), ]
+  trials <- run_df[[vm$trial]]
+  finite_events <- function(columns) {
+    values <- unlist(run_df[, columns, with = FALSE], use.names = FALSE)
+    values[is.finite(values)]
+  }
+  before_events <- finite_events(collide_before)
+  after_events <- finite_events(collide_after)
+  tlist <- vector("list", length(trials))
 
-  trials <- run_df[[ vm[["trial"]] ]] %>% sort() #sorted vector of trials
+  # A placeholder per original unit preserves missing/fully censored epochs.
+  # Its missing time and values cannot be mistaken for observed samples.
+  units <- if (length(vm$key)) {
+    ts_data[!duplicated(ts_data[, vm$key, with = FALSE]), ]
+  } else ts_data[seq_len(min(1L, nrow(ts_data))), ]
+  observed_times <- ts_data[[vm$time]]
+  observed_times <- observed_times[is.finite(observed_times)]
 
-  #list containing event-locked data frames, one per trial
-  tlist <- list()
-
-  #loop over trials, retaining data within window around event of interest
-  for (t in 1:length(trials)) {
-
-    evt_onset <- run_df %>% filter(!!sym(vm[["trial"]]) == trials[t]) %>% pull(dplyr::all_of(event))
-    stopifnot(length(evt_onset) == 1L) #would be a bizarre and problematic result
-
+  for (t in seq_along(trials)) {
+    evt_onset <- run_df[[event]][t]
     evt_before <- -Inf
-    if (!is.null(collide_before)) {
-      evts <- run_df %>% select(all_of(collide_before)) %>% unlist() %>% unname()
-      if (any(evts < evt_onset)) evt_before <- max(evts[evts < evt_onset]) #most recent past event
-    }
-
     evt_after <- Inf
-    if (!is.null(collide_after)) {
-      evts <- run_df %>% select(all_of(collide_after)) %>% unlist() %>% unname()
-      if (any(evts > evt_onset)) evt_after <- min(evts[evts > evt_onset]) #nearest future event
+    status <- "ok"
+    if (!is.finite(evt_onset)) {
+      status <- "missing_onset"
+      trial_ts <- units[0L, ]
+    } else {
+      past <- before_events[before_events < evt_onset]
+      future <- after_events[after_events > evt_onset]
+      if (length(past)) evt_before <- max(past)
+      if (length(future)) evt_after <- min(future)
+      relative_time <- ts_data[[vm$time]] - evt_onset
+      keep <- is.finite(relative_time) &
+        relative_time >= time_before + pad_before & relative_time <= time_after + pad_after &
+        ts_data[[vm$time]] > evt_before & ts_data[[vm$time]] < evt_after
+      trial_ts <- data.table::copy(ts_data[which(keep), ])
+      trial_ts$evt_time <- relative_time[which(keep)]
+      if (nrow(trial_ts) == 0L) {
+        status <- if (!length(observed_times)) "no_data" else if (
+          evt_onset + time_after + pad_after < min(observed_times) ||
+          evt_onset + time_before + pad_before > max(observed_times)
+        ) "outside_run" else "censored"
+      }
     }
-
-    if (is.na(evt_onset)) next #times are missing for some events on early trials (like rt_vmax_cum)
-    ts_data$evt_time <- ts_data[[ vm[["time"]] ]] - evt_onset
-
-    #add time on either side of interpolation grid to have preceding time points that inform linear interp
-    #N.B. Occasionally, if the time series (fMRI run) ends before the late events, trial_ts will have 0 rows
-    trial_ts <- ts_data %>% filter(.data$evt_time >= time_before + pad_before & .data$evt_time <= time_after + pad_after)
-
-    #enforce colliding preceding event
-    if (evt_before > -Inf) trial_ts <- trial_ts %>% filter(!!sym(vm[["time"]]) > evt_before)
-
-    #enforce colliding subsequent event
-    if (evt_after < Inf) trial_ts <- trial_ts %>% filter(!!sym(vm[["time"]]) < evt_after)
-
-    # populate trial field
-    trial_ts[[ vm[["trial"]] ]] <- if (nrow(trial_ts) > 0L) { trials[t] } else { numeric(0) } #allow for a zero-row df
-
-    # handle time audit
+    if (nrow(trial_ts) == 0L) {
+      trial_ts <- data.table::copy(units)
+      trial_ts[[vm$time]] <- rep(NA_real_, nrow(trial_ts))
+      for (column in vm$value) trial_ts[[column]] <- rep(NA_real_, nrow(trial_ts))
+      trial_ts$evt_time <- rep(NA_real_, nrow(trial_ts))
+    }
+    trial_ts[[vm$trial]] <- rep(trials[t], nrow(trial_ts))
+    trial_ts$epoch_status <- rep(status, nrow(trial_ts))
     if (isTRUE(time_audit)) {
-      trial_ts$evt_onset <- evt_onset
-      trial_ts$collide_after <- evt_after
-      trial_ts$collide_before <- evt_before
+      trial_ts$evt_onset <- rep(evt_onset, nrow(trial_ts))
+      trial_ts$collide_before <- rep(evt_before, nrow(trial_ts))
+      trial_ts$collide_after <- rep(evt_after, nrow(trial_ts))
     }
-
-    #add these data to trial list
     tlist[[t]] <- trial_ts
-
   }
 
-  names(tlist) <- trials
-
-  #combine rows to stack trial-locked time series for this atlas value
+  names(tlist) <- as.character(trials)
   tdf <- data.table::rbindlist(tlist)
-
-  #convert to a keyed fmri_ts object for consistency
-  res <- fmri_ts$new(ts_data=tdf, event_data=fmri_obj$event_data, vm=fmri_obj$vm, tr=fmri_obj$tr)
-  res$replace_vm(time="evt_time")
-
-  #add trial as keying variable
-  res$add_keys(vm[["trial"]])
+  res <- fmri_ts$new(ts_data = tdf, event_data = run_df, vm = vm, tr = fmri_obj$tr)
+  res$replace_vm(time = "evt_time")
+  res$add_keys(vm$trial)
 
   return(res)
 
@@ -138,6 +141,13 @@ event_lock_ts <- function(fmri_obj, event=NULL, time_before=-3, time_after=3,
 #' @param group_by return interpolated time series for each combination of group_by variables. Default is
 #'   to provide one interpolated time series per trial.
 #' @param time_audit If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing
+#' @details The interpolation grid includes zero and remains within the requested
+#'   interval, including zero-width and one-sided windows. When trial is a grouping
+#'   variable, missing and unsupported epochs retain missing estimates and an
+#'   \code{epoch_status} column: \code{"ok"}, \code{"partial"},
+#'   \code{"insufficient_data"}, \code{"missing_onset"}, \code{"outside_run"},
+#'   \code{"censored"}, or \code{"no_data"}. These describe timing and available
+#'   output support, not physiological isolation from other trials.
 #'
 #' @author Michael Hallquist
 #' @export
@@ -258,38 +268,40 @@ interpolate_fmri_epochs <- function(a_obj, evt_time="evt_time", time_before=-3, 
 
   stopifnot(inherits(a_obj, "fmri_ts"))
 
-  #worker to apply a set of summary functions to each timepoint within a given cluster/unit
-  interpolate_worker <- function(to_interpolate, funs=list(mean=mean, median=median, sd=sd)) {
-    #For now, we only support linear interpolation. Because of this, interpolation of a mean time
-    #  series is the same is the mean of interpolated time series. But the former is faster to compute.
-    #  https://math.stackexchange.com/questions/15596/mean-of-interpolated-data-or-interpolation-of-means-in-geostatistics
+  checkmate::assert_number(time_before, upper = 0, finite = TRUE)
+  checkmate::assert_number(time_after, lower = 0, finite = TRUE)
+  checkmate::assert_number(output_resolution, lower = .Machine$double.eps, finite = TRUE)
+  n_before <- floor(-time_before / output_resolution + 1e-10)
+  n_after <- floor(time_after / output_resolution + 1e-10)
+  tout <- c(-rev(seq_len(n_before)) * output_resolution, 0,
+    seq_len(n_after) * output_resolution)
+  # Floating-point tolerance may recognize an intended endpoint, but never emit
+  # times beyond the requested interval.
+  tout <- pmax(time_before, pmin(time_after, tout))
+  stopifnot(!anyDuplicated(tout))
 
-    interp_agg <- to_interpolate %>% 
+  interpolate_worker <- function(to_interpolate) {
+    interp_agg <- to_interpolate %>%
       group_by(across(dplyr::all_of(evt_time))) %>%
-      dplyr::summarize(across("value", funs, na.rm=TRUE), .groups="drop")
-
-    #rare, but if we have no data at tail end of run, we may not be able to interpolate
-    if (nrow(interp_agg) < 2) {
-      #cat("For subject:", trial_df[[idcol]][1], ", insufficient interpolation data for run:",
-      #  trial_df[[runcol]][1], ", trial:", trials[t], "\n", file=logfile, append=TRUE)
-      return(NULL)
-    }
-
-    vcols <- grep("value_.*", names(interp_agg), value=TRUE)
-
-    #always window around 0 so that evt_time = 0 is in the output    
-    tout <- c((ceiling(time_before/output_resolution):-1)*output_resolution, 0, (1:floor(time_after/output_resolution))*output_resolution)
-    # tout <- seq(time_before, time_after, by=output_resolution) # old method that may not include 0
-
-    df <- data.frame(evt_time=tout, sapply(vcols, function(cname) {
-      if (all(is.na(interp_agg[[cname]]))) {
-        rep(NA_real_, length(tout)) #if all inputs are NA, do not try to interpolate
+      dplyr::summarize(across("value", list(
+        mean = function(x) mean(x, na.rm = TRUE),
+        median = function(x) median(x, na.rm = TRUE),
+        sd = function(x) sd(x, na.rm = TRUE))), .groups = "drop")
+    vcols <- c("value_mean", "value_median", "value_sd")
+    values <- lapply(vcols, function(column) {
+      good <- is.finite(interp_agg[[evt_time]]) & is.finite(interp_agg[[column]])
+      if (sum(good) >= 2L) {
+        approx(x = interp_agg[[evt_time]][good], y = interp_agg[[column]][good], xout = tout)$y
       } else {
-        approx(x=interp_agg[[evt_time]], y=interp_agg[[cname]], xout=tout)$y
+        value <- rep(NA_real_, length(tout))
+        if (sum(good) == 1L) {
+          exact <- abs(tout - interp_agg[[evt_time]][good]) <= 1e-10 * output_resolution
+          value[exact] <- interp_agg[[column]][good]
+        }
+        value
       }
-    }, simplify=FALSE))
-
-    return(df)
+    })
+    data.frame(evt_time = tout, stats::setNames(values, vcols))
   }
 
   #we need to ensure that multivariate outcomes are stored as a key-value pair of columns, rather than
@@ -302,20 +314,36 @@ interpolate_fmri_epochs <- function(a_obj, evt_time="evt_time", time_before=-3, 
   checkmate::assert_data_table(interp_dt)
   #setDT(interp_dt) # should not be necessary
 
-  # get timing audit information for each trial
-  if (isTRUE(time_audit)) audit_dt <- interp_dt[, .SD[1], by=c(a_obj$vm$trial), .SDcols = c("evt_onset", "collide_before", "collide_after")]
+  trial_grouped <- a_obj$vm$trial %in% group_by
+  audit_columns <- c("epoch_status", if (time_audit) c("evt_onset", "collide_before", "collide_after"))
+  audit_columns <- intersect(audit_columns, names(interp_dt))
+  if (trial_grouped && length(audit_columns)) {
+    audit_dt <- interp_dt[, .SD[1L], by = c(a_obj$vm$trial), .SDcols = audit_columns]
+  }
 
-  interp_dt <- interp_dt[, interpolate_worker(.SD), by=c(".vkey", group_by)]
-
-  #reshape multiple signals to wide format again
-  output_dt <- data.table::dcast(interp_dt, formula = ... ~ .vkey, value.var=grep("value_.*", names(interp_dt), value=TRUE), sep="|")
-
-  #make names more readable: like decon_mean, not value_mean_decon
-  setnames(output_dt, names(output_dt), sub("value_([^|]+)\\|(.+)", "\\2_\\1", names(output_dt), perl=TRUE))
-
-  if (isTRUE(time_audit)) {
-    output_dt <- merge(output_dt, audit_dt, by=a_obj$vm$trial)
-    output_dt[, time := evt_time + evt_onset] # put evt_time back in original time units
+  interp_dt <- interp_dt[, interpolate_worker(.SD), by = c(".vkey", group_by)]
+  if (anyDuplicated(interp_dt[, c(".vkey", group_by, "evt_time"), with = FALSE])) {
+    stop("Duplicate interpolation keys; refusing to aggregate signal values as counts")
+  }
+  output_dt <- data.table::dcast(interp_dt, formula = ... ~ .vkey,
+    value.var = c("value_mean", "value_median", "value_sd"), sep = "|")
+  setnames(output_dt, names(output_dt), sub("value_([^|]+)\\|(.+)", "\\2_\\1", names(output_dt), perl = TRUE))
+  if (trial_grouped && length(audit_columns)) {
+    output_dt <- merge(output_dt, audit_dt, by = a_obj$vm$trial, all.x = TRUE, sort = FALSE)
+  }
+  if (trial_grouped && nrow(output_dt)) {
+    mean_columns <- intersect(paste0(a_obj$vm$value, "_mean"), names(output_dt))
+    support <- output_dt[, list(.support_status = {
+      usable <- rowSums(is.finite(as.matrix(.SD))) > 0L
+      if (!any(usable)) "insufficient_data" else if (all(usable)) "ok" else "partial"
+    }), by = group_by, .SDcols = mean_columns]
+    output_dt <- merge(output_dt, support, by = group_by, all.x = TRUE, sort = FALSE)
+    if (!"epoch_status" %in% names(output_dt)) output_dt$epoch_status <- "ok"
+    output_dt[epoch_status == "ok", epoch_status := .support_status]
+    output_dt[, .support_status := NULL]
+  }
+  if (isTRUE(time_audit) && trial_grouped) {
+    output_dt[, time := ifelse(is.finite(evt_onset), evt_time + evt_onset, NA_real_)]
   }
 
   return(output_dt)
@@ -418,6 +446,11 @@ compress_mts_pca <- function(mts, pexp_target=0.9, scale_columns=TRUE) {
 #' @param walltime The time requested for each event alignment job. Default: 1:00:00 (1 hour).
 #' @param scheduler The job scheduler to be used in alignment. Options are "slurm" (default), "torque", or "local"
 #' @param time_audit If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing
+#' @param file_manifest Optional data.frame with \code{file}, \code{id},
+#'   \code{run}, and optional \code{session} columns. Paths must identify the
+#'   deconvolution files. Overrides per-file metadata and legacy filename parsing.
+#' @param fail_on_error Stop if any file fails alignment (default TRUE). Set FALSE
+#'   explicitly to allow partial output with a warning and a file status manifest.
 #'
 #' @details
 #'   This function will create a separate R batch job on the scheduler for each combination of atlas files and alignments. Each of these
@@ -483,7 +516,8 @@ compress_mts_pca <- function(mts, pexp_target=0.9, scale_columns=TRUE) {
 #' }
 #' @export
 run_decon_alignment <- function(atlas_files, decon_dir, trial_df, alignments = list(), nbins = 12, aggregate_by = "atlas_value", 
-    atlas_subset=NULL, overwrite = FALSE, tr = NULL, ncpus = 8, mem_per_cpu = "4g", walltime = "1:00:00", scheduler = "slurm", time_audit=FALSE) {
+    atlas_subset=NULL, overwrite = FALSE, tr = NULL, ncpus = 8, mem_per_cpu = "4g", walltime = "1:00:00", scheduler = "slurm", time_audit=FALSE,
+    file_manifest = NULL, fail_on_error = TRUE) {
   checkmate::assert_file_exists(atlas_files)
   checkmate::assert_directory_exists(decon_dir)
   checkmate::assert_data_frame(trial_df)
@@ -497,6 +531,7 @@ run_decon_alignment <- function(atlas_files, decon_dir, trial_df, alignments = l
   walltime <- validate_dhms(walltime) # validate and correct ambiguities
   checkmate::assert_string(scheduler)
   checkmate::assert_subset(scheduler, c("local", "slurm", "torque"))
+  checkmate::assert_flag(fail_on_error)
 
   alignments <- validate_alignments(alignments, tr, trial_df)
 
@@ -529,11 +564,13 @@ run_decon_alignment <- function(atlas_files, decon_dir, trial_df, alignments = l
       next
     }
 
-    d_files <- list.files(path = adir, pattern = "_deconvolved\\.csv\\.gz", full.names = TRUE)
+    d_files <- list.files(path = adir, pattern = "_deconvolved\\.csv\\.gz$", full.names = TRUE, all.files = TRUE)
     if (length(d_files) == 0L) {
       message(glue("No deconvolved files found in directory: {adir}"))
       next
     }
+
+    atlas_manifest <- validate_decon_manifest(file_manifest, d_files)
 
     # loop over event alignments within this atlas
     for (ee in names(alignments)) {
@@ -552,10 +589,10 @@ run_decon_alignment <- function(atlas_files, decon_dir, trial_df, alignments = l
         job_name = glue("evtalign_{aname}_{ee}"), n_cpus = ncpus, mem_per_cpu = mem_per_cpu,
         wall_time = walltime, scheduler = scheduler,
         # pass relevant vars to the batch
-        input_objects = named_list(d_files, trial_df, this_alignment, aggregate_by, tr, atlas_cuts, atlas_subset, out_file, ncpus, time_audit),
+        input_objects = named_list(d_files, trial_df, this_alignment, aggregate_by, tr, atlas_cuts, atlas_subset, out_file, ncpus, time_audit, atlas_manifest, fail_on_error),
         r_packages = "fmri.pipeline",
         r_code = c(
-          "evt_align_decon_files(d_files, trial_df, this_alignment, aggregate_by, tr, atlas_cuts, atlas_subset, out_file, ncpus, time_audit)"
+          "evt_align_decon_files(d_files, trial_df, this_alignment, aggregate_by, tr, atlas_cuts, atlas_subset, out_file, ncpus, time_audit, file_manifest = atlas_manifest, fail_on_error = fail_on_error)"
         )
       )
 
@@ -581,6 +618,16 @@ run_decon_alignment <- function(atlas_files, decon_dir, trial_df, alignments = l
 #'   (but the event-aligned data are always returned as a data.frame)
 #' @param ncpus Number of local worker processes to use.
 #' @param time_audit If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing
+#' @param file_manifest Optional data.frame with \code{file}, \code{id},
+#'   \code{run}, and optional \code{session} columns. Overrides per-file metadata
+#'   and legacy filename parsing; ambiguous identities are errors.
+#' @param fail_on_error Stop if any file fails (default TRUE). FALSE permits
+#'   partial output with a warning. A status row is retained for every file.
+#' @return Aligned data with a \code{file_status} data.frame attribute. If
+#'   \code{out_file} is supplied, the manifest is saved to
+#'   \code{paste0(out_file, ".files.csv")}, including on failure. With
+#'   \code{fail_on_error = TRUE}, a \code{decon_alignment_error} condition includes
+#'   the manifest and aligned output is not written if any file fails.
 #' @importFrom doParallel registerDoParallel
 #' @importFrom parallel makeCluster stopCluster
 #' @importFrom foreach registerDoSEQ
@@ -589,8 +636,8 @@ run_decon_alignment <- function(atlas_files, decon_dir, trial_df, alignments = l
 #' @importFrom rlang sym
 #' @export
 evt_align_decon_files <- function(d_files, trial_df, alignment = list(), aggregate_by="atlas_value", 
-    tr = NULL, atlas_cuts = NULL, atlas_subset = NULL, out_file = NULL, ncpus = 8, time_audit=FALSE) {
-  checkmate::assert_character(d_files)
+    tr = NULL, atlas_cuts = NULL, atlas_subset = NULL, out_file = NULL, ncpus = 8, time_audit=FALSE, file_manifest = NULL, fail_on_error = TRUE) {
+  checkmate::assert_character(d_files, min.len = 1L, unique = TRUE)
   checkmate::assert_file_exists(d_files)
   checkmate::assert_data_frame(trial_df)
   checkmate::assert_list(alignment)
@@ -600,6 +647,8 @@ evt_align_decon_files <- function(d_files, trial_df, alignment = list(), aggrega
   checkmate::assert_string(out_file, null.ok = TRUE)
   checkmate::assert_integerish(ncpus, lower=1L, len=1L)
 
+  checkmate::assert_flag(fail_on_error)
+  file_manifest <- validate_decon_manifest(file_manifest, d_files)
   alignment <- validate_alignments(alignment, tr, trial_df)
 
   if (ncpus > 1) {
@@ -610,81 +659,67 @@ evt_align_decon_files <- function(d_files, trial_df, alignment = list(), aggrega
     registerDoSEQ()
   }
 
-  elist <- foreach(fname = iter(d_files), .packages = c("dplyr", "readr", "data.table", "fmri.pipeline"), .errorhandling="remove") %dopar% {
-
-    # add sub and run for now since I screwed this up in the outputs...
-    id <- as.numeric(sub("^.*/sub(\\d+)_.*", "\\1", fname))
-    run <- as.numeric(sub("^.*/sub\\d+_run(\\d+).*", "\\1", fname))
-    d <- data.table::fread(fname, data.table=FALSE)
-    if (!aggregate_by %in% names(d)) {
-      warning("Cannot find aggregate_by column: ", aggregate_by, " in deconvolved file: ", fname)
-      return(NULL)
-    }
-
-
-    drop_cols <- intersect(c("atlas_name", "x", "y", "z"), names(d))
-    if (length(drop_cols) > 0L) {
-      d <- d %>% dplyr::select(-all_of(drop_cols))
-    }
-
-    if (all(is.na(d$decon))) {
-      cat(glue("For file {fname}, all decon values are NA, suggesting a failure in deconvolution. Returning NULL."))
-      return(NULL)
-    }
-
-    # discretize atlas value into bins (continuous) or unique values (integer mask)
-    if (!is.null(atlas_cuts)) {
-      d[[aggregate_by]] <- cut(d[[aggregate_by]], atlas_cuts)
-    } else {
-      # d <- d %>% mutate(atlas_value=factor(atlas_value))
-      d[[aggregate_by]] <- as.numeric(d[[aggregate_by]]) # convert atlas values to numbers explicitly
-    }
-
-    if (!is.null(atlas_subset)) {
-      d <- d %>% dplyr::filter(!!sym(aggregate_by) %in% !!atlas_subset)
-    }
-
-    # run data
-    subj_df <- trial_df %>% filter(id == !!id & run == !!run)
-
-    if (nrow(subj_df) == 0L) {
-      cat("Cannot find trial-level data for id {id}, run {run}.\n")
-      return(NULL)
-    }
-
-    tsobj <- fmri_ts$new(
-      ts_data = d, event_data = subj_df, tr = tr,
-      vm = list(value = c("decon"), key = c("vnum", aggregate_by))
-    )
-
-    subj_align <- tryCatch(
-      get_medusa_interpolated_ts(tsobj,
-        event = alignment$evt_col,
+  elist <- foreach(fname = iter(d_files),
+    .packages = c("dplyr", "readr", "data.table", "fmri.pipeline"),
+    .export = c("resolve_decon_identity", "parse_decon_identity", "match_decon_trials"),
+    .errorhandling = "pass") %dopar% {
+    identity <- NULL
+    tryCatch({
+      d <- data.table::fread(fname, data.table = FALSE)
+      required <- unique(c("decon", "time", "vnum", aggregate_by))
+      if (!all(required %in% names(d))) stop("Missing required signal columns: ", paste(setdiff(required, names(d)), collapse = ", "))
+      identity <- resolve_decon_identity(fname, d, file_manifest)
+      subj_df <- match_decon_trials(identity, as.data.frame(trial_df))
+      # Use the matched trial identities, retaining their original types.
+      identity <- as.list(subj_df[1L, intersect(c("id", "run", "session"), names(subj_df)), drop = FALSE])
+      if (nrow(d) == 0L || !any(is.finite(d$decon))) stop("No finite deconvolution estimates in file")
+      if (!is.null(atlas_cuts)) {
+        d[[aggregate_by]] <- cut(d[[aggregate_by]], atlas_cuts)
+      } else d[[aggregate_by]] <- as.numeric(d[[aggregate_by]])
+      if (!is.null(atlas_subset)) d <- d[d[[aggregate_by]] %in% atlas_subset, , drop = FALSE]
+      if (nrow(d) == 0L) stop("No signals remain after atlas selection")
+      d <- d[setdiff(names(d), c("atlas_name", "x", "y", "z"))]
+      tsobj <- fmri_ts$new(ts_data = d, event_data = subj_df, tr = tr,
+        vm = list(value = "decon", key = unique(c("vnum", aggregate_by))))
+      subj_align <- get_medusa_interpolated_ts(tsobj, event = alignment$evt_col,
         time_before = alignment$time_before, time_after = alignment$time_after,
         collide_before = alignment$collide_before, collide_after = alignment$collide_after,
-        pad_before = alignment$pad_before, pad_after = alignment$pad_after, output_resolution = alignment$output_resolution,
-        group_by = c(aggregate_by, "trial"), time_audit = time_audit
-      ), # one time series per region and trial
-      error = function(err) {
-        cat("Problems with event aligning ", fname, " for event: ", alignment$evt_col, "\n  ",
-          as.character(err), "\n\n",
-          file = "evt_align_errors.txt", append = TRUE
-        )
-        return(NULL)
-      }
-    )
-
-    if (!is.null(subj_align)) {
-      # tack on run and id to interpolated time series object
-      subj_align[, id := id]
-      subj_align[, run := run]
-    }
-
-    return(list(ts = subj_align))
+        pad_before = alignment$pad_before, pad_after = alignment$pad_after,
+        output_resolution = alignment$output_resolution,
+        group_by = unique(c(aggregate_by, "trial")), time_audit = time_audit)
+      for (column in names(identity)) data.table::set(subj_align, j = column, value = identity[[column]])
+      list(ts = subj_align, identity = identity, status = "ok", message = "")
+    }, error = function(err) list(ts = NULL, identity = identity,
+      status = "error", message = conditionMessage(err)))
   }
 
-  all_e <- dplyr::bind_rows(lapply(elist, "[[", "ts"))
-  all_e$atlas <- alignment$aname
+  # Even an unexpected worker-level error must have a manifest row.
+  elist <- lapply(elist, function(x) {
+    if (inherits(x, "error")) list(ts = NULL, identity = NULL, status = "error", message = conditionMessage(x)) else x
+  })
+  file_status <- dplyr::bind_rows(lapply(seq_along(d_files), function(i) {
+    entry <- elist[[i]]
+    identity <- entry$identity
+    data.frame(file = d_files[i], id = if (is.null(identity$id)) NA_character_ else as.character(identity$id),
+      run = if (is.null(identity$run)) NA_character_ else as.character(identity$run),
+      session = if (is.null(identity$session)) NA_character_ else as.character(identity$session),
+      status = entry$status, message = entry$message,
+      n_rows = if (is.null(entry$ts)) 0L else nrow(entry$ts))
+  }))
+  if (!is.null(out_file)) readr::write_csv(file_status, paste0(out_file, ".files.csv"))
+  failed <- file_status$status != "ok"
+  if (any(failed)) {
+    message <- paste0(sum(failed), " deconvolution file(s) failed alignment: ",
+      paste(paste0(basename(file_status$file[failed]), ": ", file_status$message[failed]), collapse = "; "))
+    if (fail_on_error) {
+      stop(structure(list(message = message, call = NULL, file_status = file_status),
+        class = c("decon_alignment_error", "error", "condition")))
+    }
+    warning(message, call. = FALSE)
+  }
+  all_e <- data.table::as.data.table(dplyr::bind_rows(lapply(elist, "[[", "ts")))
+  if (nrow(all_e) && !is.null(alignment$aname)) all_e[, atlas := alignment$aname]
+  attr(all_e, "file_status") <- file_status
   if (!is.null(out_file)) {
     message("Writing output: ", out_file)
     readr::write_csv(all_e, file = out_file)
@@ -695,7 +730,7 @@ evt_align_decon_files <- function(d_files, trial_df, alignment = list(), aggrega
 
 
 validate_alignments <- function(alignments, tr, trial_df) {
-  checkmate::assert_list(alignments)
+  checkmate::assert_list(alignments, min.len = 1L)
   checkmate::assert_data_frame(trial_df)
 
   # if a single alignment is passed in, wrap it as a single-element list
@@ -734,7 +769,11 @@ validate_alignments <- function(alignments, tr, trial_df) {
       stop(glue("For alignment {names(alignments)[aa]}, missing required fields: {paste(names(alignments[[aa]]), collapse=', ')}"))
     }
 
-    stopifnot(alignments[[aa]]$evt_col %in% names(trial_df))
+    checkmate::assert_string(alignments[[aa]]$evt_col)
+    checkmate::assert_number(alignments[[aa]]$time_before, upper = 0, finite = TRUE)
+    checkmate::assert_number(alignments[[aa]]$time_after, lower = 0, finite = TRUE)
+    checkmate::assert_subset(c(alignments[[aa]]$evt_col, alignments[[aa]]$collide_before,
+      alignments[[aa]]$collide_after), names(trial_df))
   }
 
   if (single_align) alignments <- alignments[[1L]]

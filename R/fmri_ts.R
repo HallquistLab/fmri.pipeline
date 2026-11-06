@@ -114,7 +114,7 @@ fmri_ts <- R6::R6Class("fmri_ts",
         #handle internal renaming to make programming with these objects easy
         private$names_to_internal(event_data)
 
-        data.table::setorderv(event_data, vm$trial) #order by trial
+        data.table::setorderv(event_data, "trial") #event names are now internal
       }
 
       # verify presence of required columns
@@ -152,14 +152,24 @@ fmri_ts <- R6::R6Class("fmri_ts",
       return(tsd)
     },
 
+    #' @description Get a copy of the event data, optionally with original names
+    #' @param orig_names Whether to restore the input variable names
+    get_events = function(orig_names=FALSE) {
+      events <- data.table::copy(self$event_data)
+      if (isTRUE(orig_names) && !is.null(events)) private$names_to_original(events)
+      events
+    },
+
     #' @description method to add a variable in ts_data to the set of keying variables for further use
     #' @param kv A vector of one or more variables to RLE-encode and add as keys the object
     add_keys = function(kv) {
       checkmate::assert_character(kv)
-      stopifnot(all(kv %in% names(self$ts_data)))
+      internal <- names(private$vmvec)[match(kv, private$vmvec)]
+      internal[is.na(internal)] <- kv[is.na(internal)]
+      stopifnot(all(internal %in% names(self$ts_data)))
       nkeys <- length(private$kvars) #number of existing keys
       for (vv in seq_along(kv)) {
-        vname <- kv[vv]
+        vname <- internal[vv]
         # convert factors to character before rle (loses levels/detail)
         if (is.factor(self$ts_data[[vname]])) self$ts_data[[vname]] <- as.character(self$ts_data[[vname]])
         self$ts_keys[[nkeys+vv]] <- rle(self$ts_data[[vname]]) # RLE-compress the new key
@@ -169,7 +179,7 @@ fmri_ts <- R6::R6Class("fmri_ts",
       private$update_variable_tracking(self$vm) #refresh mapping to internal names
       names(self$ts_keys) <- private$kvars #name ts_keys according to key variables to let get_ts() work
 
-      self$ts_data[, (kv) := NULL] #drop new keys from rectangular data
+      self$ts_data[, (internal) := NULL] #drop new keys from rectangular data
     },
 
     #' @description method to replace one or more variable mappings in the object
@@ -179,7 +189,7 @@ fmri_ts <- R6::R6Class("fmri_ts",
     replace_vm = function(...) {
       replist <- list(...)
       repfields <- names(replist)
-      stopifnot(all(repfields %in% self$vm)) #must be replacement
+      stopifnot(all(repfields %in% names(self$vm))) #must be replacement
 
       #revert to original names before we modify
       private$names_to_original(self$ts_data)

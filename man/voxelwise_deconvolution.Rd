@@ -25,13 +25,12 @@ voxelwise_deconvolution(
 \arguments{
 \item{niftis}{A vector of processed fMRI timeseries images (4D files) to be deconvolved}
 
-\item{add_metadata}{A data.frame with one row per value of \code{niftis}. Columns of this data.frame
-are added to the output file for identification.}
+\item{add_metadata}{A data.frame with one row per value of \code{niftis}, saved as atlas-level metadata. The \code{id}, \code{run}, and optional \code{session} columns are also saved in per-file sidecars for event alignment.}
 
 \item{out_dir}{Base output directory for deconvolved time series files. Default is \code{getwd()}.}
 
 \item{out_file_expression}{Expression evaluated to resolve the filename for the deconvolved csv files. Default is
-to convert the \code{niftis} value for a given subject into a filename by replacing slashes with periods and adding
+to prefix \code{"decon_"}, replace slashes in \code{niftis} with periods, and add
 the atlas image name. Note that the suffix \code{_deconvolved.csv.gz} or \code{_original.csv.gz} will be added
 to the expression, so don't pass this piece.}
 
@@ -57,7 +56,8 @@ with optional HRF tuning.}
 
 \item{decon_settings}{A list of settings passed to the deconvolution algorithm.}
 
-\item{afni_dir}{Full path to directory containing AFNI binaries (this function uses 3dMaskdump).}
+\item{afni_dir}{Retained for compatibility; ignored. NIfTI extraction is internal
+and does not require AFNI.}
 }
 \value{
 Nothing (invisible NULL).
@@ -68,6 +68,15 @@ Function to perform voxelwise deconvolution on an fMRI dataset using the fMRI mo
 \details{
 The Bush 2011 algorithm uses the package's internal RcppArmadillo
 implementation and does not require an external executable.
+  Atlas, mask, and input images must share a spatial grid. Constant signals
+  and signals containing nonfinite observations are excluded before fitting;
+  their output rows are retained with missing estimates. The \code{decon_status}
+  column identifies \code{"ok"}, \code{"constant"}, or \code{"nonfinite"} signals.
+  Each deconvolution file has a \code{.metadata.csv} sidecar containing its
+  source NIfTI path and any \code{id}, \code{run}, and \code{session} columns
+  in \code{add_metadata}. These identify files during event alignment, including
+  custom filenames. If absent, alignment falls back to the source path or
+  requires an explicit \code{file_manifest}.
 
   If you want to use subject metadata to name the output file, use \code{this_subj} in your \code{out_file_expression}, which will give you access to a one-row
   data.frame containing the metadata for the current subject in the loop.

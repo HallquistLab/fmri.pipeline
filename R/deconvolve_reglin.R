@@ -51,6 +51,11 @@
 #'
 #' @return A matrix of deconvolved time series, or a list with \code{activity}
 #'   and tuning diagnostics when \code{return_diagnostics = TRUE}.
+#' @details Constant signals and signals containing nonfinite observations are
+#'   excluded from fitting and tuning. Their activity columns are returned as
+#'   \code{NA}; diagnostics include a per-column \code{signal_status} vector
+#'   (\code{"ok"}, \code{"constant"}, or \code{"nonfinite"}). Partial missingness
+#'   excludes the entire signal; observations are not interpolated or deleted.
 #' @importFrom stats fft median mvfft sd
 #' @export
 deconvolve_reglin <- function(
@@ -112,6 +117,58 @@ deconvolve_reglin <- function(
   kernel_len <- length(kernels[[1L]])
   if (nrow(BOLDobs) < 3L) {
     stop("Need at least 3 timepoints for regularized linear deconvolution")
+  }
+
+  signal_status <- decon_signal_status(BOLDobs)
+  valid <- signal_status == "ok"
+  if (!all(valid)) {
+    warning(sum(!valid), " constant or nonfinite signals excluded from deconvolution", call. = FALSE)
+    n_output <- nrow(BOLDobs) + if (trim_kernel) 0L else kernel_len - 1L
+    activity <- matrix(NA_real_, n_output, ncol(BOLDobs))
+    centers <- scales <- rep(NA_real_, ncol(BOLDobs))
+
+    if (any(valid)) {
+      # Evaluate the public arguments before recursing so all backends and the
+      # first-pass noise estimate see only valid signals with identical settings.
+      fit_args <- mget(names(formals(deconvolve_reglin)), envir = environment())
+      fit_args$BOLDobs <- BOLDobs[, valid, drop = FALSE]
+      fit_args$return_diagnostics <- TRUE
+      result <- do.call(deconvolve_reglin, fit_args)
+      activity[, valid] <- result$activity
+      centers[valid] <- as.numeric(result$scaled_center)
+      scales[valid] <- as.numeric(result$scaled_scale)
+      if (tune_by == "signal") {
+        lambdas <- rep(NA_real_, ncol(BOLDobs))
+        kernel_indices <- rep(NA_integer_, ncol(BOLDobs))
+        lambdas[valid] <- result$lambda
+        kernel_indices[valid] <- result$kernel_index
+        result$lambda <- lambdas
+        result$kernel_index <- kernel_indices
+      }
+    } else {
+      n_selected <- if (tune_by == "global") 1L else ncol(BOLDobs)
+      result <- list(
+        lambda = rep(NA_real_, n_selected),
+        kernel_index = rep(NA_integer_, n_selected),
+        kernels = kernels,
+        tuning = data.frame(kernel = integer(), lambda = numeric(), df = numeric(),
+          rss = numeric(), gcv = numeric(), gcv_se = numeric()),
+        penalty = if (backend == "wiener") "wiener" else penalty,
+        tune_by = tune_by, gcv_rule = gcv_rule, prewhiten_gcv = prewhiten_gcv,
+        ar1_rho = if (prewhiten_gcv) {
+          if (is.null(prewhiten_rho)) NA_real_ else prewhiten_rho
+        } else 0
+      )
+      if (backend == "wiener") result$wiener_shrinkage <- wiener_shrinkage
+    }
+
+    attr(activity, "scaled:center") <- centers
+    attr(activity, "scaled:scale") <- scales
+    result$activity <- activity
+    result$scaled_center <- centers
+    result$scaled_scale <- scales
+    result$signal_status <- signal_status
+    return(if (return_diagnostics) result else activity)
   }
 
   if (isTRUE(prewhiten_gcv) && is.null(prewhiten_rho)) {
@@ -186,6 +243,7 @@ deconvolve_reglin <- function(
 
     if (isTRUE(return_diagnostics)) {
       cpp_res$kernels <- kernels
+      cpp_res$signal_status <- signal_status
     }
     return(cpp_res)
   }
@@ -294,8 +352,21 @@ deconvolve_reglin <- function(
     prewhiten_gcv = prewhiten_gcv,
     ar1_rho = ar1_rho,
     scaled_center = scaled$center,
-    scaled_scale = scaled$scale
+    scaled_scale = scaled$scale,
+    signal_status = signal_status
   )
+}
+
+# Shared screening for standalone and voxelwise deconvolution. A nonfinite
+# observation excludes its entire signal, preserving the acquisition clock.
+decon_signal_status <- function(y) {
+  vapply(seq_len(ncol(y)), function(i) {
+    x <- y[, i]
+    if (any(!is.finite(x))) return("nonfinite")
+    spread <- stats::sd(x)
+    if (!is.finite(spread)) return("nonfinite")
+    if (spread <= .Machine$double.eps) "constant" else "ok"
+  }, character(1L))
 }
 
 build_decon_kernel_grid <- function(kernel, kernel_grid = NULL, hrf_lags = 0L) {
@@ -581,7 +652,8 @@ deconvolve_reglin_wiener <- function(
     prewhiten_gcv = prewhiten_gcv,
     ar1_rho = ar1_rho,
     scaled_center = scaled$center,
-    scaled_scale = scaled$scale
+    scaled_scale = scaled$scale,
+    signal_status = rep("ok", n_signals)
   )
 }
 

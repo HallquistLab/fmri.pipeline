@@ -18,7 +18,9 @@ run_decon_alignment(
   mem_per_cpu = "4g",
   walltime = "1:00:00",
   scheduler = "slurm",
-  time_audit = FALSE
+  time_audit = FALSE,
+  file_manifest = NULL,
+  fail_on_error = TRUE
 )
 }
 \arguments{
@@ -53,6 +55,13 @@ event-aligned time series. Most commonly, this is "atlas_value", which will lead
 \item{scheduler}{The job scheduler to be used in alignment. Options are "slurm" (default), "torque", or "local"}
 
 \item{time_audit}{If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing}
+
+\item{file_manifest}{Optional data.frame with \code{file}, \code{id}, \code{run},
+and optional \code{session} columns. Overrides per-file metadata and legacy
+filename parsing. Ambiguous identities are errors.}
+
+\item{fail_on_error}{Stop if any file fails alignment (default TRUE). FALSE
+explicitly permits partial output with a warning and a file status manifest.}
 }
 \description{
 Align a set of deconvolved time series files from \code{voxelwise_deconvolution} to a set of events in a task-related design

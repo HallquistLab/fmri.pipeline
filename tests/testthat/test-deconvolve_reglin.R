@@ -1,3 +1,74 @@
+test_that("invalid signals cannot change valid estimates or tuning in any backend", {
+  set.seed(2011)
+  good <- matrix(rnorm(60), ncol = 2L)
+  input <- cbind(good[, 1L], 100, good[, 2L], NA_real_, NaN, Inf)
+  # Partially missing columns are excluded too, without shortening the clock.
+  input[1:29, 4L] <- good[1:29, 1L]
+
+  for (backend in c("cpp", "r", "wiener")) {
+    for (tune_by in c("global", "signal")) {
+      settings <- list(kernel = c(0, 0.25, 0.5, 0.25),
+        lambda_grid = c(0.01, 0.1), backend = backend, tune_by = tune_by,
+        prewhiten_gcv = TRUE, return_diagnostics = TRUE)
+      reference <- do.call(deconvolve_reglin, c(list(BOLDobs = good), settings))
+      expect_warning(
+        actual <- do.call(deconvolve_reglin, c(list(BOLDobs = input), settings)),
+        "4 constant or nonfinite signals"
+      )
+      expect_equal(dim(actual$activity), c(30L, 6L))
+      expect_equal(actual$activity[, c(1L, 3L)], reference$activity, ignore_attr = TRUE)
+      expect_true(all(is.na(actual$activity[, c(2L, 4L, 5L, 6L)])))
+      expect_equal(actual$signal_status,
+        c("ok", "constant", "ok", "nonfinite", "nonfinite", "nonfinite"))
+      expect_equal(actual$tuning, reference$tuning)
+      expect_equal(actual$ar1_rho, reference$ar1_rho)
+      selected <- if (tune_by == "global") 1L else c(1L, 3L)
+      expect_equal(actual$lambda[selected], as.numeric(reference$lambda))
+      expect_equal(actual$kernel_index[selected], as.integer(reference$kernel_index))
+      if (tune_by == "signal") {
+        expect_true(all(is.na(actual$lambda[c(2L, 4L, 5L, 6L)])))
+        expect_true(all(is.na(actual$kernel_index[c(2L, 4L, 5L, 6L)])))
+      }
+      expect_equal(actual$scaled_center[c(1L, 3L)], as.numeric(reference$scaled_center))
+      expect_equal(actual$scaled_scale[c(1L, 3L)], as.numeric(reference$scaled_scale))
+    }
+  }
+})
+
+test_that("all invalid signals return missing estimates without fitting", {
+  for (backend in c("cpp", "r", "wiener")) {
+    for (tune_by in c("global", "signal")) {
+      expect_warning(
+        result <- deconvolve_reglin(cbind(rep(100, 10L), rep(NA_real_, 10L)),
+          kernel = c(0, 0.5, 0.5), backend = backend, tune_by = tune_by,
+          normalize = FALSE, trim_kernel = FALSE, prewhiten_gcv = TRUE,
+          return_diagnostics = TRUE),
+        "2 constant or nonfinite signals"
+      )
+      expect_equal(dim(result$activity), c(12L, 2L))
+      expect_true(all(is.na(result$activity)))
+      expect_equal(result$signal_status, c("constant", "nonfinite"))
+      expect_equal(nrow(result$tuning), 0L)
+      expect_true(all(is.na(result$lambda)))
+      expect_equal(length(result$lambda), if (tune_by == "global") 1L else 2L)
+      expect_true(is.na(result$ar1_rho))
+    }
+  }
+})
+
+test_that("matrix-only output restores invalid columns with fixed lambda", {
+  y <- sin(seq_len(30))
+  reference <- deconvolve_reglin(y, kernel = c(0, 0.5, 0.5), lambda = 0.1,
+    normalize = FALSE, demean = FALSE)
+  expect_warning(
+    result <- deconvolve_reglin(cbind(100, y), kernel = c(0, 0.5, 0.5),
+      lambda = 0.1, normalize = FALSE, demean = FALSE),
+    "1 constant or nonfinite signals"
+  )
+  expect_true(all(is.na(result[, 1L])))
+  expect_equal(result[, 2L], reference[, 1L], ignore_attr = TRUE)
+})
+
 test_that("deconvolve_reglin recovers a continuous latent signal", {
   set.seed(1001)
   kernel <- c(0, 0.25, 0.5, 0.2, 0.05)
