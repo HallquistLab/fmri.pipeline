@@ -111,3 +111,37 @@ test_that("alignment discovers old hidden files and excludes metadata sidecars",
   expect_setequal(basename(captured$input_objects$d_files), names)
   expect_true(captured$input_objects$fail_on_error)
 })
+
+test_that("file alignment passes validity masks and overlap policy through to extraction", {
+  f <- make_alignment_file()
+  on.exit(unlink(f$root, recursive = TRUE))
+  readr::write_csv(data.frame(time = 0:20, decon = 0:20, vnum = 1, atlas_value = 1,
+    usable = (0:20) != 10), f$file)
+  f$alignment$valid_col <- "usable"
+  f$alignment$overlap_policy <- "allow"
+  f$alignment$neighbor_events <- "onset"
+  out <- file.path(f$root, "aligned.csv")
+  result <- evt_align_decon_files(f$file, f$trials, f$alignment, tr = 1, ncpus = 1, out_file = out)
+  expect_true(file.exists(paste0(out, ".sources.csv")))
+  clock <- attr(result, "source_clock")
+  expect_equal(clock$time, as.numeric(0:20))
+  expect_equal(clock$source_id, 1:21)
+  expect_equal(unique(result$alignment_file), normalizePath(f$file))
+  expect_equal(result$decon_source_max_epochs[result$evt_time == 0], 0L)
+  expect_true(is.na(result$decon_mean[result$evt_time == 0]))
+  expect_equal(result$decon_n_censored[result$evt_time == 0], 1)
+  expect_true(all(result$align_overlap_policy == "allow"))
+  expect_equal(attr(result, "file_status")$status, "ok")
+})
+
+test_that("an empty acquisition clock retains no-data epochs and an empty source manifest", {
+  f <- make_alignment_file()
+  on.exit(unlink(f$root, recursive = TRUE))
+  readr::write_csv(data.frame(time = NA_real_, decon = 0:20, vnum = 1, atlas_value = 1), f$file)
+  result <- evt_align_decon_files(f$file, f$trials, f$alignment, tr = 1, ncpus = 1)
+  expect_equal(nrow(result), 3L)
+  expect_true(all(result$epoch_status == "no_data"))
+  expect_true(all(is.na(result$decon_mean)))
+  expect_equal(nrow(attr(result, "source_clock")), 0L)
+  expect_equal(attr(result, "file_status")$status, "ok")
+})

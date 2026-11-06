@@ -11,7 +11,8 @@ interpolate_fmri_epochs(
   time_after = 3,
   output_resolution = 1,
   group_by = NULL,
-  time_audit = FALSE
+  time_audit = FALSE,
+  max_gap = NULL
 )
 }
 \arguments{
@@ -28,6 +29,8 @@ interpolate_fmri_epochs(
 \item{group_by}{a character vector of keying variables used for aggregation of data prior to interpolation}
 
 \item{time_audit}{If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing}
+
+\item{max_gap}{Maximum source bracket duration (default acquisition TR).}
 }
 \description{
 Interpolate an aligned fmri_ts object onto a consistent time grid with respect to a target event

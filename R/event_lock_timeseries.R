@@ -16,6 +16,14 @@
 #'   boundary that can help to have sufficient data to interpolate early and late times within the epoch.
 #' @param pad_after Number of seconds to include in the epoch time window after the event of interest.
 #' @param time_audit If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing
+#' @param overlap_policy One of \code{"allow"}, \code{"truncate"}, or \code{"exclude"}.
+#'   NULL uses truncation when collision columns are supplied and allows overlap
+#'   otherwise. Explicit allow retains full windows. Exclude removes whole epochs
+#'   whose closed requested windows overlap another target epoch, including ties.
+#' @param valid_col Optional logical source-data column. FALSE or NA censors that
+#'   row for all value columns without deleting its acquisition time.
+#' @param neighbor_events Event columns used for nearest-event annotations;
+#'   defaults to the target event column. Does not itself censor observations.
 #' @details Nonfinite target onsets and unsupported windows retain placeholder
 #'   rows with missing time and values and an \code{epoch_status} column.
 #'   Nonfinite collision candidates are ignored. Nearest-event boundaries remain
@@ -27,11 +35,16 @@
 #'
 #' @export
 event_lock_ts <- function(fmri_obj, event=NULL, time_before=-3, time_after=3,
-                          collide_before=NULL, collide_after=NULL, pad_before=-1, pad_after=1, time_audit=FALSE) {
+                          collide_before=NULL, collide_after=NULL, pad_before=-1, pad_after=1, time_audit=FALSE,
+                          overlap_policy=NULL, valid_col=NULL, neighbor_events=NULL) {
 
   ts_data <- fmri_obj$get_ts(orig_names=TRUE) #so that vm pass-through to returned object works
   run_df <- fmri_obj$get_events(orig_names = TRUE)
   vm <- fmri_obj$vm
+  overlap_policy <- resolve_overlap_policy(overlap_policy, collide_before, collide_after)
+  checkmate::assert_string(valid_col, null.ok = TRUE)
+  if (is.null(neighbor_events)) neighbor_events <- event
+  checkmate::assert_character(neighbor_events, min.len = 1L, unique = TRUE)
 
   checkmate::assert_number(time_before, upper = 0, finite = TRUE)
   checkmate::assert_number(time_after, lower = 0, finite = TRUE)
@@ -41,16 +54,31 @@ event_lock_ts <- function(fmri_obj, event=NULL, time_before=-3, time_after=3,
   checkmate::assert_data_frame(run_df)
   if (nrow(ts_data) == 0L) stop("No time series samples supplied for event alignment")
   checkmate::assert_string(event)
-  checkmate::assert_subset(c(event, collide_before, collide_after), names(run_df))
+  checkmate::assert_subset(c(event, collide_before, collide_after, neighbor_events), names(run_df))
   if (nrow(run_df) == 0L) stop("No trial events supplied for alignment")
   if (anyNA(run_df[[vm$trial]]) || anyDuplicated(run_df[[vm$trial]])) {
     stop("Event data must contain unique, nonmissing trial identifiers")
   }
-  for (column in unique(c(event, collide_before, collide_after))) {
+  for (column in unique(c(event, collide_before, collide_after, neighbor_events))) {
     checkmate::assert_numeric(run_df[[column]], all.missing = TRUE)
   }
   run_df <- run_df[order(run_df[[vm$trial]]), ]
   trials <- run_df[[vm$trial]]
+  if (any(grepl("^(align_|\\.align_)", names(ts_data)))) {
+    stop("Input contains reserved alignment columns")
+  }
+  clock <- sort(unique(ts_data[[vm$time]][is.finite(ts_data[[vm$time]])]))
+  ts_data$.align_source_id <- match(ts_data[[vm$time]], clock)
+  ts_data$.align_censored <- FALSE
+  if (!is.null(valid_col)) {
+    checkmate::assert_subset(valid_col, names(ts_data))
+    if (!is.logical(ts_data[[valid_col]])) stop("valid_col must name a logical column")
+    ts_data$.align_censored <- is.na(ts_data[[valid_col]]) | !ts_data[[valid_col]]
+    for (column in vm$value) ts_data[[column]][ts_data$.align_censored] <- NA_real_
+  }
+  annotations <- epoch_event_annotations(run_df, event, vm$trial, neighbor_events,
+    time_before, time_after, if (length(clock)) min(clock) else NA_real_,
+    if (length(clock)) max(clock) else NA_real_, overlap_policy)
   finite_events <- function(columns) {
     values <- unlist(run_df[, columns, with = FALSE], use.names = FALSE)
     values[is.finite(values)]
@@ -78,15 +106,21 @@ event_lock_ts <- function(fmri_obj, event=NULL, time_before=-3, time_after=3,
     } else {
       past <- before_events[before_events < evt_onset]
       future <- after_events[after_events > evt_onset]
-      if (length(past)) evt_before <- max(past)
-      if (length(future)) evt_after <- min(future)
+      if (overlap_policy == "truncate") {
+        if (length(past)) evt_before <- max(past)
+        if (length(future)) evt_after <- min(future)
+      }
       relative_time <- ts_data[[vm$time]] - evt_onset
       keep <- is.finite(relative_time) &
         relative_time >= time_before + pad_before & relative_time <= time_after + pad_after &
         ts_data[[vm$time]] > evt_before & ts_data[[vm$time]] < evt_after
+      if (overlap_policy == "exclude" && annotations$align_window_overlap_n[t] > 0L) {
+        keep[] <- FALSE
+        status <- "overlap_excluded"
+      }
       trial_ts <- data.table::copy(ts_data[which(keep), ])
       trial_ts$evt_time <- relative_time[which(keep)]
-      if (nrow(trial_ts) == 0L) {
+      if (nrow(trial_ts) == 0L && status == "ok") {
         status <- if (!length(observed_times)) "no_data" else if (
           evt_onset + time_after + pad_after < min(observed_times) ||
           evt_onset + time_before + pad_before > max(observed_times)
@@ -98,9 +132,13 @@ event_lock_ts <- function(fmri_obj, event=NULL, time_before=-3, time_after=3,
       trial_ts[[vm$time]] <- rep(NA_real_, nrow(trial_ts))
       for (column in vm$value) trial_ts[[column]] <- rep(NA_real_, nrow(trial_ts))
       trial_ts$evt_time <- rep(NA_real_, nrow(trial_ts))
+      trial_ts$.align_source_id <- NA_integer_
+      trial_ts$.align_censored <- FALSE
     }
     trial_ts[[vm$trial]] <- rep(trials[t], nrow(trial_ts))
     trial_ts$epoch_status <- rep(status, nrow(trial_ts))
+    trial_ts$.align_epoch_id <- rep(t, nrow(trial_ts))
+    for (column in names(annotations)) trial_ts[[column]] <- rep(annotations[[column]][t], nrow(trial_ts))
     if (isTRUE(time_audit)) {
       trial_ts$evt_onset <- rep(evt_onset, nrow(trial_ts))
       trial_ts$collide_before <- rep(evt_before, nrow(trial_ts))
@@ -114,6 +152,7 @@ event_lock_ts <- function(fmri_obj, event=NULL, time_before=-3, time_after=3,
   res <- fmri_ts$new(ts_data = tdf, event_data = run_df, vm = vm, tr = fmri_obj$tr)
   res$replace_vm(time = "evt_time")
   res$add_keys(vm$trial)
+  attr(res, "source_clock") <- data.frame(source_id = seq_along(clock), time = clock)
 
   return(res)
 
@@ -141,6 +180,17 @@ event_lock_ts <- function(fmri_obj, event=NULL, time_before=-3, time_after=3,
 #' @param group_by return interpolated time series for each combination of group_by variables. Default is
 #'   to provide one interpolated time series per trial.
 #' @param time_audit If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing
+#' @param overlap_policy One of \code{"allow"}, \code{"truncate"}, or \code{"exclude"}.
+#'   NULL uses truncation when collision columns are supplied and allows overlap
+#'   otherwise. Explicit allow retains full windows. Exclude removes whole epochs
+#'   whose closed requested windows overlap another target epoch, including ties.
+#' @param valid_col Optional logical source-data column. FALSE or NA censors that
+#'   row for all value columns without deleting its acquisition time.
+#' @param neighbor_events Event columns used for nearest-event annotations;
+#'   defaults to the target event column. Does not itself censor observations.
+#' @param max_gap Maximum interpolation bracket duration in seconds, defaulting
+#'   to the acquisition TR. Explicit invalid rows always block interpolation;
+#'   this tolerance only permits wider brackets across deleted rows.
 #' @details The interpolation grid includes zero and remains within the requested
 #'   interval, including zero-width and one-sided windows. When trial is a grouping
 #'   variable, missing and unsupported epochs retain missing estimates and an
@@ -148,13 +198,23 @@ event_lock_ts <- function(fmri_obj, event=NULL, time_before=-3, time_after=3,
 #'   \code{"insufficient_data"}, \code{"missing_onset"}, \code{"outside_run"},
 #'   \code{"censored"}, or \code{"no_data"}. These describe timing and available
 #'   output support, not physiological isolation from other trials.
+#'   Interpolation occurs within each unit before aggregation, preserving explicit
+#'   missing rows and acquisition gaps. Off-grid median/SD now summarize the
+#'   interpolated units. Each value has contributor/reason counts, source IDs, and
+#'   the maximum distinct-epoch reuse count. Source IDs index observed acquisition
+#'   times within this run; reuse is computed within the returned grouping.
+#'   The \code{source_clock} attribute maps IDs to absolute acquisition times.
+#'   Epoch annotations beginning with \code{align_} are always included when trial
+#'   is a grouping variable. They describe timing, not physiological attribution.
+#'   Whole-window exclusion adds \code{"overlap_excluded"} to epoch statuses.
 #'
 #' @author Michael Hallquist
 #' @export
 get_medusa_interpolated_ts <- function(fmri_obj, event=NULL, time_before=-3.0, time_after=3.0,
                                        collide_before=NULL, collide_after=NULL,
                                        pad_before=-1.5, pad_after=1.5, output_resolution=NULL,
-                                       group_by="trial", time_audit=FALSE) {
+                                       group_by="trial", time_audit=FALSE, overlap_policy=NULL,
+                                       valid_col=NULL, neighbor_events=NULL, max_gap=NULL) {
 
   stopifnot(inherits(fmri_obj, "fmri_ts"))
 
@@ -165,12 +225,13 @@ get_medusa_interpolated_ts <- function(fmri_obj, event=NULL, time_before=-3.0, t
   talign <- event_lock_ts(fmri_obj,
     event = event, time_before = time_before, time_after = time_after,
     pad_before = pad_before, pad_after = pad_after, collide_before = collide_before, collide_after = collide_after,
-    time_audit = time_audit
+    time_audit = time_audit, overlap_policy = overlap_policy,
+    valid_col = valid_col, neighbor_events = neighbor_events
   )
 
   #need to interpolate by key variables
   interpolated_epochs <- interpolate_fmri_epochs(talign, time_before=time_before, time_after=time_after,
-    output_resolution=output_resolution, group_by=group_by, time_audit = time_audit)  
+    output_resolution=output_resolution, group_by=group_by, time_audit = time_audit, max_gap = max_gap)
 
   return(interpolated_epochs)
 }
@@ -257,79 +318,67 @@ get_medusa_compression_score <- function(fmri_obj, event=NULL, time_before=-3, t
 #' @param group_by a character vector of keying variables used for aggregation of data prior to interpolation
 #' @param time_audit If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing
 #'
+#' @param max_gap Maximum source bracket duration (default acquisition TR).
+#'
 #' @importFrom data.table dcast melt setnames
 #' @importFrom dplyr summarize group_by across
 #' @author Michael Hallquist
 #' @keywords internal
 interpolate_fmri_epochs <- function(a_obj, evt_time="evt_time", time_before=-3, time_after=3,
-                                    output_resolution=1.0, group_by=NULL, time_audit=FALSE) {
-
-  #basically need to split align_obj on keying units, then interpolate within keys
-
+                                    output_resolution=1.0, group_by=NULL, time_audit=FALSE,
+                                    max_gap=NULL) {
   stopifnot(inherits(a_obj, "fmri_ts"))
-
-  checkmate::assert_number(time_before, upper = 0, finite = TRUE)
-  checkmate::assert_number(time_after, lower = 0, finite = TRUE)
-  checkmate::assert_number(output_resolution, lower = .Machine$double.eps, finite = TRUE)
-  n_before <- floor(-time_before / output_resolution + 1e-10)
-  n_after <- floor(time_after / output_resolution + 1e-10)
-  tout <- c(-rev(seq_len(n_before)) * output_resolution, 0,
-    seq_len(n_after) * output_resolution)
-  # Floating-point tolerance may recognize an intended endpoint, but never emit
-  # times beyond the requested interval.
-  tout <- pmax(time_before, pmin(time_after, tout))
-  stopifnot(!anyDuplicated(tout))
-
-  interpolate_worker <- function(to_interpolate) {
-    interp_agg <- to_interpolate %>%
-      group_by(across(dplyr::all_of(evt_time))) %>%
-      dplyr::summarize(across("value", list(
-        mean = function(x) mean(x, na.rm = TRUE),
-        median = function(x) median(x, na.rm = TRUE),
-        sd = function(x) sd(x, na.rm = TRUE))), .groups = "drop")
-    vcols <- c("value_mean", "value_median", "value_sd")
-    values <- lapply(vcols, function(column) {
-      good <- is.finite(interp_agg[[evt_time]]) & is.finite(interp_agg[[column]])
-      if (sum(good) >= 2L) {
-        approx(x = interp_agg[[evt_time]][good], y = interp_agg[[column]][good], xout = tout)$y
-      } else {
-        value <- rep(NA_real_, length(tout))
-        if (sum(good) == 1L) {
-          exact <- abs(tout - interp_agg[[evt_time]][good]) <= 1e-10 * output_resolution
-          value[exact] <- interp_agg[[column]][good]
-        }
-        value
-      }
-    })
-    data.frame(evt_time = tout, stats::setNames(values, vcols))
+  tout <- epoch_output_grid(time_before, time_after, output_resolution)
+  if (is.null(max_gap)) max_gap <- a_obj$tr
+  checkmate::assert_number(max_gap, lower = .Machine$double.eps, finite = TRUE)
+  input <- a_obj$get_ts(orig_names = TRUE)
+  for (column in a_obj$vm$value) {
+    checkmate::assert_numeric(input[[column]], all.missing = TRUE)
+    input[[column]] <- as.numeric(input[[column]])
   }
-
-  #we need to ensure that multivariate outcomes are stored as a key-value pair of columns, rather than
-  # in wide format. This allows .SD to refer to the entire data.table per grouped chunk
-
-  interp_dt <- a_obj$get_ts(orig_names=TRUE) %>%
-    data.table::melt(measure.vars=a_obj$vm$value, variable.name=".vkey", values.name="value")
-
-  # debugging problem with 'by' not being recognized because interp_dt is somehow a data.frame, not data.table -- seems to be a namespace issue with data.table (fixed by ::
-  checkmate::assert_data_table(interp_dt)
-  #setDT(interp_dt) # should not be necessary
-
-  trial_grouped <- a_obj$vm$trial %in% group_by
-  audit_columns <- c("epoch_status", if (time_audit) c("evt_onset", "collide_before", "collide_after"))
+  interp_dt <- data.table::melt(input,
+    measure.vars = a_obj$vm$value, variable.name = ".vkey", value.name = "value")
+  checkmate::assert_subset(group_by, names(interp_dt))
+  unit_keys <- setdiff(a_obj$vm$key, group_by)
+  time_col <- evt_time
+  trial_col <- a_obj$vm$trial
+  trial_grouped <- trial_col %in% group_by
+  audit_columns <- c("epoch_status", grep("^align_", names(interp_dt), value = TRUE),
+    if (time_audit) c("evt_onset", "collide_before", "collide_after"))
   audit_columns <- intersect(audit_columns, names(interp_dt))
-  if (trial_grouped && length(audit_columns)) {
-    audit_dt <- interp_dt[, .SD[1L], by = c(a_obj$vm$trial), .SDcols = audit_columns]
+  if (trial_grouped) {
+    audit_dt <- unique(interp_dt[, c(trial_col, audit_columns), with = FALSE])
+    if (anyDuplicated(audit_dt[[trial_col]])) stop("Inconsistent epoch annotations within trial")
   }
-
-  interp_dt <- interp_dt[, interpolate_worker(.SD), by = c(".vkey", group_by)]
+  # The group worker interpolates each unit before summarizing, using shared
+  # matrix brackets on regular grids and a bounded-memory ragged-grid fallback.
+  interp_dt <- interp_dt[, interpolate_epoch_group(.SD, unit_keys, time_col, tout,
+    max_gap, trial_grouped), by = c(".vkey", group_by)]
+  interp_dt[, .result_id := seq_len(.N)]
+  source_groups <- c(".vkey", setdiff(group_by, trial_col))
+  usage <- interp_dt[, list(.member = as.character(unlist(.usage, use.names = FALSE))),
+    by = c(source_groups, ".result_id")]
+  interp_dt[, value_source_max_epochs := 0L]
+  if (nrow(usage)) {
+    usage[, .epoch := sub(":.*$", "", .member)]
+    usage[, .source := sub("^[^:]+:", "", .member)]
+    counts <- unique(usage[, c(source_groups, ".epoch", ".source"), with = FALSE])[
+      , list(.epochs = data.table::uniqueN(.epoch)), by = c(source_groups, ".source")]
+    usage <- merge(usage, counts, by = c(source_groups, ".source"), sort = FALSE)
+    row_counts <- usage[, list(.epochs = max(.epochs)), by = ".result_id"]
+    interp_dt$value_source_max_epochs[row_counts$.result_id] <- row_counts$.epochs
+  }
+  interp_dt[, c(".usage", ".result_id") := NULL]
+  stats_columns <- setdiff(names(interp_dt), c(".vkey", group_by, "evt_time"))
   if (anyDuplicated(interp_dt[, c(".vkey", group_by, "evt_time"), with = FALSE])) {
     stop("Duplicate interpolation keys; refusing to aggregate signal values as counts")
   }
   output_dt <- data.table::dcast(interp_dt, formula = ... ~ .vkey,
-    value.var = c("value_mean", "value_median", "value_sd"), sep = "|")
-  setnames(output_dt, names(output_dt), sub("value_([^|]+)\\|(.+)", "\\2_\\1", names(output_dt), perl = TRUE))
-  if (trial_grouped && length(audit_columns)) {
-    output_dt <- merge(output_dt, audit_dt, by = a_obj$vm$trial, all.x = TRUE, sort = FALSE)
+    value.var = stats_columns, sep = "|")
+  data.table::setnames(output_dt, names(output_dt),
+    sub("value_([^|]+)\\|(.+)", "\\2_\\1", names(output_dt), perl = TRUE))
+  if (trial_grouped) {
+    output_dt <- merge(output_dt, audit_dt, by = trial_col, all.x = TRUE, sort = FALSE)
   }
   if (trial_grouped && nrow(output_dt)) {
     mean_columns <- intersect(paste0(a_obj$vm$value, "_mean"), names(output_dt))
@@ -338,15 +387,14 @@ interpolate_fmri_epochs <- function(a_obj, evt_time="evt_time", time_before=-3, 
       if (!any(usable)) "insufficient_data" else if (all(usable)) "ok" else "partial"
     }), by = group_by, .SDcols = mean_columns]
     output_dt <- merge(output_dt, support, by = group_by, all.x = TRUE, sort = FALSE)
-    if (!"epoch_status" %in% names(output_dt)) output_dt$epoch_status <- "ok"
     output_dt[epoch_status == "ok", epoch_status := .support_status]
     output_dt[, .support_status := NULL]
   }
   if (isTRUE(time_audit) && trial_grouped) {
     output_dt[, time := ifelse(is.finite(evt_onset), evt_time + evt_onset, NA_real_)]
   }
-
-  return(output_dt)
+  attr(output_dt, "source_clock") <- attr(a_obj, "source_clock")
+  output_dt
 }
 
 
@@ -434,6 +482,7 @@ compress_mts_pca <- function(mts, pexp_target=0.9, scale_columns=TRUE) {
 #' @param trial_df Trial-level data used for event alignment.
 #' @param alignments A list of alignment specifications, each of which will be computed by this function.
 #'   See \code{get_medusa_interpolated_ts} for help with arguments, and see Details.
+#'   Settings include overlap_policy, valid_col, neighbor_events, and max_gap.
 #' @param nbins For atlases with continuous values, how many bins should be used to discretize the mask values, leading to aggregation
 #'   by bin.
 #' @param aggregate_by The column name in the individual deconvolved files used for averaging repeated units (e.g., voxels) into single
@@ -607,7 +656,8 @@ run_decon_alignment <- function(atlas_files, decon_dir, trial_df, alignments = l
 #'   and alignments, then processes these in parallel.
 #' @param d_files A vector of deconvolved .csv.gz files created by \code{voxelwise_deconvolution}.
 #' @param trial_df The trial-level data.frame containing id and run for each subject represented in \code{d_files}.
-#' @param alignment A list containing alignment details passed to get_medusa_interpolated_ts
+#' @param alignment A list containing alignment details passed to get_medusa_interpolated_ts,
+#'   including overlap_policy, valid_col, neighbor_events, and max_gap.
 #' @param aggregate_by The column name in the individual deconvolved files used for averaging repeated units (e.g., voxels) into single
 #'   event-aligned time series. Most commonly, this is "atlas_value", which will lead to averaging of voxels within each parcel in the mask.
 #' @param tr The repetition time of the sequence in seconds.
@@ -627,7 +677,10 @@ run_decon_alignment <- function(atlas_files, decon_dir, trial_df, alignments = l
 #'   \code{out_file} is supplied, the manifest is saved to
 #'   \code{paste0(out_file, ".files.csv")}, including on failure. With
 #'   \code{fail_on_error = TRUE}, a \code{decon_alignment_error} condition includes
-#'   the manifest and aligned output is not written if any file fails.
+#'   the manifest and aligned output is not written if any file fails. Successful
+#'   results also carry a \code{source_clock} table, saved to
+#'   \code{paste0(out_file, ".sources.csv")} when output is requested. The
+#'   \code{alignment_file} column scopes acquisition-time IDs to their input file.
 #' @importFrom doParallel registerDoParallel
 #' @importFrom parallel makeCluster stopCluster
 #' @importFrom foreach registerDoSEQ
@@ -686,9 +739,18 @@ evt_align_decon_files <- function(d_files, trial_df, alignment = list(), aggrega
         collide_before = alignment$collide_before, collide_after = alignment$collide_after,
         pad_before = alignment$pad_before, pad_after = alignment$pad_after,
         output_resolution = alignment$output_resolution,
-        group_by = unique(c(aggregate_by, "trial")), time_audit = time_audit)
-      for (column in names(identity)) data.table::set(subj_align, j = column, value = identity[[column]])
-      list(ts = subj_align, identity = identity, status = "ok", message = "")
+        group_by = unique(c(aggregate_by, "trial")), time_audit = time_audit,
+        overlap_policy = alignment$overlap_policy, valid_col = alignment$valid_col,
+        neighbor_events = alignment$neighbor_events, max_gap = alignment$max_gap)
+      clock <- attr(subj_align, "source_clock")
+      file_key <- normalizePath(fname, mustWork = TRUE)
+      clock$alignment_file <- rep(file_key, nrow(clock))
+      data.table::set(subj_align, j = "alignment_file", value = file_key)
+      for (column in names(identity)) {
+        data.table::set(subj_align, j = column, value = identity[[column]])
+        clock[[column]] <- rep(identity[[column]], nrow(clock))
+      }
+      list(ts = subj_align, source_clock = clock, identity = identity, status = "ok", message = "")
     }, error = function(err) list(ts = NULL, identity = identity,
       status = "error", message = conditionMessage(err)))
   }
@@ -720,9 +782,13 @@ evt_align_decon_files <- function(d_files, trial_df, alignment = list(), aggrega
   all_e <- data.table::as.data.table(dplyr::bind_rows(lapply(elist, "[[", "ts")))
   if (nrow(all_e) && !is.null(alignment$aname)) all_e[, atlas := alignment$aname]
   attr(all_e, "file_status") <- file_status
+  source_clock <- dplyr::bind_rows(lapply(elist, "[[", "source_clock"))
+  if (!ncol(source_clock)) source_clock <- data.frame(source_id = integer(), time = numeric(), alignment_file = character())
+  attr(all_e, "source_clock") <- source_clock
   if (!is.null(out_file)) {
     message("Writing output: ", out_file)
     readr::write_csv(all_e, file = out_file)
+    readr::write_csv(source_clock, paste0(out_file, ".sources.csv"))
   }
 
   return(all_e)
@@ -770,6 +836,14 @@ validate_alignments <- function(alignments, tr, trial_df) {
     }
 
     checkmate::assert_string(alignments[[aa]]$evt_col)
+    alignments[[aa]]$overlap_policy <- resolve_overlap_policy(alignments[[aa]]$overlap_policy,
+      alignments[[aa]]$collide_before, alignments[[aa]]$collide_after)
+    checkmate::assert_string(alignments[[aa]]$valid_col, null.ok = TRUE)
+    checkmate::assert_character(alignments[[aa]]$neighbor_events, min.len = 1L,
+      unique = TRUE, null.ok = TRUE)
+    checkmate::assert_subset(alignments[[aa]]$neighbor_events, names(trial_df))
+    checkmate::assert_number(alignments[[aa]]$max_gap, lower = .Machine$double.eps,
+      finite = TRUE, null.ok = TRUE)
     checkmate::assert_number(alignments[[aa]]$time_before, upper = 0, finite = TRUE)
     checkmate::assert_number(alignments[[aa]]$time_after, lower = 0, finite = TRUE)
     checkmate::assert_subset(c(alignments[[aa]]$evt_col, alignments[[aa]]$collide_before,
