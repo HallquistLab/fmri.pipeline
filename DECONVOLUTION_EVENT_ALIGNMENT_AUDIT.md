@@ -76,6 +76,135 @@ and text serialization; it is not a streaming reader. The audit’s timing
 tables below describe the original deconvolution benchmarks, not a
 benchmark of this change.
 
+### Remediation update: explicit normalization and Wiener tuning
+
+The two P2 findings below are now addressed. Their original
+reproductions are retained as historical findings, rather than
+descriptions of the updated code.
+
+**Recommended scaling.** Z-scoring remains the default for standardized
+trial responses. The voxelwise Bush/Cisler paths require it: the fixed
+learning rate, sigmoid encoding, and standardized residual resampling do
+not provide a calibrated arbitrary-unit estimator. Standalone Bush 2011
+retains its existing expert `normalize = FALSE` option. Bush resampling
+now defaults to normalizing its observations consistently for both the
+base fit and residual construction; its new `normalize = FALSE` option
+accepts caller-standardized data. The voxelwise Bush 2015 path also
+forwards the requested `beta`.
+
+Linear deconvolution accepts explicit `scaling = "zscore"`, `"demean"`,
+`"none"`, or `"psc"`; the voxelwise wrapper accepts the same field in
+`decon_settings`. Explicit scaling overrides the legacy flags. Otherwise
+`normalize = FALSE` selects demeaning by default, or no transformation
+when `demean = FALSE` too. For the fixed linear inverse, multiplying the
+input does not change the conditioning of the inverse matrix. Regression
+checks across gains from `1e-4` to `1e6` verify proportional estimates
+and unchanged globally selected lambda when the same gain is applied to
+all signals. Relative gains between signals can change global tuning
+weights. Z-scoring is therefore a sensible standardized analysis
+default, rather than a numerical requirement for this linear solver.
+
+Use demeaning to retain a consistent input scale in residualized data;
+use PSC only with a meaningful positive BOLD baseline. PSC rejects
+nonpositive and near-zero means relative to signal spread. Raw (`none`)
+input is mainly for already-centered data or simulations. Neither
+preserving BOLD units nor standardizing identifies a physiological
+neural amplitude or removes penalty attenuation. Z-scoring retains
+relative trial variation within a voxel/run but changes comparisons
+across runs and voxels.
+
+The wrapper applies its selected transform once to measured volumes
+before the existing tail padding. It disables subsequent solver
+normalization and linear solver demeaning. This intentionally removes
+the previous double scaling/centering of padded data; regenerate
+existing files to adopt the new behavior. Per-voxel `.scaling.csv`
+sidecars record mode, removed center, divisor, and signal status.
+Identity sidecars additionally record algorithm, scaling, output units,
+and the scaling filename. Standalone linear matrices/diagnostics record
+the same transform. Original-series outputs expose `BOLD_input`;
+`BOLD_z` remains an alias only when z-scoring actually occurred. These
+are descriptions of the BOLD transformation; the removed BOLD mean is
+not an identified neural baseline.
+
+**Wiener tuning.** Scalar Wiener GCV now uses the exact trace of its
+finite observed smoother, tested against dense responses to observed
+unit impulses, including short runs, different FFT lengths, and fixed
+AR(1) whitening settings. If `h` is the implemented causal forward
+kernel and `f` the circular impulse response of its inverse filter, the
+trace is `sum((n_time - lag) * h[lag] * f[-lag])` over supported
+nonnegative lags shorter than the run (zero-based indices; inverse
+indices wrap within the FFT). This counts only observed diagonal entries
+after extension and truncation, rather than summing padded Fourier
+gains. The audit reproduction now gives approximately `40.32813`,
+matching the directly constructed smoother.
+
+This trace conditions on preprocessing and the AR(1) coefficient.
+Adaptive PSD filters also depend on the observations through their
+estimated spectra: holding spectra fixed does not give their full
+Jacobian degrees of freedom. Consequently, PSD fits require one lambda
+and one HRF; automatic GCV selection now fails with an actionable error.
+Their diagnostics label `df_method = "conditional_fixed_psd"` and return
+missing GCV values. Scalar diagnostics label
+`df_method = "finite_observation_trace"`. Fixed-parameter PSD activity
+is preserved.
+
+**Accuracy-preserving acceleration.** The C++ backend constructs the
+exact finite-difference penalty crossproduct from its short stencil,
+including boundary entries, instead of multiplying dense difference
+matrices. A single fixed candidate with matrix-only output skips RSS,
+trace, and GCV calculations. Native scaling is retained for ordinary C++
+modes to avoid extra R matrix copies. Wiener fitting caches input/kernel
+FFTs across candidate lambdas and skips unrequested scoring for
+fixed-parameter fits. Fixed estimates are compared with the original
+implementation; C++ tuning and diagnostics are also checked against the
+independent dense R reference across penalties, HRFs, and whitening
+settings. Explicit dense Cholesky reuse and combined-RHS reuse were
+benchmarked and rejected because they slowed these problems; the
+existing band-aware solver is retained. The larger sparse/banded
+redesign remains separate work.
+
+The included `inst/benchmarks/deconvolution.R` compares the current
+checkout against baseline `bfbffcb`. It excludes compilation/loading,
+uses 200 signals, a canonical HRF at TR = 1, default z-scoring, fixed
+lambda `0.01` or ten candidate lambdas, and reports median elapsed time.
+Set `OPENBLAS_NUM_THREADS=1` and `OMP_NUM_THREADS=1` before starting R.
+These measurements concern computation, not participant-data validation
+or improved scientific recovery. Event overlap policies, gap
+preservation, artificial boundary observations, amplitude-calibration
+simulations, and Bush uncertainty/convergence issues remain separate
+audit items.
+
+Median seconds from five repetitions in this environment:
+
+| Timepoints | Backend | Fixed: before / after | Tuned: before / after |
+|------------|---------|-----------------------|-----------------------|
+| 300        | C++     | 0.019 / 0.015         | 0.076 / 0.091         |
+| 1,200      | C++     | 0.207 / 0.113         | 1.136 / 1.152         |
+| 300        | Wiener  | 0.052 / 0.035         | 0.384 / 0.327         |
+| 1,200      | Wiener  | 0.199 / 0.111         | 1.558 / 1.428         |
+
+These runs show the clearest benefit for fixed-parameter fits. Tuned C++
+did not improve in this benchmark (and was slower for the smaller
+problem); no universal speedup is claimed. All activity differences in
+these particular comparisons were zero, including the tuned Wiener
+examples, which happened to select the same candidate. Corrected Wiener
+GCV can select a different candidate in other data; dense-oracle scoring
+tests establish the corrected selection behavior.
+
+**Validation:** The updated package compiled and installed in an
+isolated library. Focused installed-package checks passed: 56 test cases
+and 560 assertions, with no failures, errors, or warnings. Coverage
+includes scaling and gain invariance, finite-smoother trace and GCV
+selection oracles, C++/R agreement, fixed-fit fast paths, invalid
+signals, voxel metadata, identity, alignment, and ROI geometry. A local
+two-worker integration check matched serial estimates and scaling
+sidecars for z-score/C++ and PSC/Wiener runs. Bush wrapper checks cover
+single voxels, normalization, retained default settings, and `beta`
+forwarding; its resampling-input check isolates the base/residual
+normalization contract. Changed R/Rd files parse and Rd checks pass, as
+does `git diff --check`. The full unrelated package suite and
+participant-data validation were not run.
+
 Primary files reviewed:
 
 - [R/voxelwise_deconvolution.R](https://hallquistlab.github.io/fmri.pipeline/R/voxelwise_deconvolution.R)
@@ -92,8 +221,8 @@ Primary files reviewed:
 
 All five P1 findings in this audit have now been addressed in the
 working tree. The original findings and line references below describe
-the reviewed checkout; the P2 estimation issues and broader
-methodological recommendations remain separate from these fixes.
+the reviewed checkout; P2 remediation is recorded above; broader
+methodological recommendations remain separate from the P1 fixes.
 
 - **Missing event times:** Target-onset validation precedes collision
   searches, which use finite candidates only. Trials with missing onsets
@@ -307,6 +436,9 @@ observed files before combining outputs.
 
 ### 6. P2: The voxelwise wrapper overrides amplitude-preservation settings
 
+**Status:** Addressed in the normalization/Wiener remediation update
+above. The following describes the original finding.
+
 **Location:** `R/voxelwise_deconvolution.R`, approximately lines 195 and
 235.
 
@@ -330,6 +462,9 @@ appropriate. Save scaling factors and estimation settings with the
 outputs.
 
 ### 7. P2: Wiener GCV uses incorrect effective degrees of freedom
+
+**Status:** Addressed in the normalization/Wiener remediation update
+above. The following describes the original finding.
 
 **Location:** `R/deconvolve_reglin.R`, approximately lines 643–662.
 

@@ -58,7 +58,8 @@ by the resampling approach of Bush 2015.</p>
 <span>  epsilon <span class="op">=</span> <span class="fl">0.005</span>,</span>
 <span>  beta <span class="op">=</span> <span class="fl">40</span>,</span>
 <span>  n_resample <span class="op">=</span> <span class="fl">30</span>,</span>
-<span>  trim_kernel <span class="op">=</span> <span class="cn">TRUE</span></span>
+<span>  trim_kernel <span class="op">=</span> <span class="cn">TRUE</span>,</span>
+<span>  normalize <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -87,12 +88,18 @@ by the resampling approach of Bush 2015.</p>
 
 
 <dt id="arg-n-resample">n_resample<a class="anchor" aria-label="anchor" href="#arg-n-resample"></a></dt>
-<dd><p>number of resampling steps for deconvolution. Default: 30</p></dd>
+<dd><p>number of resampling steps for deconvolution (at least two). Default: 30</p></dd>
 
 
 <dt id="arg-trim-kernel">trim_kernel<a class="anchor" aria-label="anchor" href="#arg-trim-kernel"></a></dt>
 <dd><p>whether to remove the first K time points from the deconvolved vector, corresponding to
 kernel leftovers from convolution. Default: TRUE</p></dd>
+
+
+<dt id="arg-normalize">normalize<a class="anchor" aria-label="anchor" href="#arg-normalize"></a></dt>
+<dd><p>whether to z-score the input before both the base fit and
+residual resampling. Default: TRUE. FALSE is for inputs already standardized
+by the caller; Bush resampling is not calibrated for arbitrary input units.</p></dd>
 
 </dl></div>
     <div class="section level2">

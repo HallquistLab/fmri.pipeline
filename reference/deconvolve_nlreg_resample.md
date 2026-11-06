@@ -13,7 +13,8 @@ deconvolve_nlreg_resample(
   epsilon = 0.005,
   beta = 40,
   n_resample = 30,
-  trim_kernel = TRUE
+  trim_kernel = TRUE,
+  normalize = TRUE
 )
 ```
 
@@ -41,12 +42,20 @@ deconvolve_nlreg_resample(
 
 - n_resample:
 
-  number of resampling steps for deconvolution. Default: 30
+  number of resampling steps for deconvolution (at least two). Default:
+  30
 
 - trim_kernel:
 
   whether to remove the first K time points from the deconvolved vector,
   corresponding to kernel leftovers from convolution. Default: TRUE
+
+- normalize:
+
+  whether to z-score the input before both the base fit and residual
+  resampling. Default: TRUE. FALSE is for inputs already standardized by
+  the caller; Bush resampling is not calibrated for arbitrary input
+  units.
 
 ## Value
 

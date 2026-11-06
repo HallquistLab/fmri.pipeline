@@ -44,6 +44,14 @@
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.4-1" id="fmripipeline-04-1">fmri.pipeline 0.4-1<a class="anchor" aria-label="anchor" href="#fmripipeline-04-1"></a></h2>
 <div class="section level3">
+<h3 id="deconvolution-scaling-wiener-tuning-and-performance-0-4-1">Deconvolution scaling, Wiener tuning, and performance<a class="anchor" aria-label="anchor" href="#deconvolution-scaling-wiener-tuning-and-performance-0-4-1"></a></h3>
+<ul><li>Linear deconvolution supports explicit <code>scaling = "zscore"</code>, <code>"demean"</code>, <code>"none"</code>, or <code>"psc"</code>; z-scoring remains the default. Legacy normalization flags still work. Voxelwise settings now control the actual preprocessing, applied once before padding. Bush voxelwise fits require z-scored input.</li>
+<li>Per-voxel <code>.scaling.csv</code> sidecars record the applied centers and divisors; file metadata records scaling, algorithm, and units. Original-series files expose <code>BOLD_input</code>, with <code>BOLD_z</code> retained only for z-scored observations. Regenerate existing outputs to adopt these changes.</li>
+<li>Bush resampling uses the same normalized observations for its base fit and residual construction. Its new <code>normalize</code> argument defaults to <code>TRUE</code>; voxelwise callers disable redundant normalization. The voxelwise Bush 2015 path now forwards <code>beta</code> and retains matrix dimensions for single-voxel fits.</li>
+<li>Scalar Wiener GCV uses the exact finite-observation smoother trace rather than summing padded Fourier gains. Adaptive PSD Wiener requires fixed lambda and HRF; its conditional filter trace is labeled and GCV is missing, avoiding invalid automatic selection from a data-dependent filter.</li>
+<li>The C++ linear solver builds difference-penalty crossproducts directly and skips scoring for fixed-parameter matrix-only fits. Wiener fitting reuses input/kernel FFTs across candidates and skips unrequested fixed-parameter scoring. The R reference implementation remains available for numerical comparisons.</li>
+</ul></div>
+<div class="section level3">
 <h3 id="event-alignment-and-file-identity-0-4-1">Event alignment and file identity<a class="anchor" aria-label="anchor" href="#event-alignment-and-file-identity-0-4-1"></a></h3>
 <ul><li>Missing/nonfinite event onsets and unsupported windows retain explicit missing epochs with <code>epoch_status</code>; nonfinite collision times no longer abort runs. Original event variable mappings are preserved during alignment.</li>
 <li>Zero-width, one-sided, and sub-sample windows use a unique grid within the requested bounds. An exact singleton observation can be retained without interpolation; duplicate reshape keys cannot silently turn signals into counts.</li>

@@ -71,7 +71,8 @@ inverse convolution problem for one or more BOLD signals.</p>
 <span>  wiener_shrinkage <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"scalar"</span>, <span class="st">"psd"</span><span class="op">)</span>,</span>
 <span>  wiener_psd_smooth <span class="op">=</span> <span class="fl">7L</span>,</span>
 <span>  wiener_psd_floor <span class="op">=</span> <span class="fl">1e-08</span>,</span>
-<span>  gcv_rule <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"min"</span>, <span class="st">"1se"</span><span class="op">)</span></span>
+<span>  gcv_rule <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"min"</span>, <span class="st">"1se"</span><span class="op">)</span>,</span>
+<span>  scaling <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -183,6 +184,14 @@ mean GCV candidate. <code>"1se"</code> selects the largest lambda whose mean GCV
 is within one standard error of the minimum. The standard error is computed
 across signal columns for <code>tune_by = "global"</code>.</p></dd>
 
+
+
+<dt id="arg-scaling">scaling<a class="anchor" aria-label="anchor" href="#arg-scaling"></a></dt>
+<dd><p>Explicit input scaling: <code>"zscore"</code>, <code>"demean"</code>,
+<code>"none"</code>, or <code>"psc"</code> (percent signal change). When supplied,
+overrides <code>normalize</code> and <code>demean</code>. Otherwise those flags retain
+their existing behavior; the default is z-scoring.</p></dd>
+
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
@@ -196,6 +205,30 @@ excluded from fitting and tuning. Their activity columns are returned as
 <code>NA</code>; diagnostics include a per-column <code>signal_status</code> vector
 (<code>"ok"</code>, <code>"constant"</code>, or <code>"nonfinite"</code>). Partial missingness
 excludes the entire signal; observations are not interpolated or deleted.</p>
+<p>Z-scoring remains the default and is recommended for standardized within-run
+trial responses. For fixed HRF/regularization, the linear inverse is homogeneous
+in its input: rescaling the observations rescales activity without changing the
+conditioning of the inverse matrix. Without z-scoring, global GCV gives signals
+with larger variance more weight. Demeaning retains input units; <code>"none"</code>
+retains offsets too and is mainly useful for already-centered data or simulations.
+Percent signal change uses <code>100 * (y - mean(y)) / mean(y)</code> and requires a
+positive baseline well away from zero. It is unsuitable for zero-mean residuals.
+No scaling choice removes HRF uncertainty or regularization-induced attenuation.</p>
+<p>Scaling is applied once. The matrix attributes <code>scaled:center</code>,
+<code>scaled:scale</code>, and <code>scaling</code> record the actual BOLD transformation
+<code>(y - center) / scale</code>; diagnostics expose the same values. With
+<code>scaling = "none"</code>, the recorded center is zero. The activity scale depends
+on this transformation and the unit-sum HRF; it is not a calibrated physiological
+neural-amplitude scale. The removed BOLD mean is not an identified neural baseline.</p>
+<p>Scalar Wiener GCV uses the exact trace of the finite observed smoother, including
+zero extension, latent truncation, and the implemented filtered HRF when whitening.
+This trace is conditional on preprocessing and the AR(1) coefficient; it does not
+include derivatives of estimated preprocessing/noise parameters. Adaptive PSD
+shrinkage requires a fixed lambda and a single HRF. Its diagnostics label the
+filter trace <code>conditional_fixed_psd</code> and return missing GCV values, because
+the trace holding spectra fixed is not the degrees of freedom of the full
+nonlinear, data-adaptive estimator. Scalar diagnostics use
+<code>df_method = "finite_observation_trace"</code>.</p>
     </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
