@@ -20,7 +20,9 @@ run_decon_alignment(
   mem_per_cpu = "4g",
   walltime = "1:00:00",
   scheduler = "slurm",
-  time_audit = FALSE
+  time_audit = FALSE,
+  file_manifest = NULL,
+  fail_on_error = TRUE
 )
 ```
 
@@ -94,6 +96,17 @@ run_decon_alignment(
 
   If TRUE, additional columns will be added to the output showing how
   alignment is calculated vis-a-vis event timing
+
+- file_manifest:
+
+  Optional data.frame with `file`, `id`, `run`, and optional `session`
+  columns. Overrides per-file metadata and legacy filename parsing.
+  Ambiguous identities are errors.
+
+- fail_on_error:
+
+  Stop if any file fails alignment (default TRUE). FALSE explicitly
+  permits partial output with a warning and a file status manifest.
 
 ## Details
 

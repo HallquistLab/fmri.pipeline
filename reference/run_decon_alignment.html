@@ -62,7 +62,9 @@
 <span>  mem_per_cpu <span class="op">=</span> <span class="st">"4g"</span>,</span>
 <span>  walltime <span class="op">=</span> <span class="st">"1:00:00"</span>,</span>
 <span>  scheduler <span class="op">=</span> <span class="st">"slurm"</span>,</span>
-<span>  time_audit <span class="op">=</span> <span class="cn">FALSE</span></span>
+<span>  time_audit <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  file_manifest <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  fail_on_error <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -128,6 +130,17 @@ event-aligned time series. Most commonly, this is "atlas_value", which will lead
 
 <dt id="arg-time-audit">time_audit<a class="anchor" aria-label="anchor" href="#arg-time-audit"></a></dt>
 <dd><p>If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing</p></dd>
+
+
+<dt id="arg-file-manifest">file_manifest<a class="anchor" aria-label="anchor" href="#arg-file-manifest"></a></dt>
+<dd><p>Optional data.frame with <code>file</code>, <code>id</code>, <code>run</code>,
+and optional <code>session</code> columns. Overrides per-file metadata and legacy
+filename parsing. Ambiguous identities are errors.</p></dd>
+
+
+<dt id="arg-fail-on-error">fail_on_error<a class="anchor" aria-label="anchor" href="#arg-fail-on-error"></a></dt>
+<dd><p>Stop if any file fails alignment (default TRUE). FALSE
+explicitly permits partial output with a warning and a file status manifest.</p></dd>
 
 </dl></div>
     <div class="section level2">

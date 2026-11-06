@@ -76,8 +76,7 @@
 
 
 <dt id="arg-add-metadata">add_metadata<a class="anchor" aria-label="anchor" href="#arg-add-metadata"></a></dt>
-<dd><p>A data.frame with one row per value of <code>niftis</code>. Columns of this data.frame
-are added to the output file for identification.</p></dd>
+<dd><p>A data.frame with one row per value of <code>niftis</code>, saved as atlas-level metadata. The <code>id</code>, <code>run</code>, and optional <code>session</code> columns are also saved in per-file sidecars for event alignment.</p></dd>
 
 
 <dt id="arg-out-dir">out_dir<a class="anchor" aria-label="anchor" href="#arg-out-dir"></a></dt>
@@ -86,7 +85,7 @@ are added to the output file for identification.</p></dd>
 
 <dt id="arg-out-file-expression">out_file_expression<a class="anchor" aria-label="anchor" href="#arg-out-file-expression"></a></dt>
 <dd><p>Expression evaluated to resolve the filename for the deconvolved csv files. Default is
-to convert the <code>niftis</code> value for a given subject into a filename by replacing slashes with periods and adding
+to prefix <code>"decon_"</code>, replace slashes in <code>niftis</code> with periods, and add
 the atlas image name. Note that the suffix <code>_deconvolved.csv.gz</code> or <code>_original.csv.gz</code> will be added
 to the expression, so don't pass this piece.</p></dd>
 
@@ -132,7 +131,8 @@ with optional HRF tuning.</p></dd>
 
 
 <dt id="arg-afni-dir">afni_dir<a class="anchor" aria-label="anchor" href="#arg-afni-dir"></a></dt>
-<dd><p>Full path to directory containing AFNI binaries (this function uses 3dMaskdump).</p></dd>
+<dd><p>Retained for compatibility; ignored. NIfTI extraction is internal
+and does not require AFNI.</p></dd>
 
 </dl></div>
     <div class="section level2">
@@ -142,7 +142,16 @@ with optional HRF tuning.</p></dd>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>The Bush 2011 algorithm uses the package's internal RcppArmadillo
-implementation and does not require an external executable.</p>
+implementation and does not require an external executable.
+  Atlas, mask, and input images must share a spatial grid. Constant signals
+  and signals containing nonfinite observations are excluded before fitting;
+  their output rows are retained with missing estimates. The <code>decon_status</code>
+  column identifies <code>"ok"</code>, <code>"constant"</code>, or <code>"nonfinite"</code> signals.
+  Each deconvolution file has a <code>.metadata.csv</code> sidecar containing its
+  source NIfTI path and any <code>id</code>, <code>run</code>, and <code>session</code> columns
+  in <code>add_metadata</code>. These identify files during event alignment, including
+  custom filenames. If absent, alignment falls back to the source path or
+  requires an explicit <code>file_manifest</code>.</p>
 <p>If you want to use subject metadata to name the output file, use <code>this_subj</code> in your <code>out_file_expression</code>, which will give you access to a one-row
   data.frame containing the metadata for the current subject in the loop.</p>
     </div>

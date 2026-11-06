@@ -34,6 +34,8 @@ analysis
 
 - [`fmri_ts$get_ts()`](#method-fmri_ts-get_ts)
 
+- [`fmri_ts$get_events()`](#method-fmri_ts-get_events)
+
 - [`fmri_ts$add_keys()`](#method-fmri_ts-add_keys)
 
 - [`fmri_ts$replace_vm()`](#method-fmri_ts-replace_vm)
@@ -92,6 +94,22 @@ method to get rehydrated time series object with key values
 
   boolean indicating whether to return data.table with original naming
   scheme. Default: FALSE
+
+------------------------------------------------------------------------
+
+### `fmri_ts$get_events()`
+
+Get a copy of event data, optionally restoring original variable names.
+
+#### Usage
+
+    fmri_ts$get_events(orig_names = FALSE)
+
+#### Arguments
+
+- `orig_names`:
+
+  Whether to restore the input variable names.
 
 ------------------------------------------------------------------------
 

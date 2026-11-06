@@ -109,6 +109,13 @@ boundary that can help to have sufficient data to interpolate early and late tim
 <dd><p>If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing</p></dd>
 
 </dl></div>
+    <div class="section level2">
+    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
+    <p>Nonfinite target onsets and unsupported windows retain placeholder rows with
+missing time and values and an <code>epoch_status</code> column. Nonfinite collision
+candidates are ignored. Nearest-event boundaries are strict and do not guarantee
+disjoint trial windows.</p>
+    </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

@@ -44,6 +44,18 @@
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.4-1" id="fmripipeline-04-1">fmri.pipeline 0.4-1<a class="anchor" aria-label="anchor" href="#fmripipeline-04-1"></a></h2>
 <div class="section level3">
+<h3 id="event-alignment-and-file-identity-0-4-1">Event alignment and file identity<a class="anchor" aria-label="anchor" href="#event-alignment-and-file-identity-0-4-1"></a></h3>
+<ul><li>Missing/nonfinite event onsets and unsupported windows retain explicit missing epochs with <code>epoch_status</code>; nonfinite collision times no longer abort runs. Original event variable mappings are preserved during alignment.</li>
+<li>Zero-width, one-sided, and sub-sample windows use a unique grid within the requested bounds. An exact singleton observation can be retained without interpolation; duplicate reshape keys cannot silently turn signals into counts.</li>
+<li>Default deconvolution names are visible, and each new output has an identity metadata sidecar. Alignment supports explicit file manifests, alphanumeric IDs, sessions, and leading-zero labels, with legacy filenames as a fallback. Discovery includes old hidden outputs and excludes sidecars.</li>
+<li>Alignment records a status for every input file and stops on failures by default. Explicit <code>fail_on_error = FALSE</code> permits partial output with a warning. Status is returned in <code>file_status</code> and saved beside requested CSV outputs.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="voxelwise-deconvolution-correctness-0-4-1">Voxelwise deconvolution correctness<a class="anchor" aria-label="anchor" href="#voxelwise-deconvolution-correctness-0-4-1"></a></h3>
+<ul><li>Replaced <code>3dmaskdump</code> with internal RNifti/Rcpp extraction using the same masked voxel indices as the output metadata. Atlas, additional mask, and input spatial geometry are validated before extraction. <code>afni_dir</code> remains accepted for compatibility but is ignored.</li>
+<li>Constant and nonfinite signals are excluded before scaling and fitting, so they cannot invalidate other voxels or influence global tuning. Output rows and columns are preserved with missing estimates and explicit status values (<code>decon_status</code> in voxelwise output, <code>signal_status</code> in linear diagnostics).</li>
+</ul></div>
+<div class="section level3">
 <h3 id="confound-cache-invalidation-and-batch-exit-status-0-4-1">Confound cache invalidation and batch exit status<a class="anchor" aria-label="anchor" href="#confound-cache-invalidation-and-batch-exit-status-0-4-1"></a></h3>
 <ul><li><p>Confound caches now record settings, demeaning, run inputs, and source-file fingerprints. Changes rebuild confounds, column metadata, exclusion decisions, and truncation data together, including cached raw confound and motion inputs. Original image provenance prevents repeated volume dropping when finalized run data are reused. Legacy caches rebuild from original inputs; a previously truncated run without provenance requires its original image and volume count. Existing fitted models must still be explicitly re-estimated after changes.</p></li>
 <li><p>Generated batch scripts now retain nonzero task exit statuses in both serial and background execution, wait for every background task, and preserve failures through cleanup. Each task runs in its own subshell with <code>set -e</code>; setup and cleanup failures also produce a nonzero status. Standard shell rules for conditionals and pipelines still apply. ## L2 model refitting and concatenated confounds</p></li>

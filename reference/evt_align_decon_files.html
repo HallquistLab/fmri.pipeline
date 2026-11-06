@@ -58,7 +58,9 @@
 <span>  atlas_subset <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  out_file <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  ncpus <span class="op">=</span> <span class="fl">8</span>,</span>
-<span>  time_audit <span class="op">=</span> <span class="cn">FALSE</span></span>
+<span>  time_audit <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  file_manifest <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  fail_on_error <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -108,7 +110,26 @@ These cuts are applied to the <code>aggregate_by</code> column, commonly "atlas_
 <dt id="arg-time-audit">time_audit<a class="anchor" aria-label="anchor" href="#arg-time-audit"></a></dt>
 <dd><p>If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing</p></dd>
 
+
+<dt id="arg-file-manifest">file_manifest<a class="anchor" aria-label="anchor" href="#arg-file-manifest"></a></dt>
+<dd><p>Optional data.frame with <code>file</code>, <code>id</code>, <code>run</code>,
+and optional <code>session</code> columns. Overrides per-file metadata and legacy
+filename parsing. Ambiguous identities are errors.</p></dd>
+
+
+<dt id="arg-fail-on-error">fail_on_error<a class="anchor" aria-label="anchor" href="#arg-fail-on-error"></a></dt>
+<dd><p>Stop if any file fails alignment (default TRUE). FALSE
+explicitly permits partial output with a warning and a file status manifest.</p></dd>
+
 </dl></div>
+    <div class="section level2">
+    <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
+    <p>Aligned data with a <code>file_status</code> data.frame attribute. If <code>out_file</code>
+is supplied, the manifest is saved to <code>paste0(out_file, ".files.csv")</code>,
+including on failure. With <code>fail_on_error = TRUE</code>, a
+<code>decon_alignment_error</code> condition includes the manifest, and aligned output
+is not written if any file fails.</p>
+    </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>This is intended to be used internally by <code>run_decon_alignment</code>, which accepts a set of mask/atlas files

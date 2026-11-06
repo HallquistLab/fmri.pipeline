@@ -126,6 +126,16 @@ to provide one interpolated time series per trial.</p></dd>
     <h2 id="author">Author<a class="anchor" aria-label="anchor" href="#author"></a></h2>
     <p>Michael Hallquist</p>
     </div>
+    <div class="section level2">
+    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
+    <p>The interpolation grid includes zero and remains within the requested interval,
+including zero-width and one-sided windows. When trial is a grouping variable,
+missing and unsupported epochs retain missing estimates and an
+<code>epoch_status</code> column: <code>"ok"</code>, <code>"partial"</code>,
+<code>"insufficient_data"</code>, <code>"missing_onset"</code>, <code>"outside_run"</code>,
+<code>"censored"</code>, or <code>"no_data"</code>. These describe timing and available
+output support, not physiological isolation from other trials.</p>
+    </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

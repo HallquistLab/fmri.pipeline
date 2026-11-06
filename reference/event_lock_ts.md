@@ -71,3 +71,10 @@ event_lock_ts(
 
   If TRUE, additional columns will be added to the output showing how
   alignment is calculated vis-a-vis event timing
+
+## Details
+
+Nonfinite target onsets and unsupported windows retain placeholder rows
+with missing time and values and an `epoch_status` column. Nonfinite
+collision candidates are ignored. Nearest-event boundaries are strict
+and do not guarantee disjoint trial windows.

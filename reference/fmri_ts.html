@@ -78,6 +78,7 @@
 <h3 id="public-methods">Public methods<a class="anchor" aria-label="anchor" href="#public-methods"></a></h3>
 <p></p><ul><li><p><a href="#method-fmri_ts-initialize"><code>fmri_ts$new()</code></a></p></li>
 <li><p><a href="#method-fmri_ts-get_ts"><code>fmri_ts$get_ts()</code></a></p></li>
+<li><p><a href="#method-fmri_ts-get_events"><code>fmri_ts$get_events()</code></a></p></li>
 <li><p><a href="#method-fmri_ts-add_keys"><code>fmri_ts$add_keys()</code></a></p></li>
 <li><p><a href="#method-fmri_ts-replace_vm"><code>fmri_ts$replace_vm()</code></a></p></li>
 <li><p><a href="#method-fmri_ts-get_kvars"><code>fmri_ts$get_kvars()</code></a></p></li>
@@ -125,13 +126,29 @@
 
 </div>
 
+<p></p><hr><a id="method-fmri_ts-get_events"></a><div class="section">
+<h3 id="fmri-ts-get-events-"><code>fmri_ts$get_events()</code><a class="anchor" aria-label="anchor" href="#fmri-ts-get-events-"></a></h3>
+<p>Get a copy of event data, optionally restoring original variable names.</p><div class="section">
+<h4 id="usage-2">Usage<a class="anchor" aria-label="anchor" href="#usage-2"></a></h4>
+<p></p><div class="sourceCode"><pre><code><span><span class="va">fmri_ts</span><span class="op">$</span><span class="fu">get_events</span><span class="op">(</span>orig_names <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span></code></pre></div><p></p>
+</div><p></p><div class="section">
+<h4 id="arguments-2">Arguments<a class="anchor" aria-label="anchor" href="#arguments-2"></a></h4>
+<p></p><dl><dt><code>orig_names</code></dt>
+<dd><p>Whether to restore the input variable names.</p></dd>
+
+
+</dl><p></p>
+</div>
+
+</div>
+
 <p></p><hr><a id="method-fmri_ts-add_keys"></a><div class="section">
 <h3 id="fmri-ts-add-keys-"><code>fmri_ts$add_keys()</code><a class="anchor" aria-label="anchor" href="#fmri-ts-add-keys-"></a></h3>
 <p>method to add a variable in ts_data to the set of keying variables for further use</p><div class="section">
-<h4 id="usage-2">Usage<a class="anchor" aria-label="anchor" href="#usage-2"></a></h4>
+<h4 id="usage-3">Usage<a class="anchor" aria-label="anchor" href="#usage-3"></a></h4>
 <p></p><div class="r"><div class="sourceCode"><pre><code><span><span class="va">fmri_ts</span><span class="op">$</span><span class="fu">add_keys</span><span class="op">(</span><span class="va">kv</span><span class="op">)</span></span></code></pre></div><p></p></div>
 </div><p></p><div class="section">
-<h4 id="arguments-2">Arguments<a class="anchor" aria-label="anchor" href="#arguments-2"></a></h4>
+<h4 id="arguments-3">Arguments<a class="anchor" aria-label="anchor" href="#arguments-3"></a></h4>
 <p></p><div class="arguments"><dl><dt><code>kv</code></dt>
 <dd><p>A vector of one or more variables to RLE-encode and add as keys the object</p></dd>
 
@@ -144,10 +161,10 @@
 <p></p><hr><a id="method-fmri_ts-replace_vm"></a><div class="section">
 <h3 id="fmri-ts-replace-vm-"><code>fmri_ts$replace_vm()</code><a class="anchor" aria-label="anchor" href="#fmri-ts-replace-vm-"></a></h3>
 <p>method to replace one or more variable mappings in the object</p><div class="section">
-<h4 id="usage-3">Usage<a class="anchor" aria-label="anchor" href="#usage-3"></a></h4>
+<h4 id="usage-4">Usage<a class="anchor" aria-label="anchor" href="#usage-4"></a></h4>
 <p></p><div class="r"><div class="sourceCode"><pre><code><span><span class="va">fmri_ts</span><span class="op">$</span><span class="fu">replace_vm</span><span class="op">(</span><span class="va">...</span><span class="op">)</span></span></code></pre></div><p></p></div>
 </div><p></p><div class="section">
-<h4 id="arguments-3">Arguments<a class="anchor" aria-label="anchor" href="#arguments-3"></a></h4>
+<h4 id="arguments-4">Arguments<a class="anchor" aria-label="anchor" href="#arguments-4"></a></h4>
 <p></p><div class="arguments"><dl><dt><code>...</code></dt>
 <dd><p>a set of arguments, each one of which replaces a field in
 the variable mapping with a new specification</p></dd>
@@ -161,7 +178,7 @@ the variable mapping with a new specification</p></dd>
 <p></p><hr><a id="method-fmri_ts-get_kvars"></a><div class="section">
 <h3 id="fmri-ts-get-kvars-"><code>fmri_ts$get_kvars()</code><a class="anchor" aria-label="anchor" href="#fmri-ts-get-kvars-"></a></h3>
 <p>return names of key variables</p><div class="section">
-<h4 id="usage-4">Usage<a class="anchor" aria-label="anchor" href="#usage-4"></a></h4>
+<h4 id="usage-5">Usage<a class="anchor" aria-label="anchor" href="#usage-5"></a></h4>
 <p></p><div class="r"><div class="sourceCode"><pre><code><span><span class="va">fmri_ts</span><span class="op">$</span><span class="fu">get_kvars</span><span class="op">(</span><span class="op">)</span></span></code></pre></div><p></p></div>
 </div>
 
@@ -170,7 +187,7 @@ the variable mapping with a new specification</p></dd>
 <p></p><hr><a id="method-fmri_ts-get_vmvec"></a><div class="section">
 <h3 id="fmri-ts-get-vmvec-"><code>fmri_ts$get_vmvec()</code><a class="anchor" aria-label="anchor" href="#fmri-ts-get-vmvec-"></a></h3>
 <p>return variable mapping information</p><div class="section">
-<h4 id="usage-5">Usage<a class="anchor" aria-label="anchor" href="#usage-5"></a></h4>
+<h4 id="usage-6">Usage<a class="anchor" aria-label="anchor" href="#usage-6"></a></h4>
 <p></p><div class="r"><div class="sourceCode"><pre><code><span><span class="va">fmri_ts</span><span class="op">$</span><span class="fu">get_vmvec</span><span class="op">(</span><span class="op">)</span></span></code></pre></div><p></p></div>
 </div>
 
@@ -179,10 +196,10 @@ the variable mapping with a new specification</p></dd>
 <p></p><hr><a id="method-fmri_ts-export"></a><div class="section">
 <h3 id="fmri-ts-export-"><code>fmri_ts$export()</code><a class="anchor" aria-label="anchor" href="#fmri-ts-export-"></a></h3>
 <p>not currently used</p><div class="section">
-<h4 id="usage-6">Usage<a class="anchor" aria-label="anchor" href="#usage-6"></a></h4>
+<h4 id="usage-7">Usage<a class="anchor" aria-label="anchor" href="#usage-7"></a></h4>
 <p></p><div class="r"><div class="sourceCode"><pre><code><span><span class="va">fmri_ts</span><span class="op">$</span><span class="fu">export</span><span class="op">(</span><span class="va">filename</span><span class="op">)</span></span></code></pre></div><p></p></div>
 </div><p></p><div class="section">
-<h4 id="arguments-4">Arguments<a class="anchor" aria-label="anchor" href="#arguments-4"></a></h4>
+<h4 id="arguments-5">Arguments<a class="anchor" aria-label="anchor" href="#arguments-5"></a></h4>
 <p></p><div class="arguments"><dl><dt><code>filename</code></dt>
 <dd><p>for writing out data</p></dd>
 
@@ -195,10 +212,10 @@ the variable mapping with a new specification</p></dd>
 <p></p><hr><a id="method-fmri_ts-clone"></a><div class="section">
 <h3 id="fmri-ts-clone-"><code>fmri_ts$clone()</code><a class="anchor" aria-label="anchor" href="#fmri-ts-clone-"></a></h3>
 <p>The objects of this class are cloneable with this method.</p><div class="section">
-<h4 id="usage-7">Usage<a class="anchor" aria-label="anchor" href="#usage-7"></a></h4>
+<h4 id="usage-8">Usage<a class="anchor" aria-label="anchor" href="#usage-8"></a></h4>
 <p></p><div class="r"><div class="sourceCode"><pre><code><span><span class="va">fmri_ts</span><span class="op">$</span><span class="fu">clone</span><span class="op">(</span>deep <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span></code></pre></div><p></p></div>
 </div><p></p><div class="section">
-<h4 id="arguments-5">Arguments<a class="anchor" aria-label="anchor" href="#arguments-5"></a></h4>
+<h4 id="arguments-6">Arguments<a class="anchor" aria-label="anchor" href="#arguments-6"></a></h4>
 <p></p><div class="arguments"><dl><dt><code>deep</code></dt>
 <dd><p>Whether to make a deep clone.</p></dd>
 

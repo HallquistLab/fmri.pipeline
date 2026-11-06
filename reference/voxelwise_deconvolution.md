@@ -34,8 +34,9 @@ voxelwise_deconvolution(
 
 - add_metadata:
 
-  A data.frame with one row per value of `niftis`. Columns of this
-  data.frame are added to the output file for identification.
+  A data.frame with one row per value of `niftis`, saved as atlas-level
+  metadata. The `id`, `run`, and optional `session` columns are also
+  saved in per-file sidecars for event alignment.
 
 - out_dir:
 
@@ -45,11 +46,10 @@ voxelwise_deconvolution(
 - out_file_expression:
 
   Expression evaluated to resolve the filename for the deconvolved csv
-  files. Default is to convert the `niftis` value for a given subject
-  into a filename by replacing slashes with periods and adding the atlas
-  image name. Note that the suffix `_deconvolved.csv.gz` or
-  `_original.csv.gz` will be added to the expression, so don't pass this
-  piece.
+  files. Default is to prefix `"decon_"`, replace slashes in `niftis`
+  with periods, and add the atlas image name. Note that the suffix
+  `_deconvolved.csv.gz` or `_original.csv.gz` will be added to the
+  expression, so don't pass this piece.
 
 - log_file:
 
@@ -99,8 +99,8 @@ voxelwise_deconvolution(
 
 - afni_dir:
 
-  Full path to directory containing AFNI binaries (this function uses
-  3dMaskdump).
+  Retained for compatibility; ignored. NIfTI extraction is internal and
+  does not require AFNI.
 
 ## Value
 
@@ -109,7 +109,16 @@ Nothing (invisible NULL).
 ## Details
 
 The Bush 2011 algorithm uses the package's internal RcppArmadillo
-implementation and does not require an external executable.
+implementation and does not require an external executable. Atlas, mask,
+and input images must share a spatial grid. Constant signals and signals
+containing nonfinite observations are excluded before fitting; their
+output rows are retained with missing estimates. The `decon_status`
+column identifies `"ok"`, `"constant"`, or `"nonfinite"` signals. Each
+deconvolution file has a `.metadata.csv` sidecar containing its source
+NIfTI path and any `id`, `run`, and `session` columns in `add_metadata`.
+These identify files during event alignment, including custom filenames.
+If absent, alignment falls back to the source path or requires an
+explicit `file_manifest`.
 
 If you want to use subject metadata to name the output file, use
 `this_subj` in your `out_file_expression`, which will give you access to

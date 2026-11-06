@@ -89,3 +89,13 @@ get_medusa_interpolated_ts(
 ## Author
 
 Michael Hallquist
+
+## Details
+
+The interpolation grid includes zero and remains within the requested
+interval, including zero-width and one-sided windows. When trial is a
+grouping variable, missing and unsupported epochs retain missing
+estimates and an `epoch_status` column: `"ok"`, `"partial"`,
+`"insufficient_data"`, `"missing_onset"`, `"outside_run"`, `"censored"`,
+or `"no_data"`. These describe timing and available output support, not
+physiological isolation from other trials.

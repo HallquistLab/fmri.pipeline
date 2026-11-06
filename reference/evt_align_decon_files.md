@@ -16,7 +16,9 @@ evt_align_decon_files(
   atlas_subset = NULL,
   out_file = NULL,
   ncpus = 8,
-  time_audit = FALSE
+  time_audit = FALSE,
+  file_manifest = NULL,
+  fail_on_error = TRUE
 )
 ```
 
@@ -72,6 +74,25 @@ evt_align_decon_files(
 
   If TRUE, additional columns will be added to the output showing how
   alignment is calculated vis-a-vis event timing
+
+- file_manifest:
+
+  Optional data.frame with `file`, `id`, `run`, and optional `session`
+  columns. Overrides per-file metadata and legacy filename parsing.
+  Ambiguous identities are errors.
+
+- fail_on_error:
+
+  Stop if any file fails alignment (default TRUE). FALSE explicitly
+  permits partial output with a warning and a file status manifest.
+
+## Value
+
+Aligned data with a `file_status` data.frame attribute. If `out_file` is
+supplied, the manifest is saved to `paste0(out_file, ".files.csv")`,
+including on failure. With `fail_on_error = TRUE`, a
+`decon_alignment_error` condition includes the manifest, and aligned
+output is not written if any file fails.
 
 ## Details
 

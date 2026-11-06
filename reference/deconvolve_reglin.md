@@ -138,3 +138,11 @@ deconvolve_reglin(
 
 A matrix of deconvolved time series, or a list with `activity` and
 tuning diagnostics when `return_diagnostics = TRUE`.
+
+## Details
+
+Constant signals and signals containing nonfinite observations are
+excluded from fitting and tuning. Their activity columns are returned as
+`NA`; diagnostics include a per-column `signal_status` vector (`"ok"`,
+`"constant"`, or `"nonfinite"`). Partial missingness excludes the entire
+signal; observations are not interpolated or deleted.

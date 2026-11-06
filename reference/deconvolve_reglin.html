@@ -189,6 +189,14 @@ across signal columns for <code>tune_by = "global"</code>.</p></dd>
     <p>A matrix of deconvolved time series, or a list with <code>activity</code>
   and tuning diagnostics when <code>return_diagnostics = TRUE</code>.</p>
     </div>
+    <div class="section level2">
+    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
+    <p>Constant signals and signals containing nonfinite observations are
+excluded from fitting and tuning. Their activity columns are returned as
+<code>NA</code>; diagnostics include a per-column <code>signal_status</code> vector
+(<code>"ok"</code>, <code>"constant"</code>, or <code>"nonfinite"</code>). Partial missingness
+excludes the entire signal; observations are not interpolated or deleted.</p>
+    </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>
