@@ -40,6 +40,27 @@
 #'   If you want to use subject metadata to name the output file, use \code{this_subj} in your \code{out_file_expression}, which will give you access to a one-row
 #'   data.frame containing the metadata for the current subject in the loop.
 #'
+#'   Set \code{decon_settings$scaling} explicitly to \code{"zscore"},
+#'   \code{"demean"}, \code{"none"}, or \code{"psc"}. The default is z-scoring.
+#'   An explicit mode overrides \code{normalize}/\code{demean}; otherwise
+#'   \code{normalize = FALSE} selects demeaning unless \code{demean = FALSE} too.
+#'   The voxelwise Bush paths require z-scoring because their learning-rate and
+#'   bounded-encoding/resampling behavior is sensitive to scale. Their output remains
+#'   a bounded encoding. Use the linear algorithm for estimates in alternative units.
+#'   For linear methods, z-scoring is recommended for standardized trial responses;
+#'   demeaning retains input units, and percent signal change requires an appropriate
+#'   positive baseline rather than residualized/zero-mean data. Raw scale does not by
+#'   itself degrade the conditioning of the fixed linear inverse, but it changes
+#'   signal weights during global tuning. See \code{\link{deconvolve_reglin}}.
+#'
+#'   Scaling uses the observed run once, before the existing zero tail is appended;
+#'   solver normalization is disabled, as is linear-solver demeaning of padded data. Each output has
+#'   a \code{.scaling.csv} sidecar containing voxel number, mode, subtracted center,
+#'   divisor, and validity status. Its \code{.metadata.csv} records algorithm, scaling,
+#'   output units, and the scaling filename. Original-series files contain
+#'   \code{BOLD_input}, the transformed observations supplied before padding, plus
+#'   the legacy \code{BOLD_z} alias only for z-scored inputs. Existing output files
+#'   are skipped; regenerate them to adopt the new scaling behavior and sidecars.
 #' @examples
 #'   \dontrun{
 #'
@@ -87,10 +108,38 @@ voxelwise_deconvolution <- function(
     c("bush2011", "bush2015", "reglin", "regularized_linear")
   )
 
+  checkmate::assert_list(decon_settings)
+  decon_settings <- utils::modifyList(list(nev_lr = 0.01, epsilon = 0.005,
+    beta = 60, n_resample = 25), decon_settings)
+
+  # Explicit scaling overrides legacy flags. The default remains z-scoring.
+  # Bush's bounded encoding/fixed learning rate and resampling implementation
+  # assume standardized inputs; alternative units are supported by reglin.
+  input_scaling <- resolve_decon_scaling(decon_settings[["scaling"]],
+    normalize = if (is.null(decon_settings[["normalize"]])) TRUE else decon_settings[["normalize"]],
+    demean = if (is.null(decon_settings[["demean"]])) TRUE else decon_settings[["demean"]])
+  if (algorithm %in% c("bush2011", "bush2015") && input_scaling != "zscore") {
+    stop("Voxelwise Bush/Cisler deconvolution requires scaling = 'zscore'; ",
+      "use reglin for alternative input units.")
+  }
+
   if (!is.null(decon_settings$kernel)) {
     hrf_pad <- length(decon_settings$kernel)
   } else {
     stop("At present no alternative way to set hrf_pad if $kernel not passed in decon_settings")
+  }
+
+  # Configuration errors must be raised before workers can turn fit failures
+  # into missing estimates in otherwise successful output files.
+  if (algorithm %in% c("reglin", "regularized_linear") &&
+      identical(decon_settings[["backend"]], "wiener") &&
+      identical(decon_settings[["wiener_shrinkage"]], "psd")) {
+    candidate_kernels <- build_decon_kernel_grid(decon_settings$kernel,
+      decon_settings$kernel_grid,
+      if (is.null(decon_settings$hrf_lags)) 0L else decon_settings$hrf_lags)
+    n_lambda <- if (!is.null(decon_settings[["lambda"]])) 1L else
+      if (is.null(decon_settings$lambda_grid)) 20L else length(unique(decon_settings$lambda_grid))
+    validate_wiener_tuning("wiener", "psd", n_lambda, length(candidate_kernels))
   }
 
   if (is.null(atlas_files)) {
@@ -173,7 +222,8 @@ voxelwise_deconvolution <- function(
     ff <- foreach(si = seq_along(niftis),
       .packages=c("dplyr", "readr", "data.table", "fmri.pipeline", "foreach", "iterators"),
       .export=c("mat2df", "extract_nifti_voxel_ts", "roi_image_geometry",
-        "validate_roi_geometry", "decon_signal_status")) %dopar% {
+        "validate_roi_geometry", "decon_signal_status", "scale_decon_input",
+        "resolve_decon_scaling")) %dopar% {
 
       #get the si-th row of the metadata to match nifti, allow one to use this_subj in out_file_expression
       if (!is.null(add_metadata)) {
@@ -201,19 +251,18 @@ voxelwise_deconvolution <- function(
       decon_status <- decon_signal_status(t(to_deconvolve))
       valid_voxels <- decon_status == "ok"
       scaled_input <- matrix(NA_real_, nrow(to_deconvolve), ncol(to_deconvolve))
+      centers <- divisors <- rep(NA_real_, nrow(to_deconvolve))
       if (any(valid_voxels)) {
-        scaled_input[valid_voxels, ] <- t(scale(t(to_deconvolve[valid_voxels, , drop = FALSE])))
+        scaled <- scale_decon_input(t(to_deconvolve[valid_voxels, , drop = FALSE]),
+          scaling = input_scaling)
+        scaled_input[valid_voxels, ] <- t(scaled$y)
+        centers[valid_voxels] <- scaled$center
+        divisors[valid_voxels] <- scaled$scale
       }
       to_deconvolve <- scaled_input
       if (any(!valid_voxels)) {
         warning(sum(!valid_voxels), " constant or nonfinite voxel signals excluded from deconvolution: ", niftis[si])
       }
-
-      # just demean, which will rescale to percent signal change around 0 (this matches Bush 2015)
-      #to_deconvolve <- t(apply(to_deconvolve, 1, function(x) { scale(x, scale=FALSE) }))
-
-      # pct signal change around 0
-      #to_deconvolve <- t(apply(to_deconvolve, 1, function(x) { x/mean(x)*100 - 100 }))
 
       # Zero pad the tail end to keep the deconvolved signal stable at the
       # boundary and trim the same padding after deconvolution.
@@ -230,12 +279,15 @@ voxelwise_deconvolution <- function(
         if (algorithm == "bush2015") {
           #use R implementation of Bush 2015 algorithm
           deconv_mat <- foreach(vox_ts=iter(alg_input, by="row"), .combine="rbind", .packages=c("fmri.pipeline")) %do% {
-            reg <- tryCatch(deconvolve_nlreg_resample(as.vector(vox_ts), kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon, n_resample=decon_settings$n_resample),
+            reg <- tryCatch(deconvolve_nlreg_resample(as.vector(vox_ts), kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon, n_resample=decon_settings$n_resample, beta=decon_settings$beta, normalize=FALSE),
               error=function(e) { cat("Problem deconvolving: ", niftis[si], as.character(e), "\n", file=log_file, append=TRUE); return(rep(NA, length(vox_ts))) })
 
             if (is.list(reg)) { reg <- reg$NEVmean } #just keep the mean resampled events vector
             return(reg)
           }
+          # foreach returns the single result unchanged when only one voxel
+          # is fitted, so its rbind combiner has not made a matrix yet.
+          if (is.null(dim(deconv_mat))) deconv_mat <- matrix(deconv_mat, nrow = 1L)
         } else if (algorithm %in% c("reglin", "regularized_linear")) {
           # Regularized linear deconvolution estimates continuous latent activity without
           # sigmoid bounding. R function is time x voxels, matching the Rcpp path.
@@ -250,8 +302,8 @@ voxelwise_deconvolution <- function(
               kernel_grid = decon_settings$kernel_grid,
               hrf_lags = if (is.null(decon_settings$hrf_lags)) 0L else decon_settings$hrf_lags,
               tune_by = if (is.null(decon_settings$tune_by)) "global" else decon_settings$tune_by,
-              normalize = if (is.null(decon_settings$normalize)) FALSE else decon_settings$normalize,
-              demean = if (is.null(decon_settings$demean)) TRUE else decon_settings$demean,
+              normalize = FALSE,
+              demean = FALSE,
               prewhiten_gcv = if (is.null(decon_settings$prewhiten_gcv)) FALSE else decon_settings$prewhiten_gcv,
               prewhiten_rho = decon_settings$prewhiten_rho,
               backend = if (is.null(decon_settings$backend)) "cpp" else decon_settings$backend,
@@ -272,7 +324,7 @@ voxelwise_deconvolution <- function(
           # This should use the new internal RcppArmadillo function
           # Rcpp function is time x voxels... transpose inputs and outputs to match voxels x time expectations
           alg_input <- t(alg_input)
-          deconv_mat <- tryCatch(deconvolve_nlreg(BOLDobs = alg_input, kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon, beta=decon_settings$beta),
+          deconv_mat <- tryCatch(deconvolve_nlreg(BOLDobs = alg_input, kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon, beta=decon_settings$beta, normalize=FALSE),
             error=function(e) {
               cat("Problem deconvolving: ", niftis[si], as.character(e), "\n", file=log_file, append=TRUE)
               return(matrix(NA, nrow=nrow(alg_input), ncol=ncol(alg_input)))
@@ -307,7 +359,14 @@ voxelwise_deconvolution <- function(
 
       # A per-file sidecar makes custom filenames independent of identity
       # parsing. Preserve identifier strings such as "001" and "participantA".
-      identity_metadata <- data.frame(.nifti = niftis[si])
+      scaling_file <- paste0(out_name, ".scaling.csv")
+      readr::write_csv(data.frame(vnum = seq_along(centers),
+        scaling = input_scaling, center = centers, scale = divisors,
+        decon_status = decon_status), scaling_file)
+      identity_metadata <- data.frame(.nifti = niftis[si], algorithm = algorithm,
+        scaling = input_scaling, scaling_file = basename(scaling_file),
+        decon_units = if (algorithm %in% c("bush2011", "bush2015")) "bounded_encoding" else
+          switch(input_scaling, zscore = "input_sd", psc = "percent_signal_change", "input_units"))
       if (!is.null(add_metadata)) {
         for (column in intersect(c("id", "run", "session"), names(this_subj))) {
           identity_metadata[[column]] <- this_subj[[column]]
@@ -317,7 +376,7 @@ voxelwise_deconvolution <- function(
 
       #handle output of original time series (before deconvolution) -- mostly useful for debugging
       if (isTRUE(save_original_ts)) {
-        to_deconvolve_melt <- mat2df(to_deconvolve, value_name="BOLD_z", varnames=c("vnum", "time"))
+        to_deconvolve_melt <- mat2df(to_deconvolve, value_name="BOLD_input", varnames=c("vnum", "time"))
         to_deconvolve_melt$time <- (to_deconvolve_melt$time - 1)*TR + time_offset #convert back to seconds; first volume is time 0
 
         orig_df <- to_deconvolve_melt %>% 
@@ -325,6 +384,9 @@ voxelwise_deconvolution <- function(
           left_join(a_coordinates, by="vnum") %>%
           #mutate(nifti=niftis[si]) %>%
           dplyr::select(-"i", -"j", -"k") #omitting i, j, k for now
+
+        # Keep the historical name only when it accurately describes the data.
+        if (input_scaling == "zscore") orig_df$BOLD_z <- orig_df$BOLD_input
 
         #if (!is.null(add_metadata)) { orig_df <- orig_df %>% cbind(this_subj) }
 

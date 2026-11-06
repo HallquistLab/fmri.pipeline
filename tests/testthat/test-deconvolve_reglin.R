@@ -241,7 +241,7 @@ test_that("deconvolve_reglin PSD Wiener backend recovers latent signal", {
   result <- deconvolve_reglin(
     BOLDobs = bold,
     kernel = kernel,
-    lambda_grid = c(1e-4, 1e-2, 1),
+    lambda = 1e-2,
     normalize = FALSE,
     demean = FALSE,
     backend = "wiener",
@@ -251,7 +251,9 @@ test_that("deconvolve_reglin PSD Wiener backend recovers latent signal", {
 
   expect_equal(dim(result$activity), c(n_time, 1L))
   expect_equal(result$wiener_shrinkage, "psd")
-  expect_equal(nrow(result$tuning), 3L)
+  expect_equal(nrow(result$tuning), 1L)
+  expect_true(is.na(result$tuning$gcv))
+  expect_equal(result$df_method, "conditional_fixed_psd")
   expect_gt(stats::cor(result$activity[, 1L], latent[length(kernel):n_latent]), 0.75)
 })
 
@@ -319,4 +321,146 @@ test_that("deconvolve_reglin one-standard-error GCV rule works for Wiener backen
   expect_true("gcv_se" %in% names(one_se_result$tuning))
   expect_gte(one_se_result$lambda, min_result$lambda)
   expect_equal(one_se_result$gcv_rule, "1se")
+})
+
+
+test_that("explicit linear scaling has correct units and records the applied transform", {
+  y <- cbind(100 + sin(seq_len(40)), 200 + 3 * cos(seq_len(40)))
+  transforms <- list(none = y, demean = sweep(y, 2, colMeans(y)),
+    zscore = scale(y), psc = sweep(sweep(y, 2, colMeans(y)), 2, colMeans(y) / 100, "/"))
+  for (backend in c("cpp", "r", "wiener")) {
+    for (mode in names(transforms)) {
+      fit <- deconvolve_reglin(y, c(0.1, 0.6, 0.3), lambda = 0.1,
+        scaling = mode, backend = backend, return_diagnostics = TRUE)
+      ref <- deconvolve_reglin(transforms[[mode]], c(0.1, 0.6, 0.3),
+        lambda = 0.1, normalize = FALSE, demean = FALSE, backend = backend)
+      expect_equal(fit$activity, ref, ignore_attr = TRUE, tolerance = 1e-9)
+      expect_equal(fit$scaling, mode)
+      expect_equal(sweep(sweep(y, 2, fit$scaled_center), 2, fit$scaled_scale, "/"),
+        transforms[[mode]], ignore_attr = TRUE)
+    }
+    expect_error(deconvolve_reglin(y - 150, c(0.1, 0.6, 0.3), scaling = "psc", backend = backend),
+      "positive baseline")
+  }
+})
+
+test_that("linear estimates and tuning behave predictably across arbitrary input scales", {
+  set.seed(20261106)
+  y <- matrix(rnorm(120), 40, 3)
+  for (backend in c("cpp", "r", "wiener")) {
+    ref <- deconvolve_reglin(y, c(0.1, 0.6, 0.3), lambda_grid = c(0.01, 0.1, 1),
+      scaling = "none", backend = backend, return_diagnostics = TRUE)
+    for (gain in c(1e-4, 2, 1e6)) {
+      scaled <- deconvolve_reglin(y * gain, c(0.1, 0.6, 0.3),
+        lambda_grid = c(0.01, 0.1, 1), scaling = "none", backend = backend,
+        return_diagnostics = TRUE)
+      expect_equal(scaled$activity / gain, ref$activity, ignore_attr = TRUE, tolerance = 1e-8)
+      expect_equal(scaled$lambda, ref$lambda)
+      standardized <- deconvolve_reglin(y * gain + 100 * gain, c(0.1, 0.6, 0.3),
+        lambda = 0.1, backend = backend)
+      expect_equal(standardized, deconvolve_reglin(y, c(0.1, 0.6, 0.3),
+        lambda = 0.1, backend = backend), ignore_attr = TRUE, tolerance = 1e-8)
+    }
+  }
+})
+
+test_that("Wiener effective df equals the trace of the finite observed smoother", {
+  # The dense oracle builds each response to an observed unit impulse, then
+  # reconvolves it. It does not use the FFT trace formula under test.
+  for (n in c(3L, 8L, 17L, 80L)) {
+    for (rho in c(0, 0.6)) {
+      kernel <- c(0.05, 0.25, 0.45, 0.2, 0.05)
+      fit_kernel <- fmri.pipeline:::ar1_filter_kernel(kernel, rho)
+      m <- n + length(kernel) - 1L
+      for (lam in c(0, 0.001, 0.1, 10)) {
+        x <- fmri.pipeline:::wiener_deconvolve_matrix(diag(n), fit_kernel, lam, m)
+        smoother <- fmri.pipeline:::wiener_reconvolve_matrix(x, fit_kernel, n)
+        plan <- fmri.pipeline:::wiener_fft_plan(n, m, fit_kernel)
+        filter <- fmri.pipeline:::wiener_inverse_filter(plan$h_fft, lam)
+        df <- fmri.pipeline:::wiener_degrees_freedom(filter, fit_kernel, n)
+        expect_equal(df, sum(diag(smoother)), tolerance = 1e-11)
+      }
+    }
+  }
+  fit <- deconvolve_reglin(sin(1:80), kernel, lambda = 0.1, scaling = "none",
+    backend = "wiener", return_diagnostics = TRUE)
+  expect_equal(fit$tuning$df, 40.32813, tolerance = 1e-6)
+})
+
+test_that("Wiener tuning agrees with independent dense smoother scoring", {
+  set.seed(1908)
+  y <- matrix(rnorm(36), 12, 3)
+  kernel <- c(0.05, 0.25, 0.45, 0.2, 0.05)
+  lambdas <- c(0.001, 0.01, 0.1, 1)
+  for (rho in c(0, 0.5)) {
+    fit_kernel <- fmri.pipeline:::ar1_filter_kernel(kernel, rho)
+    y_fit <- fmri.pipeline:::apply_ar1_whitening(y, rho)
+    scores <- vapply(lambdas, function(lam) {
+      x <- fmri.pipeline:::wiener_deconvolve_matrix(diag(12), fit_kernel, lam, 16)
+      smoother <- fmri.pipeline:::wiener_reconvolve_matrix(x, fit_kernel, 12)
+      colSums((y_fit - smoother %*% y_fit)^2) / (12 - sum(diag(smoother)))^2
+    }, numeric(3))
+    for (tune in c("global", "signal")) {
+      fit <- deconvolve_reglin(y, kernel, lambda_grid = lambdas, scaling = "none",
+        backend = "wiener", prewhiten_gcv = rho != 0, prewhiten_rho = rho,
+        tune_by = tune, return_diagnostics = TRUE)
+      expect_equal(fit$tuning$gcv, colMeans(scores), tolerance = 1e-11)
+      expected <- if (tune == "global") lambdas[which.min(colMeans(scores))] else
+        lambdas[apply(scores, 1, which.min)]
+      expect_equal(fit$lambda, expected)
+    }
+  }
+})
+
+test_that("adaptive PSD Wiener does not use a fixed-filter trace for automatic tuning", {
+  args <- list(BOLDobs = sin(1:30), kernel = c(0.1, 0.6, 0.3), backend = "wiener",
+    wiener_shrinkage = "psd")
+  expect_error(do.call(deconvolve_reglin, args), "Automatic GCV tuning is not supported")
+  expect_error(do.call(deconvolve_reglin, c(args, list(lambda = 0.1, hrf_lags = 0:1))),
+    "Automatic GCV tuning is not supported")
+  for (tune in c("global", "signal")) {
+    fit <- do.call(deconvolve_reglin, c(args, list(lambda = 0.1, tune_by = tune,
+      return_diagnostics = TRUE)))
+    expect_true(all(is.finite(fit$activity)))
+    expect_equal(fit$lambda, 0.1)
+    expect_true(is.na(fit$tuning$gcv))
+  }
+})
+
+test_that("optimized C++ fitting preserves reference activity, df and candidate selection", {
+  set.seed(267)
+  y <- matrix(rnorm(120), 40, 3)
+  for (penalty in c("ridge", "diff1", "diff2")) {
+    for (tune in c("global", "signal")) {
+      for (rho in c(0, 0.4)) {
+        args <- list(BOLDobs = y, kernel = c(0.1, 0.6, 0.3),
+          lambda_grid = c(0.001, 0.1, 10), hrf_lags = 0:1, penalty = penalty,
+          tune_by = tune, prewhiten_gcv = rho != 0, prewhiten_rho = rho,
+          return_diagnostics = TRUE)
+        actual <- do.call(deconvolve_reglin, c(args, list(backend = "cpp")))
+        oracle <- do.call(deconvolve_reglin, c(args, list(backend = "r")))
+        expect_equal(actual$activity, oracle$activity, ignore_attr = TRUE, tolerance = 1e-8)
+        expect_equal(actual$tuning, oracle$tuning, tolerance = 1e-8)
+        expect_equal(actual$lambda, oracle$lambda, ignore_attr = TRUE)
+        expect_equal(actual$kernel_index, oracle$kernel_index, ignore_attr = TRUE)
+      }
+    }
+  }
+})
+
+test_that("fixed-parameter fast paths agree with diagnostic fits", {
+  y <- cbind(sin(1:30), cos(1:30))
+  for (backend in c("cpp", "wiener")) {
+    for (tune in c("global", "signal")) {
+      for (rule in c("min", "1se")) {
+        args <- list(BOLDobs = y, kernel = c(0.1, 0.6, 0.3), lambda = 0.1,
+          backend = backend, tune_by = tune, gcv_rule = rule,
+          prewhiten_gcv = TRUE, prewhiten_rho = 0.4, trim_kernel = FALSE)
+        fast <- do.call(deconvolve_reglin, args)
+        full <- do.call(deconvolve_reglin, c(args, list(return_diagnostics = TRUE)))
+        expect_equal(fast, full$activity, tolerance = 1e-8)
+        expect_equal(as.numeric(full$lambda), rep(0.1, if (tune == "global") 1L else 2L))
+      }
+    }
+  }
 })
