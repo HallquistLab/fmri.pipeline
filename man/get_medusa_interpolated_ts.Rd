@@ -16,7 +16,11 @@ get_medusa_interpolated_ts(
   pad_after = 1.5,
   output_resolution = NULL,
   group_by = "trial",
-  time_audit = FALSE
+  time_audit = FALSE,
+  overlap_policy = NULL,
+  valid_col = NULL,
+  neighbor_events = NULL,
+  max_gap = NULL
 )
 }
 \arguments{
@@ -49,21 +53,44 @@ stored in \code{fmri_obj}.}
 to provide one interpolated time series per trial.}
 
 \item{time_audit}{If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing}
+
+\item{overlap_policy}{One of \code{"allow"}, \code{"truncate"}, or \code{"exclude"}.
+NULL uses truncation when collision columns are supplied and allows overlap
+otherwise. Explicit allow retains full windows. Exclude removes whole epochs
+whose closed requested windows overlap another target epoch, including ties.}
+
+\item{valid_col}{Optional logical source-data column. FALSE or NA censors that
+row for all value columns without deleting its acquisition time.}
+
+\item{neighbor_events}{Event columns used for nearest-event annotations;
+defaults to the target event column. Does not itself censor observations.}
+
+\item{max_gap}{Maximum interpolation bracket duration in seconds, defaulting
+to the acquisition TR. Explicit invalid rows always block interpolation;
+this tolerance only permits wider brackets across deleted rows.}
 }
 \description{
 front-end function for taking a list of windowed time series by mask value, interpolating them onto a time grid,
 and (optionally) averaging across voxels/units within a value to derive the mean interpolated time series
 }
+\details{
+The interpolation grid includes zero and remains within the requested
+  interval, including zero-width and one-sided windows. When trial is a grouping
+  variable, missing and unsupported epochs retain missing estimates and an
+  \code{epoch_status} column: \code{"ok"}, \code{"partial"},
+  \code{"insufficient_data"}, \code{"missing_onset"}, \code{"outside_run"},
+  \code{"censored"}, or \code{"no_data"}. These describe timing and available
+  output support, not physiological isolation from other trials.
+  Interpolation occurs within each unit before aggregation, preserving explicit
+  missing rows and acquisition gaps. Off-grid median/SD now summarize the
+  interpolated units. Each value has contributor/reason counts, source IDs, and
+  the maximum distinct-epoch reuse count. Source IDs index observed acquisition
+  times within this run; reuse is computed within the returned grouping.
+  The \code{source_clock} attribute maps IDs to absolute acquisition times.
+  Epoch annotations beginning with \code{align_} are always included when trial
+  is a grouping variable. They describe timing, not physiological attribution.
+  Whole-window exclusion adds \code{"overlap_excluded"} to epoch statuses.
+}
 \author{
 Michael Hallquist
-}
-
-\details{
-The interpolation grid includes zero and remains within the requested interval,
-including zero-width and one-sided windows. When trial is a grouping variable,
-missing and unsupported epochs retain missing estimates and an
-\code{epoch_status} column: \code{"ok"}, \code{"partial"},
-\code{"insufficient_data"}, \code{"missing_onset"}, \code{"outside_run"},
-\code{"censored"}, or \code{"no_data"}. These describe timing and available
-output support, not physiological isolation from other trials.
 }

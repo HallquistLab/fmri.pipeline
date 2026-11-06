@@ -32,7 +32,8 @@ run_decon_alignment(
 \item{trial_df}{Trial-level data used for event alignment.}
 
 \item{alignments}{A list of alignment specifications, each of which will be computed by this function.
-See \code{get_medusa_interpolated_ts} for help with arguments, and see Details.}
+See \code{get_medusa_interpolated_ts} for help with arguments, and see Details.
+Settings include overlap_policy, valid_col, neighbor_events, and max_gap.}
 
 \item{nbins}{For atlases with continuous values, how many bins should be used to discretize the mask values, leading to aggregation
 by bin.}
@@ -56,12 +57,12 @@ event-aligned time series. Most commonly, this is "atlas_value", which will lead
 
 \item{time_audit}{If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing}
 
-\item{file_manifest}{Optional data.frame with \code{file}, \code{id}, \code{run},
-and optional \code{session} columns. Overrides per-file metadata and legacy
-filename parsing. Ambiguous identities are errors.}
+\item{file_manifest}{Optional data.frame with \code{file}, \code{id},
+\code{run}, and optional \code{session} columns. Paths must identify the
+deconvolution files. Overrides per-file metadata and legacy filename parsing.}
 
-\item{fail_on_error}{Stop if any file fails alignment (default TRUE). FALSE
-explicitly permits partial output with a warning and a file status manifest.}
+\item{fail_on_error}{Stop if any file fails alignment (default TRUE). Set FALSE
+explicitly to allow partial output with a warning and a file status manifest.}
 }
 \description{
 Align a set of deconvolved time series files from \code{voxelwise_deconvolution} to a set of events in a task-related design

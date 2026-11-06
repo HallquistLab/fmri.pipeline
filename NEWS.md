@@ -1,5 +1,27 @@
 # fmri.pipeline 0.4-1
 
+## Auditable event overlap and impulse recovery
+
+* Alignment now interpolates within each unit's valid acquisition segments before
+  aggregation. Explicit invalid values/masks block interpolation, and brackets
+  wider than the acquisition TR are missing by default. Off-grid median/SD now
+  summarize interpolated units; means with changing contributors also change.
+* `overlap_policy` supports `allow`, legacy `truncate`, and whole-window `exclude`.
+  NULL retains collision-column truncation when explicitly configured, otherwise
+  allows overlap. `valid_col`, `neighbor_events`, and `max_gap` pass through file
+  and batch alignment settings. No policy claims physiological isolation.
+* Outputs report per-lag contributor/reason counts, acquisition-time IDs and epoch
+  reuse, neighboring events, simultaneous events, window overlap, and run edges.
+  Source clocks are returned as attributes; file alignment adds `alignment_file`
+  and writes a `.sources.csv` clock sidecar beside requested outputs.
+* `deconvolution_impulse_diagnostics()` evaluates isolated impulses on actual
+  event schedules under frozen linear settings, including specified HRF mismatch,
+  centering, whitening and padding. Recovery and source-to-target window metrics
+  are conditional diagnostics, not measured neural-attribution fractions.
+* `EVENT_ALIGNMENT_OVERLAP_GUIDE.md` documents changed semantics, limitations,
+  review checks, and the runnable `inst/examples/event_overlap_review.R` example.
+  Regenerate existing alignment outputs to adopt the new behavior.
+
 ## Deconvolution scaling, Wiener tuning, and performance
 
 * Linear deconvolution supports explicit `scaling = "zscore"`, `"demean"`,

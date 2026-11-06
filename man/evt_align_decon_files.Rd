@@ -24,7 +24,8 @@ evt_align_decon_files(
 
 \item{trial_df}{The trial-level data.frame containing id and run for each subject represented in \code{d_files}.}
 
-\item{alignment}{A list containing alignment details passed to get_medusa_interpolated_ts}
+\item{alignment}{A list containing alignment details passed to get_medusa_interpolated_ts,
+including overlap_policy, valid_col, neighbor_events, and max_gap.}
 
 \item{aggregate_by}{The column name in the individual deconvolved files used for averaging repeated units (e.g., voxels) into single
 event-aligned time series. Most commonly, this is "atlas_value", which will lead to averaging of voxels within each parcel in the mask.}
@@ -43,19 +44,22 @@ These cuts are applied to the \code{aggregate_by} column, commonly "atlas_value"
 
 \item{time_audit}{If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing}
 
-\item{file_manifest}{Optional data.frame with \code{file}, \code{id}, \code{run},
-and optional \code{session} columns. Overrides per-file metadata and legacy
-filename parsing. Ambiguous identities are errors.}
+\item{file_manifest}{Optional data.frame with \code{file}, \code{id},
+\code{run}, and optional \code{session} columns. Overrides per-file metadata
+and legacy filename parsing; ambiguous identities are errors.}
 
-\item{fail_on_error}{Stop if any file fails alignment (default TRUE). FALSE
-explicitly permits partial output with a warning and a file status manifest.}
+\item{fail_on_error}{Stop if any file fails (default TRUE). FALSE permits
+partial output with a warning. A status row is retained for every file.}
 }
 \value{
-Aligned data with a \code{file_status} data.frame attribute. If \code{out_file}
-is supplied, the manifest is saved to \code{paste0(out_file, ".files.csv")},
-including on failure. With \code{fail_on_error = TRUE}, a
-\code{decon_alignment_error} condition includes the manifest, and aligned output
-is not written if any file fails.
+Aligned data with a \code{file_status} data.frame attribute. If
+  \code{out_file} is supplied, the manifest is saved to
+  \code{paste0(out_file, ".files.csv")}, including on failure. With
+  \code{fail_on_error = TRUE}, a \code{decon_alignment_error} condition includes
+  the manifest and aligned output is not written if any file fails. Successful
+  results also carry a \code{source_clock} table, saved to
+  \code{paste0(out_file, ".sources.csv")} when output is requested. The
+  \code{alignment_file} column scopes acquisition-time IDs to their input file.
 }
 \description{
 Align a set of deconvolved time series files to an event of interest function.
