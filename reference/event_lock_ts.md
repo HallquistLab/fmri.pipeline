@@ -14,7 +14,10 @@ event_lock_ts(
   collide_after = NULL,
   pad_before = -1,
   pad_after = 1,
-  time_audit = FALSE
+  time_audit = FALSE,
+  overlap_policy = NULL,
+  valid_col = NULL,
+  neighbor_events = NULL
 )
 ```
 
@@ -72,9 +75,27 @@ event_lock_ts(
   If TRUE, additional columns will be added to the output showing how
   alignment is calculated vis-a-vis event timing
 
+- overlap_policy:
+
+  One of `"allow"`, `"truncate"`, or `"exclude"`. NULL uses truncation
+  when collision columns are supplied and allows overlap otherwise.
+  Explicit allow retains full windows. Exclude removes whole epochs
+  whose closed requested windows overlap another target epoch, including
+  ties.
+
+- valid_col:
+
+  Optional logical source-data column. FALSE or NA censors that row for
+  all value columns without deleting its acquisition time.
+
+- neighbor_events:
+
+  Event columns used for nearest-event annotations; defaults to the
+  target event column. Does not itself censor observations.
+
 ## Details
 
 Nonfinite target onsets and unsupported windows retain placeholder rows
 with missing time and values and an `epoch_status` column. Nonfinite
-collision candidates are ignored. Nearest-event boundaries are strict
+collision candidates are ignored. Nearest-event boundaries remain strict
 and do not guarantee disjoint trial windows.

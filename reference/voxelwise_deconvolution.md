@@ -139,15 +139,18 @@ Raw scale does not by itself degrade the conditioning of the fixed
 linear inverse, but it changes signal weights during global tuning. See
 [`deconvolve_reglin`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_reglin.md).
 
-Scaling uses the observed run once, before the existing zero tail is
-appended; solver normalization is disabled, as is linear-solver
-demeaning of padded data. Each output has a `.scaling.csv` sidecar
-containing voxel number, mode, subtracted center, divisor, and validity
-status. Its `.metadata.csv` records algorithm, scaling, output units,
-and the scaling filename. Original-series files contain `BOLD_input`,
-the transformed observations supplied before padding, plus the legacy
-`BOLD_z` alias only for z-scored inputs. Existing output files are
-skipped; regenerate them to adopt the new scaling behavior and sidecars.
+Scaling uses the observed run once, before any zero tail is appended
+(`decon_settings$tail_padding`, defaulting to `0L` for
+`reglin`/`regularized_linear` and `length(decon_settings$kernel)` for
+`bush2011`/`bush2015`); solver normalization is disabled, as is
+linear-solver demeaning of padded data. Each output has a `.scaling.csv`
+sidecar containing voxel number, mode, subtracted center, divisor, and
+validity status. Its `.metadata.csv` records algorithm, scaling, output
+units, and the scaling filename. Original-series files contain
+`BOLD_input`, the transformed observations supplied before padding, plus
+the legacy `BOLD_z` alias only for z-scored inputs. Existing output
+files are skipped; regenerate them to adopt the new scaling behavior and
+sidecars.
 
 ## Examples
 

@@ -1,7 +1,13 @@
 <urlset xmlns = 'http://www.sitemaps.org/schemas/sitemap/0.9'>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/404.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/COEFFICIENT_RECOVERY_VALIDATION.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/CROSSRUN_HRF_GUIDE.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/DECONVOLUTION_EVENT_ALIGNMENT_AUDIT.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/EVENT_ALIGNMENT_OVERLAP_GUIDE.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/HRF_ESTIMATION_VALIDATION.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/LICENSE-text.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/NOISE_AWARE_HRF_RECOVERY.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/PARAMETRIC_RECOVERY_VALIDATION.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/design.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/diagnosis.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/fwe.html</loc></url>
@@ -64,15 +70,19 @@
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/create_fwe_spec.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/create_new_hi_model.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/create_tracking_db.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/deconvolution_impulse_diagnostics.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_crossrun_hrf.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_nlreg.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_nlreg_resample.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_reglin.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/detrendts.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/dhms.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/diagnose_crossrun_recovery.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/diagnose_pipeline.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/do_convolve.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/dsigmoid.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/emmeans_to_3dlmer_glt.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/estimate_crossrun_hrf.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/event_lock_ts.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/evt_align_decon_files.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/export_collinearity_to_csv.html</loc></url>
@@ -137,6 +147,7 @@
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/harvest_l3_inputs.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/harvest_l3_inputs_fsl.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/hours_to_dhms.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/hrf_library.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/index.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/insert_df_sqlite.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/insert_tracked_job.html</loc></url>

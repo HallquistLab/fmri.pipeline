@@ -205,6 +205,46 @@ normalization contract. Changed R/Rd files parse and Rd checks pass, as
 does `git diff --check`. The full unrelated package suite and
 participant-data validation were not run.
 
+### Remediation update: overlap support and fixed-operator diagnostics
+
+See
+[EVENT_ALIGNMENT_OVERLAP_GUIDE.md](https://hallquistlab.github.io/fmri.pipeline/EVENT_ALIGNMENT_OVERLAP_GUIDE.md)
+for the implementation contract, changed statistics, field dictionary,
+limitations, and runnable review example. Alignment now preserves
+explicit missing intervals and acquisition-clock gaps, interpolating
+each unit before aggregation. Per-lag contributor counts and
+acquisition-time memberships make changing support visible. Matrix
+interpolation on common grids is checked against per-unit interpolation;
+ragged grids use that fallback, processing one output group at a time.
+
+Overlapping epochs are retained by default when no collision settings
+were specified. Explicit legacy collision settings continue to select
+truncation; `allow` can override them, while `exclude` removes whole
+intersecting requested epochs. Neighbor/event/edge annotations and a
+source-clock mapping support audits. These policies manage data
+selection and shared acquisition times, not physiology.
+
+[`deconvolution_impulse_diagnostics()`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolution_impulse_diagnostics.md)
+computes conditional recovery and entry into other event windows using
+fixed HRF, lambda, whitening, scaling and padding choices.
+Missing/outside/unobserved impulses remain explicit. Off-grid impulses
+use linear acquisition-bin deposition, not an assertion of sub-TR neural
+resolution. Directed window area ratios can exceed one and are not
+attribution probabilities. The tool supports C++, R, and scalar Wiener;
+no adaptive PSD, Bush, noise simulation, automatic tuning, or
+observation-weighted refit is implied.
+
+Joint event-informed estimation, observation masks inside the forward
+model, removal of artificial boundary observations, and realistic
+full-pipeline RPE/noise validation remain separate work. Post-hoc
+alignment masks cannot undo artifacts that already entered
+deconvolution. Validation passed 74 focused installed-package test cases
+and 708 assertions without failures/errors/warnings, plus serial versus
+two-worker checks for support, overlap annotations, and source clocks.
+The review script generated policy tables and centered/uncentered
+impulse comparisons. No participant-data validation or full unrelated
+package suite is claimed.
+
 Primary files reviewed:
 
 - [R/voxelwise_deconvolution.R](https://hallquistlab.github.io/fmri.pipeline/R/voxelwise_deconvolution.R)

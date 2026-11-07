@@ -97,6 +97,12 @@
   : helper function to create an FWE object that specifies the type of
   FWE correction and the model outputs to which it is applied
 
+- [`deconvolution_impulse_diagnostics()`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolution_impulse_diagnostics.md)
+  : Diagnose temporal spread of a fixed linear deconvolution operator
+
+- [`deconvolve_crossrun_hrf()`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_crossrun_hrf.md)
+  : Deconvolve runs using frozen HRFs learned from other runs
+
 - [`deconvolve_nlreg`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_nlreg.md)
   : C++ port of Bush and Cisler 2013, Magnetic Resonance Imaging Adapted
   from the original provided by Keith Bush as well as C++ code from
@@ -113,11 +119,19 @@
   : Detrend a time series up to quadratic trend. Used by fir1Bandpass
   prior to filtering
 
+- [`diagnose_crossrun_recovery()`](https://hallquistlab.github.io/fmri.pipeline/reference/diagnose_crossrun_recovery.md)
+  : Diagnose amplitude attenuation and event leakage for a frozen
+  inverse
+
 - [`diagnose_pipeline()`](https://hallquistlab.github.io/fmri.pipeline/reference/diagnose_pipeline.md)
   : Function for diagnosing errors in a run of the pipeline
 
 - [`do_convolve`](https://hallquistlab.github.io/fmri.pipeline/reference/do_convolve.md)
   : Internal port of fsl do_convolve
+
+- [`estimate_crossrun_hrf()`](https://hallquistlab.github.io/fmri.pipeline/reference/estimate_crossrun_hrf.md)
+  : Estimate HRF shapes from other runs, with optional spatial
+  regularization
 
 - [`event_lock_ts()`](https://hallquistlab.github.io/fmri.pipeline/reference/event_lock_ts.md)
   : function to get interpolated event locked data
@@ -241,6 +255,9 @@
 
 - [`get_tracked_job_status()`](https://hallquistlab.github.io/fmri.pipeline/reference/get_tracked_job_status.md)
   : Query job status in tracking SQLite database
+
+- [`hrf_library()`](https://hallquistlab.github.io/fmri.pipeline/reference/hrf_library.md)
+  : Build a small, constrained library of causal HRFs
 
 - [`insert_df_sqlite()`](https://hallquistlab.github.io/fmri.pipeline/reference/insert_df_sqlite.md)
   : helper function to insert a keyed data.frame into the sqlite storage

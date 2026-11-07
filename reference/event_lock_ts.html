@@ -57,7 +57,10 @@
 <span>  collide_after <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  pad_before <span class="op">=</span> <span class="op">-</span><span class="fl">1</span>,</span>
 <span>  pad_after <span class="op">=</span> <span class="fl">1</span>,</span>
-<span>  time_audit <span class="op">=</span> <span class="cn">FALSE</span></span>
+<span>  time_audit <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  overlap_policy <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  valid_col <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  neighbor_events <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -108,13 +111,30 @@ boundary that can help to have sufficient data to interpolate early and late tim
 <dt id="arg-time-audit">time_audit<a class="anchor" aria-label="anchor" href="#arg-time-audit"></a></dt>
 <dd><p>If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing</p></dd>
 
+
+<dt id="arg-overlap-policy">overlap_policy<a class="anchor" aria-label="anchor" href="#arg-overlap-policy"></a></dt>
+<dd><p>One of <code>"allow"</code>, <code>"truncate"</code>, or <code>"exclude"</code>.
+NULL uses truncation when collision columns are supplied and allows overlap
+otherwise. Explicit allow retains full windows. Exclude removes whole epochs
+whose closed requested windows overlap another target epoch, including ties.</p></dd>
+
+
+<dt id="arg-valid-col">valid_col<a class="anchor" aria-label="anchor" href="#arg-valid-col"></a></dt>
+<dd><p>Optional logical source-data column. FALSE or NA censors that
+row for all value columns without deleting its acquisition time.</p></dd>
+
+
+<dt id="arg-neighbor-events">neighbor_events<a class="anchor" aria-label="anchor" href="#arg-neighbor-events"></a></dt>
+<dd><p>Event columns used for nearest-event annotations;
+defaults to the target event column. Does not itself censor observations.</p></dd>
+
 </dl></div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p>Nonfinite target onsets and unsupported windows retain placeholder rows with
-missing time and values and an <code>epoch_status</code> column. Nonfinite collision
-candidates are ignored. Nearest-event boundaries are strict and do not guarantee
-disjoint trial windows.</p>
+    <p>Nonfinite target onsets and unsupported windows retain placeholder
+  rows with missing time and values and an <code>epoch_status</code> column.
+  Nonfinite collision candidates are ignored. Nearest-event boundaries remain
+  strict and do not guarantee disjoint trial windows.</p>
     </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

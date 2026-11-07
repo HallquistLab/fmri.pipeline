@@ -87,7 +87,8 @@
 
 <dt id="arg-alignments">alignments<a class="anchor" aria-label="anchor" href="#arg-alignments"></a></dt>
 <dd><p>A list of alignment specifications, each of which will be computed by this function.
-See <code>get_medusa_interpolated_ts</code> for help with arguments, and see Details.</p></dd>
+See <code>get_medusa_interpolated_ts</code> for help with arguments, and see Details.
+Settings include overlap_policy, valid_col, neighbor_events, and max_gap.</p></dd>
 
 
 <dt id="arg-nbins">nbins<a class="anchor" aria-label="anchor" href="#arg-nbins"></a></dt>
@@ -133,14 +134,14 @@ event-aligned time series. Most commonly, this is "atlas_value", which will lead
 
 
 <dt id="arg-file-manifest">file_manifest<a class="anchor" aria-label="anchor" href="#arg-file-manifest"></a></dt>
-<dd><p>Optional data.frame with <code>file</code>, <code>id</code>, <code>run</code>,
-and optional <code>session</code> columns. Overrides per-file metadata and legacy
-filename parsing. Ambiguous identities are errors.</p></dd>
+<dd><p>Optional data.frame with <code>file</code>, <code>id</code>,
+<code>run</code>, and optional <code>session</code> columns. Paths must identify the
+deconvolution files. Overrides per-file metadata and legacy filename parsing.</p></dd>
 
 
 <dt id="arg-fail-on-error">fail_on_error<a class="anchor" aria-label="anchor" href="#arg-fail-on-error"></a></dt>
-<dd><p>Stop if any file fails alignment (default TRUE). FALSE
-explicitly permits partial output with a warning and a file status manifest.</p></dd>
+<dd><p>Stop if any file fails alignment (default TRUE). Set FALSE
+explicitly to allow partial output with a warning and a file status manifest.</p></dd>
 
 </dl></div>
     <div class="section level2">

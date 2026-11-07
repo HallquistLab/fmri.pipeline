@@ -37,7 +37,8 @@ evt_align_decon_files(
 - alignment:
 
   A list containing alignment details passed to
-  get_medusa_interpolated_ts
+  get_medusa_interpolated_ts, including overlap_policy, valid_col,
+  neighbor_events, and max_gap.
 
 - aggregate_by:
 
@@ -78,21 +79,24 @@ evt_align_decon_files(
 - file_manifest:
 
   Optional data.frame with `file`, `id`, `run`, and optional `session`
-  columns. Overrides per-file metadata and legacy filename parsing.
-  Ambiguous identities are errors.
+  columns. Overrides per-file metadata and legacy filename parsing;
+  ambiguous identities are errors.
 
 - fail_on_error:
 
-  Stop if any file fails alignment (default TRUE). FALSE explicitly
-  permits partial output with a warning and a file status manifest.
+  Stop if any file fails (default TRUE). FALSE permits partial output
+  with a warning. A status row is retained for every file.
 
 ## Value
 
 Aligned data with a `file_status` data.frame attribute. If `out_file` is
 supplied, the manifest is saved to `paste0(out_file, ".files.csv")`,
 including on failure. With `fail_on_error = TRUE`, a
-`decon_alignment_error` condition includes the manifest, and aligned
-output is not written if any file fails.
+`decon_alignment_error` condition includes the manifest and aligned
+output is not written if any file fails. Successful results also carry a
+`source_clock` table, saved to `paste0(out_file, ".sources.csv")` when
+output is requested. The `alignment_file` column scopes acquisition-time
+IDs to their input file.
 
 ## Details
 

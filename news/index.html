@@ -44,6 +44,42 @@
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.4-1" id="fmripipeline-04-1">fmri.pipeline 0.4-1<a class="anchor" aria-label="anchor" href="#fmripipeline-04-1"></a></h2>
 <div class="section level3">
+<h3 id="coefficient-recovery-validation-0-4-1">Coefficient recovery validation<a class="anchor" aria-label="anchor" href="#coefficient-recovery-validation-0-4-1"></a></h3>
+<ul><li>Test fixed window-sum and calibrated-template amplitude readouts, and regression through the frozen inverse’s transformed event design. Include active/confounded nulls, off-library HRFs, matched references and a direct forward GLS benchmark. See <code>COEFFICIENT_RECOVERY_VALIDATION.md</code>. These are validation candidates; package algorithms and defaults are unchanged.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="parametric-recovery-validation-0-4-1">Parametric recovery validation<a class="anchor" aria-label="anchor" href="#parametric-recovery-validation-0-4-1"></a></h3>
+<ul><li>Add a separate simulation study with genuine neural trial variability, task-active RPE nulls, correlated task confounds, and paired true-HRF, true-covariance, noiseless and matched-grid references. Audit coefficient bias, coverage, false positives and power across runs and independent datasets at eight fixed lambdas. Native inverse operators and trial regression factorizations are reused. See <code>PARAMETRIC_RECOVERY_VALIDATION.md</code>.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="noise-aware-hrf-evidence-and-event-recovery-diagnostics-0-4-1">Noise-aware HRF evidence and event recovery diagnostics<a class="anchor" aria-label="anchor" href="#noise-aware-hrf-evidence-and-event-recovery-diagnostics-0-4-1"></a></h3>
+<ul><li>Cross-run HRF fitting now defaults to pooled grid-REML AR(1) covariance, conditional GLS task/shape evidence with library corrections, training-run compatibility, and a fixed penalty toward the prespecified shape. Unsupported adaptation has an explicit parcel/prespecified fallback. Tests are conditional on the noise/mean model and are not whole-brain significance or posterior confidence. <code>noise_model = "ols", evidence = "legacy"</code> retains the prior fit.</li>
+<li>The native inverse shares operators across HRF/noise strata and uses original acquisition times across censor gaps. AR/calibrated fits use observation masks during scaling and fitting by default. Nuisance adjustment remains explicit; optional joint projection applies to both convolution and observations. Unidentifiable covariance is reported rather than silently assumed white.</li>
+<li>
+<code><a href="../reference/diagnose_crossrun_recovery.html">diagnose_crossrun_recovery()</a></code> reports conditional event amplitude gain and excess leakage relative to the ideal readout, accounting for natural neural window overlap, fractional onsets, masks, and the frozen inverse. It does not automatically rescale amplitudes. See <code>NOISE_AWARE_HRF_RECOVERY.md</code> for review, independent reference checks, repeated validation, and throughput benchmarks.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="cross-run-hrf-estimation-and-spatial-regularization-0-4-1">Cross-run HRF estimation and spatial regularization<a class="anchor" aria-label="anchor" href="#cross-run-hrf-estimation-and-spatial-regularization-0-4-1"></a></h3>
+<ul><li>
+<code><a href="../reference/hrf_library.html">hrf_library()</a></code> constructs a small unit-sum HRF library. <code><a href="../reference/estimate_crossrun_hrf.html">estimate_crossrun_hrf()</a></code> selects HRFs using other runs only, with batched Rcpp/BLAS training fits, nuisance regressors, observation masks, explicit support gates, and a recorded parcel/prespecified fallback hierarchy. Training can use condition means or free event amplitudes for signed trial responses that would otherwise average away, without supplying RPE values.</li>
+<li>Explicit parcel pooling and optional voxel shape penalties toward training-derived parcel HRFs provide spatial regularization. These constrain HRF selection without spatially smoothing recovered neural activity. Strength and effect-size thresholds are user-controlled. The original heuristic mode does not supply significance tests.</li>
+<li>
+<code><a href="../reference/deconvolve_crossrun_hrf.html">deconvolve_crossrun_hrf()</a></code> applies frozen HRFs with required fixed lambda, grouped inverse operators, bounded caching, block multiplication, and recorded per-voxel scaling. Existing NIfTI/file deconvolution defaults are unchanged. See <code>CROSSRUN_HRF_GUIDE.md</code> and the reproducible review/benchmark scripts.</li>
+<li>
+<code>HRF_ESTIMATION_VALIDATION.md</code> reports 480 independent simulated datasets comparing learned, canonical, and true HRFs at three fixed inverse penalties. Learning helps with stable shape mismatch but can hurt with low SNR, zero-mean signed responses, run changes, or neural-duration mismatch. The original support gate accepted all null free-event fits under colored noise; support labels are not confidence measures. Estimator settings were not tuned to these results. Reproducible scripts, compact tables, and figures are included.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="auditable-event-overlap-and-impulse-recovery-0-4-1">Auditable event overlap and impulse recovery<a class="anchor" aria-label="anchor" href="#auditable-event-overlap-and-impulse-recovery-0-4-1"></a></h3>
+<ul><li>Alignment now interpolates within each unit’s valid acquisition segments before aggregation. Explicit invalid values/masks block interpolation, and brackets wider than the acquisition TR are missing by default. Off-grid median/SD now summarize interpolated units; means with changing contributors also change.</li>
+<li>
+<code>overlap_policy</code> supports <code>allow</code>, legacy <code>truncate</code>, and whole-window <code>exclude</code>. NULL retains collision-column truncation when explicitly configured, otherwise allows overlap. <code>valid_col</code>, <code>neighbor_events</code>, and <code>max_gap</code> pass through file and batch alignment settings. No policy claims physiological isolation.</li>
+<li>Outputs report per-lag contributor/reason counts, acquisition-time IDs and epoch reuse, neighboring events, simultaneous events, window overlap, and run edges. Source clocks are returned as attributes; file alignment adds <code>alignment_file</code> and writes a <code>.sources.csv</code> clock sidecar beside requested outputs.</li>
+<li>
+<code><a href="../reference/deconvolution_impulse_diagnostics.html">deconvolution_impulse_diagnostics()</a></code> evaluates isolated impulses on actual event schedules under frozen linear settings, including specified HRF mismatch, centering, whitening and padding. Recovery and source-to-target window metrics are conditional diagnostics, not measured neural-attribution fractions.</li>
+<li>
+<code>EVENT_ALIGNMENT_OVERLAP_GUIDE.md</code> documents changed semantics, limitations, review checks, and the runnable <code>inst/examples/event_overlap_review.R</code> example. Regenerate existing alignment outputs to adopt the new behavior.</li>
+</ul></div>
+<div class="section level3">
 <h3 id="deconvolution-scaling-wiener-tuning-and-performance-0-4-1">Deconvolution scaling, Wiener tuning, and performance<a class="anchor" aria-label="anchor" href="#deconvolution-scaling-wiener-tuning-and-performance-0-4-1"></a></h3>
 <ul><li>Linear deconvolution supports explicit <code>scaling = "zscore"</code>, <code>"demean"</code>, <code>"none"</code>, or <code>"psc"</code>; z-scoring remains the default. Legacy normalization flags still work. Voxelwise settings now control the actual preprocessing, applied once before padding. Bush voxelwise fits require z-scored input.</li>
 <li>Per-voxel <code>.scaling.csv</code> sidecars record the applied centers and divisors; file metadata records scaling, algorithm, and units. Original-series files expose <code>BOLD_input</code>, with <code>BOLD_z</code> retained only for z-scored observations. Regenerate existing outputs to adopt these changes.</li>

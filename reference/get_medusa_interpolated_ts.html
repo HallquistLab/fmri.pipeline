@@ -62,7 +62,11 @@ and (optionally) averaging across voxels/units within a value to derive the mean
 <span>  pad_after <span class="op">=</span> <span class="fl">1.5</span>,</span>
 <span>  output_resolution <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  group_by <span class="op">=</span> <span class="st">"trial"</span>,</span>
-<span>  time_audit <span class="op">=</span> <span class="cn">FALSE</span></span>
+<span>  time_audit <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  overlap_policy <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  valid_col <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  neighbor_events <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  max_gap <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -121,20 +125,52 @@ to provide one interpolated time series per trial.</p></dd>
 <dt id="arg-time-audit">time_audit<a class="anchor" aria-label="anchor" href="#arg-time-audit"></a></dt>
 <dd><p>If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing</p></dd>
 
+
+<dt id="arg-overlap-policy">overlap_policy<a class="anchor" aria-label="anchor" href="#arg-overlap-policy"></a></dt>
+<dd><p>One of <code>"allow"</code>, <code>"truncate"</code>, or <code>"exclude"</code>.
+NULL uses truncation when collision columns are supplied and allows overlap
+otherwise. Explicit allow retains full windows. Exclude removes whole epochs
+whose closed requested windows overlap another target epoch, including ties.</p></dd>
+
+
+<dt id="arg-valid-col">valid_col<a class="anchor" aria-label="anchor" href="#arg-valid-col"></a></dt>
+<dd><p>Optional logical source-data column. FALSE or NA censors that
+row for all value columns without deleting its acquisition time.</p></dd>
+
+
+<dt id="arg-neighbor-events">neighbor_events<a class="anchor" aria-label="anchor" href="#arg-neighbor-events"></a></dt>
+<dd><p>Event columns used for nearest-event annotations;
+defaults to the target event column. Does not itself censor observations.</p></dd>
+
+
+<dt id="arg-max-gap">max_gap<a class="anchor" aria-label="anchor" href="#arg-max-gap"></a></dt>
+<dd><p>Maximum interpolation bracket duration in seconds, defaulting
+to the acquisition TR. Explicit invalid rows always block interpolation;
+this tolerance only permits wider brackets across deleted rows.</p></dd>
+
 </dl></div>
+    <div class="section level2">
+    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
+    <p>The interpolation grid includes zero and remains within the requested
+  interval, including zero-width and one-sided windows. When trial is a grouping
+  variable, missing and unsupported epochs retain missing estimates and an
+  <code>epoch_status</code> column: <code>"ok"</code>, <code>"partial"</code>,
+  <code>"insufficient_data"</code>, <code>"missing_onset"</code>, <code>"outside_run"</code>,
+  <code>"censored"</code>, or <code>"no_data"</code>. These describe timing and available
+  output support, not physiological isolation from other trials.
+  Interpolation occurs within each unit before aggregation, preserving explicit
+  missing rows and acquisition gaps. Off-grid median/SD now summarize the
+  interpolated units. Each value has contributor/reason counts, source IDs, and
+  the maximum distinct-epoch reuse count. Source IDs index observed acquisition
+  times within this run; reuse is computed within the returned grouping.
+  The <code>source_clock</code> attribute maps IDs to absolute acquisition times.
+  Epoch annotations beginning with <code>align_</code> are always included when trial
+  is a grouping variable. They describe timing, not physiological attribution.
+  Whole-window exclusion adds <code>"overlap_excluded"</code> to epoch statuses.</p>
+    </div>
     <div class="section level2">
     <h2 id="author">Author<a class="anchor" aria-label="anchor" href="#author"></a></h2>
     <p>Michael Hallquist</p>
-    </div>
-    <div class="section level2">
-    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p>The interpolation grid includes zero and remains within the requested interval,
-including zero-width and one-sided windows. When trial is a grouping variable,
-missing and unsupported epochs retain missing estimates and an
-<code>epoch_status</code> column: <code>"ok"</code>, <code>"partial"</code>,
-<code>"insufficient_data"</code>, <code>"missing_onset"</code>, <code>"outside_run"</code>,
-<code>"censored"</code>, or <code>"no_data"</code>. These describe timing and available
-output support, not physiological isolation from other trials.</p>
     </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

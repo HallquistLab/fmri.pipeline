@@ -47,7 +47,8 @@ run_decon_alignment(
 
   A list of alignment specifications, each of which will be computed by
   this function. See `get_medusa_interpolated_ts` for help with
-  arguments, and see Details.
+  arguments, and see Details. Settings include overlap_policy,
+  valid_col, neighbor_events, and max_gap.
 
 - nbins:
 
@@ -100,13 +101,13 @@ run_decon_alignment(
 - file_manifest:
 
   Optional data.frame with `file`, `id`, `run`, and optional `session`
-  columns. Overrides per-file metadata and legacy filename parsing.
-  Ambiguous identities are errors.
+  columns. Paths must identify the deconvolution files. Overrides
+  per-file metadata and legacy filename parsing.
 
 - fail_on_error:
 
-  Stop if any file fails alignment (default TRUE). FALSE explicitly
-  permits partial output with a warning and a file status manifest.
+  Stop if any file fails alignment (default TRUE). Set FALSE explicitly
+  to allow partial output with a warning and a file status manifest.
 
 ## Details
 

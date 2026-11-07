@@ -166,7 +166,10 @@ demeaning retains input units, and percent signal change requires an appropriate
 positive baseline rather than residualized/zero-mean data. Raw scale does not by
 itself degrade the conditioning of the fixed linear inverse, but it changes
 signal weights during global tuning. See <code><a href="deconvolve_reglin.html">deconvolve_reglin</a></code>.</p>
-<p>Scaling uses the observed run once, before the existing zero tail is appended;
+<p>Scaling uses the observed run once, before any zero tail is appended
+(<code>decon_settings$tail_padding</code>, defaulting to <code>0L</code> for
+<code>reglin</code>/<code>regularized_linear</code> and <code>length(decon_settings$kernel)</code>
+for <code>bush2011</code>/<code>bush2015</code>);
 solver normalization is disabled, as is linear-solver demeaning of padded data. Each output has
 a <code>.scaling.csv</code> sidecar containing voxel number, mode, subtracted center,
 divisor, and validity status. Its <code>.metadata.csv</code> records algorithm, scaling,

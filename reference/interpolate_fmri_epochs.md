@@ -13,7 +13,8 @@ interpolate_fmri_epochs(
   time_after = 3,
   output_resolution = 1,
   group_by = NULL,
-  time_audit = FALSE
+  time_audit = FALSE,
+  max_gap = NULL
 )
 ```
 
@@ -51,6 +52,10 @@ interpolate_fmri_epochs(
 
   If TRUE, additional columns will be added to the output showing how
   alignment is calculated vis-a-vis event timing
+
+- max_gap:
+
+  Maximum source bracket duration (default acquisition TR).
 
 ## Author
 

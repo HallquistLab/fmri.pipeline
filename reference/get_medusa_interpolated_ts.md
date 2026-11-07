@@ -19,7 +19,11 @@ get_medusa_interpolated_ts(
   pad_after = 1.5,
   output_resolution = NULL,
   group_by = "trial",
-  time_audit = FALSE
+  time_audit = FALSE,
+  overlap_policy = NULL,
+  valid_col = NULL,
+  neighbor_events = NULL,
+  max_gap = NULL
 )
 ```
 
@@ -86,9 +90,29 @@ get_medusa_interpolated_ts(
   If TRUE, additional columns will be added to the output showing how
   alignment is calculated vis-a-vis event timing
 
-## Author
+- overlap_policy:
 
-Michael Hallquist
+  One of `"allow"`, `"truncate"`, or `"exclude"`. NULL uses truncation
+  when collision columns are supplied and allows overlap otherwise.
+  Explicit allow retains full windows. Exclude removes whole epochs
+  whose closed requested windows overlap another target epoch, including
+  ties.
+
+- valid_col:
+
+  Optional logical source-data column. FALSE or NA censors that row for
+  all value columns without deleting its acquisition time.
+
+- neighbor_events:
+
+  Event columns used for nearest-event annotations; defaults to the
+  target event column. Does not itself censor observations.
+
+- max_gap:
+
+  Maximum interpolation bracket duration in seconds, defaulting to the
+  acquisition TR. Explicit invalid rows always block interpolation; this
+  tolerance only permits wider brackets across deleted rows.
 
 ## Details
 
@@ -98,4 +122,18 @@ grouping variable, missing and unsupported epochs retain missing
 estimates and an `epoch_status` column: `"ok"`, `"partial"`,
 `"insufficient_data"`, `"missing_onset"`, `"outside_run"`, `"censored"`,
 or `"no_data"`. These describe timing and available output support, not
-physiological isolation from other trials.
+physiological isolation from other trials. Interpolation occurs within
+each unit before aggregation, preserving explicit missing rows and
+acquisition gaps. Off-grid median/SD now summarize the interpolated
+units. Each value has contributor/reason counts, source IDs, and the
+maximum distinct-epoch reuse count. Source IDs index observed
+acquisition times within this run; reuse is computed within the returned
+grouping. The `source_clock` attribute maps IDs to absolute acquisition
+times. Epoch annotations beginning with `align_` are always included
+when trial is a grouping variable. They describe timing, not
+physiological attribution. Whole-window exclusion adds
+`"overlap_excluded"` to epoch statuses.
+
+## Author
+
+Michael Hallquist

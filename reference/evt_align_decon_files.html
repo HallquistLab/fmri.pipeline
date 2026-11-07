@@ -77,7 +77,8 @@
 
 
 <dt id="arg-alignment">alignment<a class="anchor" aria-label="anchor" href="#arg-alignment"></a></dt>
-<dd><p>A list containing alignment details passed to get_medusa_interpolated_ts</p></dd>
+<dd><p>A list containing alignment details passed to get_medusa_interpolated_ts,
+including overlap_policy, valid_col, neighbor_events, and max_gap.</p></dd>
 
 
 <dt id="arg-aggregate-by">aggregate_by<a class="anchor" aria-label="anchor" href="#arg-aggregate-by"></a></dt>
@@ -112,23 +113,26 @@ These cuts are applied to the <code>aggregate_by</code> column, commonly "atlas_
 
 
 <dt id="arg-file-manifest">file_manifest<a class="anchor" aria-label="anchor" href="#arg-file-manifest"></a></dt>
-<dd><p>Optional data.frame with <code>file</code>, <code>id</code>, <code>run</code>,
-and optional <code>session</code> columns. Overrides per-file metadata and legacy
-filename parsing. Ambiguous identities are errors.</p></dd>
+<dd><p>Optional data.frame with <code>file</code>, <code>id</code>,
+<code>run</code>, and optional <code>session</code> columns. Overrides per-file metadata
+and legacy filename parsing; ambiguous identities are errors.</p></dd>
 
 
 <dt id="arg-fail-on-error">fail_on_error<a class="anchor" aria-label="anchor" href="#arg-fail-on-error"></a></dt>
-<dd><p>Stop if any file fails alignment (default TRUE). FALSE
-explicitly permits partial output with a warning and a file status manifest.</p></dd>
+<dd><p>Stop if any file fails (default TRUE). FALSE permits
+partial output with a warning. A status row is retained for every file.</p></dd>
 
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>Aligned data with a <code>file_status</code> data.frame attribute. If <code>out_file</code>
-is supplied, the manifest is saved to <code>paste0(out_file, ".files.csv")</code>,
-including on failure. With <code>fail_on_error = TRUE</code>, a
-<code>decon_alignment_error</code> condition includes the manifest, and aligned output
-is not written if any file fails.</p>
+    <p>Aligned data with a <code>file_status</code> data.frame attribute. If
+  <code>out_file</code> is supplied, the manifest is saved to
+  <code>paste0(out_file, ".files.csv")</code>, including on failure. With
+  <code>fail_on_error = TRUE</code>, a <code>decon_alignment_error</code> condition includes
+  the manifest and aligned output is not written if any file fails. Successful
+  results also carry a <code>source_clock</code> table, saved to
+  <code>paste0(out_file, ".sources.csv")</code> when output is requested. The
+  <code>alignment_file</code> column scopes acquisition-time IDs to their input file.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>

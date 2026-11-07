@@ -55,7 +55,8 @@
 <span>  time_after <span class="op">=</span> <span class="fl">3</span>,</span>
 <span>  output_resolution <span class="op">=</span> <span class="fl">1</span>,</span>
 <span>  group_by <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  time_audit <span class="op">=</span> <span class="cn">FALSE</span></span>
+<span>  time_audit <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  max_gap <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -89,6 +90,10 @@
 
 <dt id="arg-time-audit">time_audit<a class="anchor" aria-label="anchor" href="#arg-time-audit"></a></dt>
 <dd><p>If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing</p></dd>
+
+
+<dt id="arg-max-gap">max_gap<a class="anchor" aria-label="anchor" href="#arg-max-gap"></a></dt>
+<dd><p>Maximum source bracket duration (default acquisition TR).</p></dd>
 
 </dl></div>
     <div class="section level2">
