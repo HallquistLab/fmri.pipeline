@@ -3,7 +3,8 @@
 This PR adds an opt-in matrix interface for estimating a participant's HRF from
 other runs and applying the frozen shapes to continuous linear deconvolution.
 It is independent of the alignment changes in PR #44. Existing deconvolution
-defaults and the NIfTI/file wrapper are unchanged. Run this stage before alignment;
+voxelwise deconvolution defaults and the NIfTI/file wrapper are unchanged. The
+matrix interface's noise/evidence defaults are described below. Run this stage before alignment;
 it neither truncates epochs nor smooths recovered neural activity across voxels.
 
 ## Recommended starting point
@@ -19,9 +20,12 @@ spatial regularization. Hard parcel pooling harmed recovery in heterogeneous
 parcels. Neither a universal spatial strength nor parcel size is validated. A
 functional parcel need not be a homogeneous vascular territory. Inspect parcel
 boundaries, fold stability, and disagreements rather than assuming homogeneity.
-The current adjusted-R-squared gate is not a reliable test for task evidence:
-free-event fits accepted HRFs in every pure colored-noise voxel/run in the
-repeated experiment. Support/fallback labels must not be read as confidence.
+The original adjusted-R-squared gate accepted HRFs in every pure colored-noise
+voxel/run in that experiment. The defaults now use pooled AR(1) covariance,
+conditional GLS evidence tests, a penalty toward the prespecified shape, and
+training-run compatibility. See [NOISE_AWARE_HRF_RECOVERY.md](NOISE_AWARE_HRF_RECOVERY.md)
+for the change, validation, and limitations. These are conditional evidence tests,
+not posterior HRF confidence or whole-brain multiple-testing correction.
 
 ```r
 library(fmri.pipeline)
@@ -139,10 +143,28 @@ adjusted_partial_R2(k) = 1 - (SSEk / (d0 - pk)) / (SSE0 / d0)
 
 Scores are averaged equally over each voxel's usable training runs, rather than
 letting a run with larger BOLD variance dominate. Negative scores are retained.
-The score is an OLS training-fit criterion with a degrees-of-freedom adjustment,
-not a held-out prediction score, p-value, or autocorrelation-corrected statistic.
-The target run is held out from selection; candidates are compared within its
-training set. There is no automatic nested tuning or AR noise estimation.
+With `noise_model = "ar1"` (default), these sums of squares use whitened data,
+task designs, and nuisance designs. Covariance is estimated by pooled grid REML
+on each run, using free event amplitudes and temporal derivatives when residual
+degrees of freedom permit. Profiles are pooled within supplied parcels, or over
+the run if no parcels are supplied. `noise_rho` supplies a fixed coefficient for
+validation or externally estimated noise. Inspect `fit$noise`, including boundary
+and unidentifiable estimates. No voxel-specific optimizer is used.
+
+The score itself remains a training-fit criterion, not a p-value or held-out
+prediction score. Calibrated mode adds separate tests: task versus nuisance,
+each alternative's encompassing-model comparison against the prespecified HRF,
+and compatibility with each training run. Independent-run p-values are Fisher
+combined; Bonferroni corrections account for library comparisons. Compatibility
+corrects over competitors and usable training runs. Tests assume a correct mean
+model and Gaussian AR covariance; estimated covariance makes their calibration
+approximate. `evidence_alpha` is per voxel, not across the brain. One training run
+cannot establish stability. Neither target-run HRF stability nor absence of task
+signal is established by a fallback. No RPE is used to choose shapes or settings.
+
+For the original scoring/application behavior, explicitly request
+`noise_model = "ols", evidence = "legacy"`. `canonical_strength` applies only in
+calibrated mode. There is no automatic nested tuning.
 
 `valid_rows` is a logical mask per training run. FALSE and NA omit acquisitions
 from training fits while retaining their original times. Nonfinite nuisance is
@@ -160,8 +182,10 @@ Parcel pooling aggregates candidate scores, not BOLD timeseries. Consequently,
 oppositely signed or differently scaled voxel amplitudes do not cancel before
 fitting. Each eligible voxel contributes its mean training score equally. Only
 voxels with at least `min_training_runs` usable other runs enter the parcel score.
-A parcel anchor is supported if it contains at least `min_parcel_voxels` eligible
-voxels and its best mean score reaches `min_r2`.
+In calibrated mode, an anchor additionally needs at least `min_parcel_voxels`
+individually supported voxels for that shape. Their p-values are not combined as
+independent spatial observations. Strong evidence against an anchor in a voxel's
+training runs prevents borrowing it.
 
 - `pooling = "parcel"` applies that anchor to the whole parcel. This is a hard
   shared-shape constraint, with freely varying voxel amplitudes during training.
@@ -170,7 +194,9 @@ voxels and its best mean score reaches `min_r2`.
 - `pooling = "voxel", spatial_strength > 0` selects the candidate maximizing:
 
 ```
-mean_training_score(k, voxel) - spatial_strength * distance(k, parcel_anchor)
+mean_training_score(k, voxel)
+  - canonical_strength * distance(k, fallback_kernel)
+  - spatial_strength * distance(k, parcel_anchor)
 distance(k, a) = sum((h_k - h_a)^2) / (sum(h_k^2) + sum(h_a^2))
 ```
 
@@ -182,14 +208,18 @@ Increasing the strength favors the parcel shape; it never averages the target
 voxel's BOLD or neural estimate with neighboring voxels. With no reliable anchor,
 the penalty is disabled and this is visible in the selection status.
 
-A voxel-selected candidate must itself reach `min_r2`. Insufficient or weak voxel
-evidence falls back to a supported parcel anchor, then the prespecified
-`fallback_kernel` (default first candidate). Parcel mode falls directly to that
-prespecified candidate when its anchor is unsupported. Ties choose the first
-candidate deterministically. The default evidence gate (`min_r2 = 0.01`), minimum
-one other run, and minimum five parcel voxels are configurable heuristics, not
-validated hypothesis tests. `score_margin` reports the unpenalized best-versus-
-second-best gap; it is not an uncertainty interval and does not itself gate fits.
+A selected departure must pass task support, prespecified-shape comparison, and
+training-run compatibility, as well as `min_r2`. The score penalty toward the
+prespecified shape defaults to 0.01; this is a fixed discrete penalty, not a
+Bayesian prior or a universally optimized strength. Insufficient voxel evidence
+falls back to a supported, non-rejected parcel anchor, then the prespecified
+`fallback_kernel` (default first candidate). With no common compatible library
+shape, use the prespecified shape and report inconsistency/misspecification.
+Parcel mode also falls back when its anchor is unsupported. Ties choose the first
+candidate. `score_margin` remains descriptive. Inspect `voxel_evidence`, selected
+task/shape p-values, compatible/supported shape counts, and `stability`.
+Borrowed parcel shapes do not turn an unidentified voxel into a supported voxel.
+The legacy mode retains only the original R-squared/count heuristics.
 
 Inspect the maps of chosen shapes, parcel disagreements, low-support voxels, and
 fallback counts. A parcel mixing distinct hemodynamics can bias either sharing
@@ -222,22 +252,37 @@ training data. With two runs, choose conservative fixed settings rather than
 claiming nested validation from one training run. Existing within-run GCV is not
 an independent test of the learned HRF or neural recovery.
 
-The default inverse backend is the existing Rcpp linear implementation. R and
-scalar Wiener are supported for comparison; Wiener applies its FFT filter
-directly to voxel blocks to retain its faster asymptotic application cost.
-For cpp/r, each distinct selected HRF/run
-length yields one inverse operator, applied to voxel blocks with optimized matrix
-products. There is no separate matrix factorization per voxel or per block.
-Operators are reused across consecutive runs of the same length within a bounded
-128-MiB FIFO cache; change `operator_cache_mb` to control this budget. Changing run
-length clears that cache. A current operator and factorization workspaces can
+The default inverse is an Rcpp masked GLS implementation. The covariance from
+each run is frozen and used for its inverse; using a target run to estimate its
+noise does not use its responses to select its own HRF. Missing observations are
+integrated out of the AR(1) covariance: a gap of d acquisitions uses rho^d and
+its accumulated innovation variance. `observation_mask = "fit"` is the default
+for AR/calibrated fits. Masked BOLD values do not enter scaling or fitting, but
+latent activity is estimated at all original acquisition times. The activity's
+`observation_mask` attribute distinguishes observed and modeled samples.
+
+Inverse inputs remain assumed to be consistently prepared: `nuisance_mode =
+"ignore"` is the default. Optional `"joint"` fits unpenalized nuisance coefficients
+by projecting both whitened convolution and BOLD designs. A free nuisance trend
+can amplify low-frequency uncertainty in a continuous inverse; this option harmed
+recovery in the development pilot and should not be enabled automatically.
+
+R provides an independent GLS reference. Scalar Wiener remains available only for
+OLS fits with `nuisance_mode = "ignore", observation_mask = "all"`; it does not
+silently approximate masked GLS. For cpp/r, each distinct HRF/rho/design yields one
+operator, applied using block BLAS. There is no factorization per voxel. Caching
+reuses operators only when run lengths, masks, and nuisance designs match.
+Operators are reused within a bounded 128-MiB FIFO cache; change
+`operator_cache_mb` to control this budget. Changing run length, mask, or
+nuisance design clears that cache. A current operator and factorization workspaces can
 exceed the cache budget: the existing dense inverse has quadratic memory and
-cubic factorization cost in run length. Training does not have that dense inverse
-cost: it uses one small-design SVD per candidate/run and batched projections.
+cubic factorization cost in run length. Training uses shared design factorizations and batched projections, including
+pairwise encompassing spaces for the evidence tests and grid REML for noise.
 
 `batch_size` controls temporary voxel-block memory, not estimator accuracy.
-Training scores occupy approximately `8 * runs * candidates * voxels` bytes, plus
-input BOLD, manifests, and fold workspaces. `return_scores = FALSE` avoids keeping
+Calibrated training stores scores and three evidence matrices, approximately
+`4 * 8 * runs * candidates * voxels` bytes, plus input BOLD, noise profiles,
+manifests, shared bases, and fold workspaces. Legacy training stores scores only. `return_scores = FALSE` avoids keeping
 the additional per-fold candidate-score tables in the returned fit. Native code
 checks interrupts between voxel blocks. No new package dependency, extra process
 pool, or nested OpenMP layer is introduced. Control BLAS threads at the job level
@@ -251,11 +296,12 @@ physiological neural scale. `tail_padding = 0` is the finite-run default; settin
 to the kernel length reproduces the existing voxelwise wrapper's zero-tail
 assumption, rather than correcting that assumption.
 
-Training masks and nuisance coefficients are not automatically applied as an
-observation-weighted inverse or nuisance-removal stage on target BOLD. Inputs
-should already have appropriate preprocessing. Nonfinite or constant target
-voxel runs remain missing, as in the existing inverse API. Filling censored BOLD
-with zeros is not a substitute for a masked forward model.
+Inverse masks now follow the explicit observation policy above. Supplied nuisance
+coefficients are not silently transferred from training to target runs. Nonfinite
+or constant signals on usable rows, or unidentifiable AR covariance, remain
+missing. Filling censored BOLD with zeros is not a substitute for the masked
+forward model. Modeled activity in a gap does not restore a measured acquisition;
+alignment must retain the acquisition mask.
 
 The returned fit records normalized kernels/parameters, run/voxel IDs and lengths,
 training run IDs for each target, design ranks, training signal statuses, selected
@@ -302,6 +348,10 @@ subset, then times the native implementation and all-run selection/application
 at the requested voxel count. Its R baseline is a conventional fitting loop, not
 an optimized R projection algorithm. Compilation/loading are excluded; environment
 and BLAS-thread settings are saved with results. See the PR for measured results.
+
+The following historical measurements use the original OLS/heuristic workflow;
+new covariance/evidence costs and validation are in
+[NOISE_AWARE_HRF_RECOVERY.md](NOISE_AWARE_HRF_RECOVERY.md).
 
 Measured on this host with R 4.5.1, OpenBLAS 0.3.30, one BLAS/OpenMP thread,
 and median elapsed time over three repetitions (compilation/loading excluded):

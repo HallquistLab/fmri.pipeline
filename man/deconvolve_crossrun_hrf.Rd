@@ -14,7 +14,9 @@ deconvolve_crossrun_hrf(
   batch_size = 2048L,
   tail_padding = 0L,
   ridge_floor = 1e-08,
-  operator_cache_mb = 128
+  operator_cache_mb = 128,
+  nuisance_mode = NULL,
+  observation_mask = NULL
 )
 }
 \arguments{
@@ -42,6 +44,15 @@ Use nrow(hrf_fit$kernels) to reproduce the current voxelwise wrapper assumption.
 \item{operator_cache_mb}{Maximum inverse-operator cache size in MiB, default
 128. Zero disables reuse across runs. A single operator may exceed the cache
 budget while it is being applied, but is not retained in the cache.}
+
+\item{nuisance_mode}{Jointly fit unpenalized intercept, trend, and supplied
+nuisance terms, or ignore them (default, preserving prepared input signals).
+Joint projection is applied to both data and design, but can amplify weakly
+identified low-frequency activity in a flexible continuous inverse. Validate
+it for the intended design rather than assuming it improves recovery.}
+
+\item{observation_mask}{Use fit's valid_rows in the inverse (fit), or all
+observations (all). Defaults to fit for AR/calibrated, all for OLS/legacy.}
 }
 \value{
 A list with activity matrices, per-run scaling/status tables, the HRF
@@ -53,13 +64,18 @@ Deconvolve runs using frozen HRFs learned from other runs
 }
 \details{
 One inverse operator is constructed per selected HRF/run length,
-  cached for consecutive runs of the same length, and applied using block
+  cached for consecutive runs with identical masks/nuisance designs, and applied using block
   matrix products for cpp/r. Scalar Wiener uses direct block FFT fits.
   HRFs are frozen; no voxelwise factorization or R fitting loop is required.
-  Nonfinite/constant target signals remain NA. Training observation masks do
-  not refit a masked inverse; a nonfinite target observation excludes that whole
-  voxel run. Training nuisance regressors improve HRF selection but are not
-  automatically regressed out of target BOLD. Preprocess inputs consistently.
+  AR/calibrated fits use a masked GLS inverse with the frozen run-specific
+  noise covariance. A gap of d acquisitions uses rho^d and the corresponding
+  accumulated innovation variance. Censored rows contribute no observations;
+  latent activity is still estimated on the complete original grid. Its
+  observation_mask attribute identifies modeled versus observed samples.
+  Nonfinite/constant signals on usable observations remain NA. Nonfinite
+  censored observations do not invalidate a run. Joint nuisance fitting avoids
+  projecting only the BOLD and inadvertently changing the task model.
+  Wiener requires OLS, nuisance_mode = "ignore", observation_mask = "all".
   Scaling is applied once before optional padding, and its centers/divisors are
   returned. Different run z-scores do not preserve absolute between-run units.
 }

@@ -1,3 +1,8 @@
+# Explicitly retain the original OLS/heuristic comparison from PR #45.
+hrfv_estimate_legacy <- function(...) {
+  fmri.pipeline::estimate_crossrun_hrf(..., noise_model = "ols", evidence = "legacy")
+}
+
 # Repeated, independently generated simulations for cross-run HRF validation.
 # Run with this PR installed, one BLAS/OpenMP thread:
 # Rscript --vanilla inst/validation/hrf_recovery.R /tmp/hrf-validation 40
@@ -276,7 +281,7 @@ run_hrf_validation <- function(out_dir, repetitions = 40L, scenario_names = name
         settings <- c(list(bold = data$bold, events = data$events, tr = 1, kernel_grid = library,
           valid_rows = data$masks), methods[[method]])
         if (method %in% c("trial_parcel", "trial_spatial")) settings$spatial_groups <- data$groups
-        do.call(fmri.pipeline::estimate_crossrun_hrf, settings)
+        do.call(hrfv_estimate_legacy, settings)
       })
       names(fitted) <- names(methods)
       selections <- list(canonical = lapply(data$bold, function(y) library[, rep(1L, ncol(y)), drop = FALSE]),

@@ -1,5 +1,24 @@
 # fmri.pipeline 0.4-1
 
+## Noise-aware HRF evidence and event recovery diagnostics
+
+* Cross-run HRF fitting now defaults to pooled grid-REML AR(1) covariance,
+  conditional GLS task/shape evidence with library corrections, training-run
+  compatibility, and a fixed penalty toward the prespecified shape. Unsupported
+  adaptation has an explicit parcel/prespecified fallback. Tests are conditional
+  on the noise/mean model and are not whole-brain significance or posterior
+  confidence. `noise_model = "ols", evidence = "legacy"` retains the prior fit.
+* The native inverse shares operators across HRF/noise strata and uses original
+  acquisition times across censor gaps. AR/calibrated fits use observation masks
+  during scaling and fitting by default. Nuisance adjustment remains explicit;
+  optional joint projection applies to both convolution and observations.
+  Unidentifiable covariance is reported rather than silently assumed white.
+* `diagnose_crossrun_recovery()` reports conditional event amplitude gain and
+  excess leakage relative to the ideal readout, accounting for natural neural
+  window overlap, fractional onsets, masks, and the frozen inverse. It does not
+  automatically rescale amplitudes. See `NOISE_AWARE_HRF_RECOVERY.md` for review,
+  independent reference checks, repeated validation, and throughput benchmarks.
+
 ## Cross-run HRF estimation and spatial regularization
 
 * `hrf_library()` constructs a small unit-sum HRF library.
@@ -11,7 +30,8 @@
 * Explicit parcel pooling and optional voxel shape penalties toward
   training-derived parcel HRFs provide spatial regularization. These constrain
   HRF selection without spatially smoothing recovered neural activity. Strength
-  and evidence thresholds are user-controlled and are not significance tests.
+  and effect-size thresholds are user-controlled. The original heuristic mode
+  does not supply significance tests.
 * `deconvolve_crossrun_hrf()` applies frozen HRFs with required fixed lambda,
   grouped inverse operators, bounded caching, block multiplication, and recorded
   per-voxel scaling. Existing NIfTI/file deconvolution defaults are unchanged.
@@ -20,7 +40,7 @@
   comparing learned, canonical, and true HRFs at three fixed inverse penalties.
   Learning helps with stable shape mismatch but can hurt with low SNR,
   zero-mean signed responses, run changes, or neural-duration mismatch. The
-  current support gate accepted all null free-event fits under colored noise;
+  original support gate accepted all null free-event fits under colored noise;
   support labels are not confidence measures. Estimator settings were not tuned
   to these results. Reproducible scripts, compact tables, and figures are included.
 
