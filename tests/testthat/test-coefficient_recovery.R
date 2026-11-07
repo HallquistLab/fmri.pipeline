@@ -1,5 +1,5 @@
 cr_test_env <- function() {
-  withr::local_dir(normalizePath(file.path("..", "..")))
+  withr::local_dir(pkg_root)
   skip_if_not(file.exists("inst/validation/run_coefficient_recovery.R"), "Validation scripts require repository sources")
   e <- new.env(parent = globalenv())
   sys.source(file.path("inst", "validation", "run_coefficient_recovery.R"), e)
@@ -121,7 +121,7 @@ test_that("coefficient study schedule keeps references at primary lambda and pro
 })
 
 test_that("coefficient report preserves pairing and rejects incomplete or changed protocols", {
-  withr::local_dir(normalizePath(file.path("..", "..")))
+  withr::local_dir(pkg_root)
   skip_if_not(file.exists("inst/validation/report_coefficient_recovery.R"), "Validation scripts require repository sources")
   e <- new.env(parent = globalenv())
   sys.source("inst/validation/report_coefficient_recovery.R", e)

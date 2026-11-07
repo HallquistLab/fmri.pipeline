@@ -15,7 +15,28 @@ library(dplyr)
 # test_local()/devtools::test() load the source package, and test_check() loads
 # the installed package. Reloading here creates a second namespace and can
 # leave tested functions calling bindings outside local_mocked_bindings().
-pkg_root <- normalizePath(file.path("..", ".."), mustWork = FALSE)
+resolve_pkg_root <- function() {
+  candidates <- c(
+    file.path("..", ".."),
+    file.path("..", "..", "00_pkg_src", "fmri.pipeline"),
+    file.path("..", "..", ".."),
+    file.path("..", "..", "..", "00_pkg_src", "fmri.pipeline")
+  )
+  for (cand in candidates) {
+    if (file.exists(file.path(cand, "DESCRIPTION")) && dir.exists(file.path(cand, "inst"))) {
+      return(normalizePath(cand, mustWork = TRUE))
+    }
+  }
+  installed_val <- system.file("validation", package = "fmri.pipeline")
+  if (nzchar(installed_val) && dir.exists(installed_val)) {
+    staged <- file.path(tempdir(), "fmri_pipeline_staged_root")
+    dir.create(file.path(staged, "inst"), recursive = TRUE, showWarnings = FALSE)
+    file.copy(installed_val, file.path(staged, "inst"), recursive = TRUE)
+    return(normalizePath(staged, mustWork = TRUE))
+  }
+  normalizePath(file.path("..", ".."), mustWork = FALSE)
+}
+pkg_root <- resolve_pkg_root()
 
 # Unit tests must never reach a real cluster. Tests exercising submission can
 # override these package-local guards with their own local_mocked_bindings().

@@ -1,10 +1,14 @@
+wv_solver_env <- new.env(parent = globalenv())
 wv_test_env <- function() {
-  env <- new.env(parent=globalenv())
-  root <- normalizePath(file.path(dirname(source_tree_file("inst","validation","waveform_recovery.R")),"..",".."))
-  withr::with_dir(root,{
-    sys.source("inst/validation/run_waveform_recovery.R",env)
-    env$wv_load_solver(file.path(tempdir(),"waveform-test-cache"))
-  })
+  withr::local_dir(pkg_root)
+  if (!exists("wave_solve_cpp", envir = wv_solver_env, mode = "function", inherits = FALSE)) {
+    sys.source("inst/validation/run_waveform_recovery.R", wv_solver_env)
+    wv_solver_env$wv_load_solver(file.path(tempdir(), "waveform-test-cache"))
+  }
+  env <- new.env(parent = wv_solver_env)
+  sys.source("inst/validation/run_waveform_recovery.R", env)
+  env$wave_prepare_cpp <- wv_solver_env$wave_prepare_cpp
+  env$wave_solve_cpp <- wv_solver_env$wave_solve_cpp
   env
 }
 
@@ -103,7 +107,7 @@ test_that("solver exposes failure and rejects invalid observations or spatial pr
 })
 
 test_that("reconstruction is event blind, scale equivariant and preserves the acquisition clock", {
-  e<-wv_test_env(); withr::local_dir(normalizePath(file.path("..","..")))
+  e<-wv_test_env(); withr::local_dir(pkg_root)
   config<-e$wv_scenarios()$censored_heldout; config$voxels<-4L
   data<-e$wv_generate(config,8535L); k<-e$wv_kernels(data,"oracle")[[1]]
   setting<-e$wv_grid()[6,]; cache<-new.env(parent=emptyenv())
@@ -157,7 +161,7 @@ test_that("overlapping event-specific waveforms can be unidentifiable even with 
 })
 
 test_that("development selection excludes failed candidates and protects held-out families", {
-  e<-wv_test_env(); withr::local_dir(normalizePath(file.path("..","..")))
+  e<-wv_test_env(); withr::local_dir(pkg_root)
   grid<-e$wv_grid(); metrics<-grid; metrics$source<-"oracle"; metrics$neural_nmse<-seq_len(nrow(grid))
   metrics$convergence<-1; metrics$convergence[1]<-.9
   selected<-e$wv_select(metrics)
@@ -170,7 +174,7 @@ test_that("development selection excludes failed candidates and protects held-ou
 })
 
 test_that("waveform summaries use independent datasets and preserve paired differences", {
-  withr::local_dir(normalizePath(file.path("..","..")))
+  withr::local_dir(pkg_root)
   e<-new.env(parent=globalenv());sys.source("inst/validation/report_waveform_recovery.R",e)
   d<-data.frame(scenario="test",replicate=rep(1:4,2),seed=rep(1:4,2),source="oracle",
     id=rep(c("tv/.03","diff2/.01"),each=4),method=rep(c("tv","diff2_fixed"),each=4),
@@ -186,7 +190,7 @@ test_that("waveform summaries use independent datasets and preserve paired diffe
 })
 
 test_that("waveform collector rejects missing records, wrong seeds and changed sources", {
-  withr::local_dir(normalizePath(file.path("..","..")))
+  withr::local_dir(pkg_root)
   e<-new.env(parent=globalenv());sys.source("inst/validation/report_waveform_recovery.R",e)
   tmp<-tempfile();dir.create(tmp);config<-e$wv_scenarios()$brief;config$voxels<-2L
   setting<-e$wv_grid()[2,,drop=FALSE]
@@ -219,8 +223,8 @@ test_that("waveform collector rejects missing records, wrong seeds and changed s
 
 test_that("resumed serial and parallel datasets reproduce identical recovery metrics", {
   skip_on_os("windows")
-  withr::local_dir(normalizePath(file.path("..","..")))
-  e<-new.env(parent=globalenv());sys.source("inst/validation/resume_waveform_recovery.R",e)
+  withr::local_dir(pkg_root)
+  e<-new.env(parent=wv_test_env());sys.source("inst/validation/resume_waveform_recovery.R",e)
   input<-tempfile();dir.create(input);config<-e$wv_scenarios()$brief
   config$n<-160L;config$voxels<-4L
   protocol<-list(phase="evaluation",repetitions=2L,scenarios=list(brief=config),

@@ -125,7 +125,7 @@ test_that("Monte Carlo uncertainty uses datasets as independent units", {
 })
 
 test_that("paired diagnostic references freeze fitting and change only their named inputs", {
-  withr::local_dir(normalizePath(file.path("..", "..")))
+  withr::local_dir(pkg_root)
   e <- new.env(parent = globalenv())
   sys.source(file.path("inst", "validation", "run_parametric_recovery.R"), e)
   config <- e$pr_scenarios()$moderate_trial_variation
@@ -159,7 +159,7 @@ test_that("paired diagnostic references freeze fitting and change only their nam
 })
 
 test_that("report assembly rejects incomplete, duplicated, or changed evaluation provenance", {
-  withr::local_dir(normalizePath(file.path("..", "..")))
+  withr::local_dir(pkg_root)
   e <- new.env(parent = globalenv())
   sys.source(file.path("inst", "validation", "report_parametric_recovery.R"), e)
   tmp <- tempfile(); dir.create(tmp)
