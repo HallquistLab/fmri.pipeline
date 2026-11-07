@@ -1,3 +1,8 @@
+# Freeze the original OLS/heuristic contract; new defaults have separate tests.
+legacy_estimate_crossrun_hrf <- function(...) {
+  estimate_crossrun_hrf(..., noise_model = "ols", evidence = "legacy")
+}
+
 # Independent, small-grid forward reference; no native design/scoring helpers.
 hrf_reference_design <- function(n, tr, offset, events, kernels) {
   history <- nrow(kernels) - 1L
@@ -80,7 +85,7 @@ test_that("native scores match independent masked nuisance-adjusted least square
 
 test_that("cross-run shapes and parcel pooling recover known HRFs", {
   d <- hrf_test_data()
-  fit <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels,
+  fit <- legacy_estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels,
     spatial_groups = d$groups, pooling = "parcel", min_parcel_voxels = 2,
     return_scores = TRUE, batch_size = 3)
   for (r in names(d$bold)) {
@@ -101,12 +106,12 @@ test_that("target BOLD, events, mask and nuisance do not affect its HRF selectio
   settings <- list(bold = d$bold, events = d$events, tr = 1, kernel_grid = d$kernels,
     spatial_groups = d$groups, spatial_strength = .1, min_parcel_voxels = 2,
     nuisance = z, valid_rows = masks, return_scores = TRUE)
-  original <- do.call(estimate_crossrun_hrf, settings)
+  original <- do.call(legacy_estimate_crossrun_hrf, settings)
   settings$bold$A[,] <- NA_real_
   settings$events$A$onset <- settings$events$A$onset + 1000
   settings$valid_rows$A[] <- FALSE
   settings$nuisance$A[,] <- cos(1:96)
-  changed <- do.call(estimate_crossrun_hrf, settings)
+  changed <- do.call(legacy_estimate_crossrun_hrf, settings)
   expect_identical(changed$selections$A, original$selections$A)
   expect_identical(changed$parcels$A, original$parcels$A)
   expect_identical(changed$scores$A, original$scores$A)
@@ -117,9 +122,9 @@ test_that("spatial shape penalty follows its declared objective and does not mix
   d <- hrf_test_data()
   # One voxel disagrees with its parcel, but has good independent task support.
   for (r in names(d$bold)) d$bold[[r]][, 4] <- d$bold[[r]][, 5]
-  plain <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels,
+  plain <- legacy_estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels,
     spatial_groups = d$groups, min_parcel_voxels = 2, return_scores = TRUE)
-  smooth <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels,
+  smooth <- legacy_estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels,
     spatial_groups = d$groups, spatial_strength = 100, min_parcel_voxels = 2,
     min_r2 = 0, return_scores = TRUE)
   expect_equal(plain$selections$A$kernel_index[4], 2L)
@@ -137,17 +142,17 @@ test_that("spatial shape penalty follows its declared objective and does not mix
 test_that("weak and missing training signals use explicit fallback hierarchy", {
   d <- hrf_test_data()
   for (r in names(d$bold)) d$bold[[r]][, 1] <- NA_real_
-  fit <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels,
+  fit <- legacy_estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels,
     spatial_groups = d$groups, min_parcel_voxels = 2)
   expect_equal(fit$selections$A$status[1], "fallback_parcel")
   expect_equal(fit$selections$A$n_training_runs[1], 0L)
   expect_equal(fit$selections$A$kernel_index[1], 1L)
-  fallback <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels, fallback_kernel = 2)
+  fallback <- legacy_estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels, fallback_kernel = 2)
   expect_equal(fallback$selections$A$status[1], "fallback_prespecified")
   expect_equal(fallback$selections$A$kernel_index[1], 2L)
   # No task support: all events are far outside the measured run.
   outside <- lapply(d$events, function(ev) transform(ev, onset = onset + 1000))
-  nofit <- estimate_crossrun_hrf(d$bold, outside, 1, d$kernels, fallback_kernel = 2)
+  nofit <- legacy_estimate_crossrun_hrf(d$bold, outside, 1, d$kernels, fallback_kernel = 2)
   expect_true(all(nofit$selections$A$status == "fallback_prespecified"))
   expect_true(all(nofit$signal_status$status == "unidentifiable_design"))
   expect_true(all(!nofit$designs$comparable))
@@ -156,7 +161,7 @@ test_that("weak and missing training signals use explicit fallback hierarchy", {
 test_that("frozen grouped application matches direct inverses including scaling and padding", {
   d <- hrf_test_data()
   d$bold$A[3, 1] <- NA_real_; d$bold$B[, 2] <- 100
-  fit <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels)
+  fit <- legacy_estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels)
   for (backend in c("cpp", "r", "wiener")) for (scaling in c("none", "demean", "zscore", "psc")) {
     got <- deconvolve_crossrun_hrf(d$bold, fit, lambda = .03, scaling = scaling,
       backend = backend, tail_padding = 7L, batch_size = 2L)
@@ -187,11 +192,11 @@ test_that("HRF library and identity guards prevent ambiguous application", {
     data.frame(peak_delay = 6, dispersion = 1, undershoot_ratio = 6))
   d <- hrf_test_data()
   mismatch <- d$bold; colnames(mismatch$B) <- rev(colnames(mismatch$B))
-  expect_error(estimate_crossrun_hrf(mismatch, d$events, 1, d$kernels), "identical voxel IDs")
-  expect_error(estimate_crossrun_hrf(d$bold, unname(d$events), 1, d$kernels), "same run names")
-  expect_error(estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels, pooling = "parcel"), "explicit spatial_groups")
-  expect_error(estimate_crossrun_hrf(d$bold, d$events, 1, hrf_library(.8)), "sampling TR")
-  fit <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels)
+  expect_error(legacy_estimate_crossrun_hrf(mismatch, d$events, 1, d$kernels), "identical voxel IDs")
+  expect_error(legacy_estimate_crossrun_hrf(d$bold, unname(d$events), 1, d$kernels), "same run names")
+  expect_error(legacy_estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels, pooling = "parcel"), "explicit spatial_groups")
+  expect_error(legacy_estimate_crossrun_hrf(d$bold, d$events, 1, hrf_library(.8)), "sampling TR")
+  fit <- legacy_estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels)
   expect_error(deconvolve_crossrun_hrf(d$bold, fit), "lambda")
   expect_error(deconvolve_crossrun_hrf(mismatch, fit, .1), "identical voxel IDs")
   expect_error(deconvolve_crossrun_hrf(rev(d$bold), fit, .1), "must match")
@@ -201,7 +206,7 @@ test_that("two runs, unequal lengths and bounded operator caching are supported"
   d <- hrf_test_data()
   d$bold <- d$bold[1:2]; d$events <- d$events[1:2]
   d$bold$B <- d$bold$B[1:90, , drop = FALSE]
-  fit <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels)
+  fit <- legacy_estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels)
   expect_equal(fit$training_runs, list(A = "B", B = "A"))
   expect_true(all(fit$selections$A$n_training_runs == 1))
   no_cache <- deconvolve_crossrun_hrf(d$bold, fit, .1, operator_cache_mb = 0)
@@ -222,7 +227,7 @@ test_that("masks preserve acquisition timing and require comparable candidate ra
   masks <- lapply(d$bold, function(y) rep(TRUE, nrow(y)))
   masks$B[10:15] <- FALSE; masks$B[50] <- NA
   d$bold$B[10:15, ] <- NA_real_
-  fit <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels, valid_rows = masks)
+  fit <- legacy_estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels, valid_rows = masks)
   expect_true(all(fit$signal_status$status == "ok"))
   expect_equal(unique(fit$designs$n_observations[fit$designs$run == "B"]), 89L)
   expect_equal(fit$specification$valid_rows, masks)
@@ -247,8 +252,8 @@ test_that("free trial amplitudes identify an HRF when signed responses average a
   colnames(y) <- c("early", "late")
   runs <- list(A = y, B = y)
   events <- list(A = ev, B = ev)
-  condition <- estimate_crossrun_hrf(runs, events, 1, d$kernels)
-  trial <- estimate_crossrun_hrf(runs, events, 1, d$kernels,
+  condition <- legacy_estimate_crossrun_hrf(runs, events, 1, d$kernels)
+  trial <- legacy_estimate_crossrun_hrf(runs, events, 1, d$kernels,
     amplitude_model = "trial", return_scores = TRUE)
   expect_true(all(condition$selections$A$status == "fallback_prespecified"))
   expect_equal(trial$selections$A$kernel_index, 1:2)

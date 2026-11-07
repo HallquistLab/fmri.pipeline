@@ -1,0 +1,4 @@
+"operation","seconds","voxels","runs","timepoints","candidates","repetitions"
+"fit_ar1_calibrated",26.353,50000,3,300,9,3
+"apply_ar1_calibrated",10.343,50000,3,300,9,3
+"diagnose_onset_and_leakage",0.550000000000011,50000,3,300,9,3

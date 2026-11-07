@@ -21,7 +21,13 @@ estimate_crossrun_hrf(
   min_parcel_voxels = 5L,
   batch_size = 2048L,
   return_scores = FALSE,
-  amplitude_model = c("condition", "trial")
+  amplitude_model = c("condition", "trial"),
+  noise_model = c("ar1", "ols"),
+  noise_rho = NULL,
+  noise_grid = seq(-0.8, 0.9, by = 0.1),
+  evidence = c("calibrated", "legacy"),
+  evidence_alpha = 0.05,
+  canonical_strength = 0.01
 )
 }
 \arguments{
@@ -71,6 +77,28 @@ default 0.01. This is a configurable heuristic, not a significance threshold.}
 default), or free for each event record (trial). Trial amplitudes can support
 HRF estimation when signed trial responses average to zero, but cost more and
 require a design with sufficient residual degrees of freedom.}
+
+\item{noise_model}{Default ar1 uses pooled, grid-REML covariance estimates;
+ols disables whitening. Pooling uses supplied spatial_groups or the run.}
+
+\item{noise_rho}{Optional fixed AR(1) coefficient, scalar or named in run
+order. Bypasses noise estimation. Requires noise_model = "ar1".}
+
+\item{noise_grid}{Ordered AR(1) grid within [-0.95, 0.95], default -0.8 to 0.9
+in steps of 0.1. Boundary estimates are explicitly labeled.}
+
+\item{evidence}{Default calibrated uses conditional GLS F tests with library
+corrections, prespecified-shape comparison, and training-run compatibility.
+Legacy retains the adjusted-R-squared heuristic. Conditional tests are exact
+for known Gaussian AR covariance and a correct mean model; estimated noise,
+non-Gaussian errors, and model misspecification require empirical validation.}
+
+\item{evidence_alpha}{Per-voxel evidence threshold, default 0.05. Corrects the
+candidate search and compatibility comparisons across training runs, not
+multiple testing across the brain. Not a posterior probability.}
+
+\item{canonical_strength}{Fixed shape-distance penalty toward fallback_kernel
+in calibrated mode, default 0.01. Zero removes this additional shrinkage.}
 }
 \value{
 An object of class crossrun_hrf with normalized kernels, per-target-run
@@ -96,10 +124,21 @@ Each target run is excluded from its own HRF selection, including
   This is a discrete shape penalty, not Bayesian posterior inference, a local
   adjacency prior, or spatial smoothing of neural activity. Library, thresholds,
   parcels, and penalty must be fixed externally or tuned within training data.
-  No automatic nested tuning, uncertainty intervals, or AR noise fit is included.
-  Repeated colored-noise simulations accepted null free-event fits at the
-  default evidence gate. Support labels do not establish HRF confidence;
-  recovery benefits depend on SNR, neural duration, and stability across runs.
+  Calibrated mode additionally penalizes distance from the prespecified shape.
+  The legacy gate accepted null free-event fits in colored-noise simulations.
+  Calibrated mode tests task support, departures from the prespecified shape
+  using pairwise encompassing models, and compatibility with every usable
+  training run. Fisher combination uses independent runs; Bonferroni corrections
+  account for candidate comparisons. Unsupported or inconsistent shapes fall
+  back. Parcel anchors require min_parcel_voxels individually supported voxels;
+  voxel p-values are not combined as independent spatial observations.
+  Run compatibility cannot be assessed with a single training run. There is
+  no access to target-run vascular shape or guarantee of transfer to that run.
+  AR covariance is estimated per run using a fixed event-amplitude mean model
+  and, when residual degrees of freedom allow, its first two temporal
+  derivatives. Noise likelihood profiles are pooled, not the BOLD signals.
+  All whitening uses the original acquisition clock, including gaps. No
+  automatic nested tuning or physiological amplitude calibration is included.
   Nonfinite/constant/nuisance-only voxel runs are omitted; observation masks are
   common across voxels. Candidate task ranks must match within a run and leave
   residual degrees of freedom, otherwise that run cannot inform HRF selection.

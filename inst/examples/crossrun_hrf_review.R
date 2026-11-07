@@ -1,3 +1,9 @@
+# Preserve the original illustrative comparison. New defaults and repeated
+# validation are documented in NOISE_AWARE_HRF_RECOVERY.md.
+hrfe_estimate_legacy <- function(...) {
+  fmri.pipeline::estimate_crossrun_hrf(..., noise_model = "ols", evidence = "legacy")
+}
+
 # Reproducible synthetic review; no participant data or observed RPE optimization.
 # Run with the installed PR version:
 # OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 Rscript --vanilla \
@@ -38,9 +44,9 @@ for (r in 1:4) {
   colnames(y) <- voxel_ids
   bold[[run]] <- y
 }
-parcel_fit <- estimate_crossrun_hrf(bold, events, tr, kernels,
+parcel_fit <- hrfe_estimate_legacy(bold, events, tr, kernels,
   spatial_groups = parcels, pooling = "parcel", return_scores = TRUE)
-voxel_fit <- estimate_crossrun_hrf(bold, events, tr, kernels,
+voxel_fit <- hrfe_estimate_legacy(bold, events, tr, kernels,
   spatial_groups = parcels, spatial_strength = .02, return_scores = TRUE,
   amplitude_model = "trial")
 # Prespecified lambda and strength: neither is optimized against the RPE result.
@@ -114,7 +120,7 @@ for (scenario in c("off_library_ar1", "heterogeneous_parcels_ar1")) {
   })
   names(stress_bold) <- names(bold)
   for (method in c("parcel", "voxel_spatial")) {
-    model <- estimate_crossrun_hrf(stress_bold, events, tr, kernels,
+    model <- hrfe_estimate_legacy(stress_bold, events, tr, kernels,
       spatial_groups = parcels, pooling = if (method == "parcel") "parcel" else "voxel",
       spatial_strength = if (method == "parcel") 0 else .02, amplitude_model = "trial")
     estimate <- deconvolve_crossrun_hrf(stress_bold, model, .01, scaling = "demean")

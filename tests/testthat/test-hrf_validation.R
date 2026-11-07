@@ -67,7 +67,7 @@ test_that("cached Monte Carlo application agrees with the public inverse interfa
   data <- env$hrfv_generate(env$hrfv_scenarios()$two_runs, 818)
   kernels <- hrf_library(1)
   fit <- estimate_crossrun_hrf(data$bold, data$events, 1, kernels,
-    spatial_groups = data$groups, spatial_strength = .02, amplitude_model = "trial")
+    spatial_groups = data$groups, spatial_strength = .02, amplitude_model = "trial", noise_model = "ols", evidence = "legacy")
   public <- deconvolve_crossrun_hrf(data$bold, fit, .01, scaling = "demean")
   cache <- new.env(parent = emptyenv())
   for (r in seq_along(data$bold)) {

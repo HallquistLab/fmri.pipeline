@@ -1,3 +1,8 @@
+# Freeze the original OLS/heuristic timings; see hrf_noise.R for the new workflow.
+hrfb_estimate_legacy <- function(...) {
+  fmri.pipeline::estimate_crossrun_hrf(..., noise_model = "ols", evidence = "legacy")
+}
+
 # Run against an installed version of this checkout, excluding installation:
 # OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 Rscript --vanilla \
 #   inst/benchmarks/crossrun_hrf.R /tmp/hrf-benchmark 10000 3
@@ -51,17 +56,17 @@ median_time <- function(fun) median(replicate(repetitions, system.time(fun())[["
 rows <- list(
   data.frame(operation = "per_voxel_lm_fit_one_run", voxels = length(reference_voxels), seconds = median_time(reference)),
   data.frame(operation = "native_batched_one_run", voxels = length(reference_voxels), seconds = median_time(native)))
-fit <- estimate_crossrun_hrf(bold, events, 1, kernel, spatial_groups = groups,
+fit <- hrfb_estimate_legacy(bold, events, 1, kernel, spatial_groups = groups,
   spatial_strength = .02, batch_size = 2048)
 rows[[3]] <- data.frame(operation = "all_three_crossrun_selections", voxels = n_voxels,
-  seconds = median_time(function() estimate_crossrun_hrf(bold, events, 1, kernel,
+  seconds = median_time(function() hrfb_estimate_legacy(bold, events, 1, kernel,
     spatial_groups = groups, spatial_strength = .02, batch_size = 2048)))
 rows[[4]] <- data.frame(operation = "all_three_frozen_deconvolutions", voxels = n_voxels,
   seconds = median_time(function() deconvolve_crossrun_hrf(bold, fit, lambda = .01)))
 rows[[5]] <- data.frame(operation = "all_three_frozen_wiener", voxels = n_voxels,
   seconds = median_time(function() deconvolve_crossrun_hrf(bold, fit, lambda = .01, backend = "wiener")))
 rows[[6]] <- data.frame(operation = "all_three_trial_amplitude_selections", voxels = n_voxels,
-  seconds = median_time(function() estimate_crossrun_hrf(bold, events, 1, kernel,
+  seconds = median_time(function() hrfb_estimate_legacy(bold, events, 1, kernel,
     spatial_groups = groups, spatial_strength = .02, amplitude_model = "trial")))
 timings <- do.call(rbind, rows)
 timings$timepoints <- n; timings$runs <- c(1L, 1L, rep(3L, length(rows) - 2L))

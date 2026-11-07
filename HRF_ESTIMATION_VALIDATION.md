@@ -7,6 +7,11 @@ single-seed review example is a demonstration; the repeated validation below is
 the stronger comparison. These are simulation results, not participant-data
 validation.
 
+This report retains the original OLS/heuristic settings. The script now requests
+`noise_model = "ols", evidence = "legacy"` explicitly to preserve that comparison
+after defaults change. See [NOISE_AWARE_HRF_RECOVERY.md](NOISE_AWARE_HRF_RECOVERY.md)
+for the new covariance/evidence workflow and its independent validation.
+
 **The numerical implementation passes its checks, but HRF learning is not a
 general improvement.** In 480 simulated datasets it helped when a stable HRF
 differed from the canonical shape. It harmed recovery when the canonical HRF was
