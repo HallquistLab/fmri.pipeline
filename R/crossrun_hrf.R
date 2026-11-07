@@ -112,6 +112,9 @@ hrf_run_numeric <- function(x, bold, argument) {
 #'   adjacency prior, or spatial smoothing of neural activity. Library, thresholds,
 #'   parcels, and penalty must be fixed externally or tuned within training data.
 #'   No automatic nested tuning, uncertainty intervals, or AR noise fit is included.
+#'   Repeated colored-noise simulations accepted null free-event fits at the
+#'   default evidence gate. Support labels do not establish HRF confidence;
+#'   recovery benefits depend on SNR, neural duration, and stability across runs.
 #'   Nonfinite/constant/nuisance-only voxel runs are omitted; observation masks are
 #'   common across voxels. Candidate task ranks must match within a run and leave
 #'   residual degrees of freedom, otherwise that run cannot inform HRF selection.

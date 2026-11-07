@@ -8,12 +8,20 @@ it neither truncates epochs nor smooths recovered neural activity across voxels.
 
 ## Recommended starting point
 
-Use a small prespecified HRF library and explicit, independently defined parcels.
-Start with parcel pooling. Compare voxel selections with a modest, prespecified
-shape penalty as a sensitivity analysis. There is no validated universal spatial
-strength or parcel size; those choices need simulation and training-only checks
-for the intended task. A functional parcel need not be a homogeneous vascular
-territory. Inspect parcel boundaries and disagreements rather than assuming so.
+Retain a fixed canonical HRF as the baseline and treat learned HRFs as an opt-in
+comparison. The repeated validation in [HRF_ESTIMATION_VALIDATION.md](HRF_ESTIMATION_VALIDATION.md)
+found benefits with stable HRF mismatch, and harms with low SNR, run-to-run HRF
+changes, and neural-duration mismatch. Free-event fitting did not improve noisy
+signed-RPE recovery in that experiment, despite succeeding in a noiseless test.
+
+Use a small prespecified library and independently defined parcels when testing
+spatial regularization. Hard parcel pooling harmed recovery in heterogeneous
+parcels. Neither a universal spatial strength nor parcel size is validated. A
+functional parcel need not be a homogeneous vascular territory. Inspect parcel
+boundaries, fold stability, and disagreements rather than assuming homogeneity.
+The current adjusted-R-squared gate is not a reliable test for task evidence:
+free-event fits accepted HRFs in every pure colored-noise voxel/run in the
+repeated experiment. Support/fallback labels must not be read as confidence.
 
 ```r
 library(fmri.pipeline)
@@ -259,6 +267,14 @@ alongside the saved model. The application checks identity/order/dimensions, not
 an input-content checksum. Changing inputs requires a new fit.
 
 ## Validation and review artifacts
+
+The repeated comparison against a fixed canonical HRF is documented in
+[HRF_ESTIMATION_VALIDATION.md](HRF_ESTIMATION_VALIDATION.md). It uses an
+independent continuous-time generator, 40 datasets per scenario, voxel-level
+recovery measures, paired Monte Carlo intervals, and all six methods at three
+fixed inverse penalties. It includes controls where learning can hurt. Use that
+report to assess recovery benefits; the single-seed example below illustrates
+the interface and is not sufficient evidence for choosing a default.
 
 After installing this checkout, run:
 

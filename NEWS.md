@@ -16,6 +16,13 @@
   grouped inverse operators, bounded caching, block multiplication, and recorded
   per-voxel scaling. Existing NIfTI/file deconvolution defaults are unchanged.
   See `CROSSRUN_HRF_GUIDE.md` and the reproducible review/benchmark scripts.
+* `HRF_ESTIMATION_VALIDATION.md` reports 480 independent simulated datasets
+  comparing learned, canonical, and true HRFs at three fixed inverse penalties.
+  Learning helps with stable shape mismatch but can hurt with low SNR,
+  zero-mean signed responses, run changes, or neural-duration mismatch. The
+  current support gate accepted all null free-event fits under colored noise;
+  support labels are not confidence measures. Estimator settings were not tuned
+  to these results. Reproducible scripts, compact tables, and figures are included.
 
 ## Deconvolution scaling, Wiener tuning, and performance
 
