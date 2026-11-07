@@ -217,7 +217,7 @@ voxelwise_deconvolution <- function(
     
     #set a default filename based on the nifti -- hopefully this will not collide with other subjects/runs
     if (is.null(out_file_expression)) {
-      out_file_expression <- expression(paste0("decon_", gsub("[/\\]", ".", niftis[si]), "_", atlas_img_name))
+      out_file_expression <- expression(paste0("decon_", gsub("[:/\\]+", ".", niftis[si]), "_", atlas_img_name))
     }
 
     if (!is.null(add_metadata)) {

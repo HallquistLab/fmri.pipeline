@@ -519,10 +519,10 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda, scaling = "zscore",
       if (backend != "wiener") {
         if (exists(key, envir = operators, inherits = FALSE)) operator <- get(key, envir = operators) else {
           operator <- hrf_inverse_operator(n, hrf_fit$kernels[, k], rows, ar, z, settings)
-          bytes <- as.numeric(object.size(operator))
+          bytes <- as.numeric(utils::object.size(operator))
           if (bytes <= operator_cache_mb * 1024^2) {
             while (length(cache_keys) && cache_bytes + bytes > operator_cache_mb * 1024^2) {
-              cache_bytes <- cache_bytes - as.numeric(object.size(get(cache_keys[1L], envir = operators)))
+              cache_bytes <- cache_bytes - as.numeric(utils::object.size(get(cache_keys[1L], envir = operators)))
               rm(list = cache_keys[1L], envir = operators); cache_keys <- cache_keys[-1L]
             }
             assign(key, operator, envir = operators)
