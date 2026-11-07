@@ -261,3 +261,32 @@ test_that("calibrated spatial borrowing admits task-supported parcel anchors whe
   expect_equal(sel_f$kernel_index[5L], 1L)
   expect_equal(sel_f$status[5L], "voxel")
 })
+
+test_that("matrix-free bidiagonal inverse operator matches dense R reference across penalties, gaps, and nuisance modes", {
+  n <- 96L
+  kernel <- c(0, 0.15, 0.45, 0.25, 0.1, 0.05)
+  rows_gap <- setdiff(seq_len(n), c(1L, 14:19, 55L, 88:90))
+  z_none <- matrix(numeric(0), n, 0L)
+  z_joint <- cbind(1, seq(-1, 1, length.out = n), sin(seq_len(n) / 9), cos(seq_len(n) / 13))
+
+  for (rho in c(0, -0.35, 0.6)) {
+    for (rows in list(seq_len(n), rows_gap)) {
+      for (tail_padding in c(0L, 5L)) {
+        for (penalty in c("diff2", "diff1", "ridge")) {
+          s_cpp <- list(backend = "cpp", lambda = 0.04, penalty = penalty,
+                        ridge_floor = 1e-8, tail_padding = tail_padding)
+          s_r <- modifyList(s_cpp, list(backend = "r"))
+
+          op_cpp_ignore <- hrf_inverse_operator(n, kernel, rows, rho, z_none, s_cpp)
+          op_r_ignore <- hrf_inverse_operator(n, kernel, rows, rho, z_none, s_r)
+          expect_equal(op_cpp_ignore, op_r_ignore, tolerance = 1e-12)
+
+          op_cpp_joint <- hrf_inverse_operator(n, kernel, rows, rho, z_joint, s_cpp)
+          op_r_joint <- hrf_inverse_operator(n, kernel, rows, rho, z_joint, s_r)
+          expect_equal(op_cpp_joint, op_r_joint, tolerance = 1e-6)
+          expect_lt(max(abs(op_cpp_joint %*% z_joint[rows, ])), 1e-7)
+        }
+      }
+    }
+  }
+})
