@@ -1,5 +1,66 @@
 # fmri.pipeline 0.4-1
 
+## Coefficient recovery validation
+
+* Test fixed window-sum and calibrated-template amplitude readouts, and
+  regression through the frozen inverse's transformed event design. Include
+  active/confounded nulls, off-library HRFs, matched references and a direct
+  forward GLS benchmark. See `COEFFICIENT_RECOVERY_VALIDATION.md`. These are
+  validation candidates; package algorithms and defaults are unchanged.
+
+## Parametric recovery validation
+
+* Add a separate simulation study with genuine neural trial variability,
+  task-active RPE nulls, correlated task confounds, and paired true-HRF,
+  true-covariance, noiseless and matched-grid references. Audit coefficient bias,
+  coverage, false positives and power across runs and independent datasets at
+  eight fixed lambdas. Native inverse operators and trial regression
+  factorizations are reused. See `PARAMETRIC_RECOVERY_VALIDATION.md`.
+
+## Noise-aware HRF evidence and event recovery diagnostics
+
+* Cross-run HRF fitting now defaults to pooled grid-REML AR(1) covariance,
+  conditional GLS task/shape evidence with library corrections, training-run
+  compatibility, and a fixed penalty toward the prespecified shape. Unsupported
+  adaptation has an explicit parcel/prespecified fallback. Tests are conditional
+  on the noise/mean model and are not whole-brain significance or posterior
+  confidence. `noise_model = "ols", evidence = "legacy"` retains the prior fit.
+* The native inverse shares operators across HRF/noise strata and uses original
+  acquisition times across censor gaps. AR/calibrated fits use observation masks
+  during scaling and fitting by default. Nuisance adjustment remains explicit;
+  optional joint projection applies to both convolution and observations.
+  Unidentifiable covariance is reported rather than silently assumed white.
+* `diagnose_crossrun_recovery()` reports conditional event amplitude gain and
+  excess leakage relative to the ideal readout, accounting for natural neural
+  window overlap, fractional onsets, masks, and the frozen inverse. It does not
+  automatically rescale amplitudes. See `NOISE_AWARE_HRF_RECOVERY.md` for review,
+  independent reference checks, repeated validation, and throughput benchmarks.
+
+## Cross-run HRF estimation and spatial regularization
+
+* `hrf_library()` constructs a small unit-sum HRF library.
+  `estimate_crossrun_hrf()` selects HRFs using other runs only, with batched
+  Rcpp/BLAS training fits, nuisance regressors, observation masks, explicit
+  support gates, and a recorded parcel/prespecified fallback hierarchy.
+  Training can use condition means or free event amplitudes for signed trial
+  responses that would otherwise average away, without supplying RPE values.
+* Explicit parcel pooling and optional voxel shape penalties toward
+  training-derived parcel HRFs provide spatial regularization. These constrain
+  HRF selection without spatially smoothing recovered neural activity. Strength
+  and effect-size thresholds are user-controlled. The original heuristic mode
+  does not supply significance tests.
+* `deconvolve_crossrun_hrf()` applies frozen HRFs with required fixed lambda,
+  grouped inverse operators, bounded caching, block multiplication, and recorded
+  per-voxel scaling. Existing NIfTI/file deconvolution defaults are unchanged.
+  See `CROSSRUN_HRF_GUIDE.md` and the reproducible review/benchmark scripts.
+* `HRF_ESTIMATION_VALIDATION.md` reports 480 independent simulated datasets
+  comparing learned, canonical, and true HRFs at three fixed inverse penalties.
+  Learning helps with stable shape mismatch but can hurt with low SNR,
+  zero-mean signed responses, run changes, or neural-duration mismatch. The
+  original support gate accepted all null free-event fits under colored noise;
+  support labels are not confidence measures. Estimator settings were not tuned
+  to these results. Reproducible scripts, compact tables, and figures are included.
+
 ## Auditable event overlap and impulse recovery
 
 * Alignment now interpolates within each unit's valid acquisition segments before

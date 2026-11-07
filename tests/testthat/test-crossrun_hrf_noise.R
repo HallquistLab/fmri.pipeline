@@ -1,0 +1,214 @@
+hrfn_data <- function(n = 110L, voxels = 6L) {
+  set.seed(7129)
+  h <- cbind(early = c(0, .2, .5, .25, .05, 0), late = c(0, 0, .1, .3, .5, .1))
+  ev <- data.frame(onset = seq(8, n - 12, by = 11) + .3, condition = "feedback")
+  events <- setNames(rep(list(ev), 3L), c("A", "B", "C"))
+  x <- hrf_event_design_cpp(n, 1, 0, ev$onset, rep(0, nrow(ev)),
+    seq_len(nrow(ev)), nrow(ev), h)
+  bold <- lapply(events, function(e) {
+    y <- vapply(seq_len(voxels), function(v) {
+      as.numeric(x[[1L + (v %% 2L)]] %*% rep(c(-1, 1), length.out = nrow(ev))) +
+        100 + seq(-1, 1, length.out = n) + rnorm(n, sd = .005)
+    }, numeric(n))
+    colnames(y) <- paste0("v", seq_len(voxels)); y
+  })
+  list(bold = bold, events = events, kernels = h)
+}
+
+test_that("gap-aware AR whitening and evidence match independent GLS fits", {
+  set.seed(8173)
+  n <- 75; rows <- setdiff(1:n, c(1, 10:19, 60:63)); rho <- .65
+  # A Cholesky whitening of the marginal covariance is an independent reference.
+  covariance <- rho^abs(outer(rows, rows, "-"))
+  w <- chol(solve(covariance)) * sqrt(1 - rho^2)
+  z <- cbind(1, seq(-1, 1, length.out = n))
+  designs <- list(cbind(sin(1:n / 4), cos(1:n / 7)),
+    cbind(sin(1:n / 4 + .5), cos(1:n / 7 + .5)))
+  y <- matrix(rnorm(n * 3), n, 3) + designs[[2]] %*% matrix(rnorm(6), 2)
+  got <- hrf_score_run_cpp(y, designs, z, rows, rho = rho, evidence = TRUE)
+  for (v in 1:3) {
+    base <- lm.fit(w %*% z[rows, ], w %*% y[rows, v])
+    full <- lapply(designs, function(x) lm.fit(w %*% cbind(z, x)[rows, ], w %*% y[rows, v]))
+    union <- lm.fit(w %*% cbind(z, designs[[1]], designs[[2]])[rows, ], w %*% y[rows, v])
+    for (k in 1:2) {
+      sse <- sum(full[[k]]$residuals^2); sse0 <- sum(base$residuals^2)
+      task_f <- ((sse0 - sse) / 2) / (sse / (length(rows) - full[[k]]$rank))
+      expect_equal(got$task_p[k, v], pf(task_f, 2, length(rows) - full[[k]]$rank,
+        lower.tail = FALSE), tolerance = 1e-9)
+      expect_equal(got$scores[k, v], 1 - (sse / (length(rows) - full[[k]]$rank)) /
+        (sse0 / (length(rows) - base$rank)), tolerance = 1e-9)
+    }
+    df <- length(rows) - union$rank
+    shape_f <- ((sum(full[[1]]$residuals^2) - sum(union$residuals^2)) /
+      (union$rank - full[[1]]$rank)) / (sum(union$residuals^2) / df)
+    expect_equal(got$fallback_p[2, v], pf(shape_f, union$rank - full[[1]]$rank,
+      df, lower.tail = FALSE), tolerance = 1e-9)
+  }
+  marginal_w <- hrf_whitening_matrix(rows, rho)
+  expect_equal(marginal_w %*% covariance %*% t(marginal_w),
+    diag(1 - rho^2, length(rows)), tolerance = 1e-12)
+  contaminated <- y; contaminated[-rows, ] <- NA_real_
+  expect_equal(hrf_score_run_cpp(contaminated, designs, z, rows, rho = rho, evidence = TRUE), got)
+  expect_error(hrf_score_run_cpp(y, designs, z, rev(rows)), "increasing")
+  same <- hrf_score_run_cpp(y, rep(designs[1], 2), z, rows, evidence = TRUE)
+  expect_true(all(same$fallback_p == 1))
+})
+
+test_that("REML profiles agree with independent marginal covariance likelihoods", {
+  set.seed(883)
+  n <- 60; rows <- setdiff(1:n, c(4, 15:19)); grid <- c(-.3, 0, .4, .8)
+  z <- cbind(1, seq(-1, 1, length.out = n), sin(1:n / 8))
+  y <- matrix(rnorm(n * 2), n, 2)
+  y[, 2] <- as.numeric(z %*% c(100, 1, 2)) + 1e-4 * y[, 2]
+  got <- hrf_noise_profile_cpp(y, z, rows, grid)
+  expect_equal(hrf_noise_profile_cpp(y, z, rows, grid, batch_size = 1L), got, tolerance = 1e-10)
+  q <- qr.Q(qr(z[rows, ])); df <- length(rows) - ncol(q)
+  for (k in seq_along(grid)) {
+    covariance <- grid[k]^abs(outer(rows, rows, "-"))
+    precision <- solve(covariance)
+    for (v in 1:2) {
+      a <- y[rows, v] - mean(y[rows, v]); a <- a / sqrt(sum(a^2))
+      beta <- solve(crossprod(q, precision %*% q), crossprod(q, precision %*% a))
+      residual <- a - q %*% beta
+      rss <- as.numeric(crossprod(residual, precision %*% residual))
+      expected <- df * log(rss / df) + as.numeric(determinant(crossprod(q, precision %*% q),
+        logarithm = TRUE)$modulus) + as.numeric(determinant(covariance, logarithm = TRUE)$modulus)
+      expect_equal(got[k, v], expected, tolerance = 1e-10)
+    }
+  }
+})
+
+test_that("pooled covariance and calibrated null evidence behave on independent AR noise", {
+  set.seed(55271)
+  n <- 240L; voxels <- 64L; rho <- .6
+  bold <- lapply(c("A", "B", "C"), function(r) {
+    y <- replicate(voxels, as.numeric(stats::filter(rnorm(n + 100L), rho,
+      method = "recursive"))[-seq_len(100L)]) + 100
+    colnames(y) <- paste0("v", seq_len(voxels)); y
+  })
+  names(bold) <- c("A", "B", "C")
+  ev <- data.frame(onset = seq(10, 220, by = 15), condition = "feedback")
+  events <- setNames(rep(list(ev), 3L), names(bold))
+  fit <- estimate_crossrun_hrf(bold, events, 1, hrf_library(1), amplitude_model = "trial")
+  expect_true(all(vapply(fit$noise, function(x) abs(x$rho[1L] - rho) <= .1 + 1e-10, logical(1))))
+  # Broad deterministic bound guards catastrophic null acceptance; the repeated
+  # simulation report estimates rates and Monte Carlo intervals separately.
+  expect_lt(mean(vapply(fit$selections, function(x) mean(x$kernel_index != 1L), numeric(1))), .15)
+  expect_lt(mean(vapply(fit$selections, function(x) mean(x$selected_task_p <= .05), numeric(1))), .15)
+  rescaled <- lapply(bold, function(y) -2 * y + 500)
+  again <- estimate_crossrun_hrf(rescaled, events, 1, hrf_library(1), amplitude_model = "trial")
+  expect_equal(lapply(again$noise, `[[`, "rho"), lapply(fit$noise, `[[`, "rho"))
+  expect_equal(lapply(again$selections, `[[`, "kernel_index"), lapply(fit$selections, `[[`, "kernel_index"))
+})
+
+test_that("unidentifiable noise is explicit rather than silently treated as white", {
+  d <- hrfn_data(n = 20L)
+  masks <- lapply(d$bold, function(y) seq_len(nrow(y)) <= 8L)
+  fit <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels, valid_rows = masks)
+  expect_true(all(fit$signal_status$status == "noise_unidentified"))
+  expect_true(all(fit$selections$A$voxel_evidence == "insufficient_training"))
+  out <- deconvolve_crossrun_hrf(d$bold, fit, .01)
+  expect_true(all(is.na(out$activity$A)))
+  expect_true(all(out$scaling$A$status == "noise_unidentified"))
+})
+
+test_that("masked nuisance-adjusted inverse matches a joint normal-equation reference", {
+  d <- hrfn_data(); n <- nrow(d$bold$A); rho <- .55
+  rows <- setdiff(1:n, c(20:28, 80)); h <- d$kernels[, 2]
+  z <- cbind(1, seq(-1, 1, length.out = n)); latent <- n + length(h) - 1L
+  convolution <- matrix(0, n, latent)
+  for (t in 1:n) for (j in seq_along(h)) convolution[t, t + length(h) - j] <- h[j]
+  covariance <- rho^abs(outer(rows, rows, "-"))
+  precision <- solve(covariance) * (1 - rho^2)
+  design <- cbind(convolution[rows, ], z[rows, ])
+  penalty <- crossprod(diff(diag(latent), differences = 2)) * .03 + diag(1e-8, latent)
+  lhs <- crossprod(design, precision %*% design)
+  lhs[seq_len(latent), seq_len(latent)] <- lhs[seq_len(latent), seq_len(latent)] + penalty
+  expected <- solve(lhs, crossprod(design, precision))[length(h) - 1L + seq_len(n), ]
+  settings <- list(backend = "cpp", lambda = .03, penalty = "diff2", ridge_floor = 1e-8, tail_padding = 0L)
+  got <- hrf_inverse_operator(n, h, rows, rho, z, settings)
+  expect_equal(got, expected, tolerance = 1e-6)
+  settings$backend <- "r"
+  expect_equal(hrf_inverse_operator(n, h, rows, rho, z, settings), expected, tolerance = 1e-6)
+  # Joint fitting removes any supplied nuisance contribution, including slope.
+  expect_lt(max(abs(got %*% z[rows, ])), 1e-7)
+})
+
+test_that("calibrated folds exclude all target information and flag inconsistent runs", {
+  d <- hrfn_data()
+  args <- c(d[c("bold", "events")], list(tr = 1, kernel_grid = d$kernels,
+    amplitude_model = "trial", return_scores = TRUE))
+  original <- do.call(estimate_crossrun_hrf, args)
+  args$bold$A[,] <- NA_real_; args$events$A$onset <- args$events$A$onset + 1000
+  changed <- do.call(estimate_crossrun_hrf, args)
+  expect_identical(changed$selections$A, original$selections$A)
+  expect_identical(changed$scores$A, original$scores$A)
+  expect_identical(changed$parcels$A, original$parcels$A)
+  # Distinct well-supported shapes in the two training runs have no common fit.
+  d$bold$B <- d$bold$B[, rep(2L, 6L)]
+  d$bold$C <- d$bold$C[, rep(1L, 6L)]
+  colnames(d$bold$B) <- colnames(d$bold$C) <- colnames(d$bold$A)
+  conflict <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels,
+    amplitude_model = "trial", noise_rho = 0)
+  expect_true(all(conflict$selections$A$kernel_index == 1L))
+  expect_true(all(conflict$selections$A$stability == "no_common_library_shape"))
+  two <- estimate_crossrun_hrf(d$bold[1:2], d$events[1:2], 1, d$kernels,
+    amplitude_model = "trial", noise_rho = 0)
+  expect_true(all(two$selections$A$stability == "not_assessable"))
+})
+
+test_that("modern application honors masks, covariance, nuisance, and scaling exactly once", {
+  d <- hrfn_data(); n <- nrow(d$bold$A)
+  mask <- lapply(d$bold, function(y) !(seq_len(n) %in% c(20:25, 80)))
+  fit <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels, valid_rows = mask,
+    amplitude_model = "trial", noise_rho = .4)
+  d$bold$A[!mask$A, ] <- NA_real_
+  for (backend in c("cpp", "r")) {
+    got <- deconvolve_crossrun_hrf(d$bold, fit, .02, scaling = "zscore", backend = backend, tail_padding = 3L,
+      nuisance_mode = "joint")
+    for (r in names(d$bold)) for (v in 1:6) {
+      rows <- which(mask[[r]]); k <- fit$selections[[r]]$kernel_index[v]
+      z <- cbind(1, seq(-1, 1, length.out = n))
+      op <- hrf_inverse_operator(n, fit$kernels[, k], rows, .4, z, got$settings)
+      y <- d$bold[[r]][rows, v]
+      expected <- op %*% ((y - mean(y)) / sd(y))
+      expect_equal(as.numeric(got$activity[[r]][, v]), as.numeric(expected), tolerance = 1e-8)
+    }
+    expect_true(all(is.finite(got$activity$A)))
+    expect_identical(attr(got$activity$A, "observation_mask"), mask$A)
+  }
+  expect_error(deconvolve_crossrun_hrf(d$bold, fit, .02, backend = "wiener"), "masked")
+})
+
+test_that("schedule diagnostics equal explicit event injection and subtract ideal overlap", {
+  d <- hrfn_data()
+  fit <- estimate_crossrun_hrf(d$bold, d$events, 1, d$kernels, amplitude_model = "trial", noise_rho = .4)
+  got <- deconvolve_crossrun_hrf(d$bold, fit, .02, scaling = "demean", nuisance_mode = "joint")
+  events <- lapply(d$events, function(e) data.frame(onset = c(20.3, 21.2, 35.4), condition = c("a", "b", "a")))
+  diag <- diagnose_crossrun_recovery(got, events, lags = -1:2, return_matrices = TRUE)
+  expect_true(any(abs(diag$matrices[[1L]]$ideal[row(diag$matrices[[1L]]$ideal) !=
+    col(diag$matrices[[1L]]$ideal)]) > 0))
+  for (r in names(events)) {
+    n <- nrow(d$bold[[r]]); ev <- events[[r]]
+    for (key in unique(diag$voxels$stratum[diag$voxels$run == r])) {
+      v <- which(diag$voxels$run == r & diag$voxels$stratum == key)[1L]
+      v <- match(diag$voxels$voxel[v], fit$voxel_ids)
+      k <- fit$selections[[r]]$kernel_index[v]
+      forward <- hrf_event_design_cpp(n, 1, 0, ev$onset, rep(0, 3), 1:3, 3L,
+        fit$kernels[, k, drop = FALSE])[[1L]]
+      op <- hrf_inverse_operator(n, fit$kernels[, k], 1:n, .4,
+        cbind(1, seq(-1, 1, length.out = n)), got$settings)
+      recovered <- op %*% sweep(forward, 2, colMeans(forward), "-")
+      reference <- matrix(0, 3, 3)
+      for (j in 1:3) for (s in 1:3) for (lag in -1:2)
+        reference[j, s] <- reference[j, s] + approx(0:(n - 1L), recovered[, s], ev$onset[j] + lag)$y
+      matrix <- diag$matrices[[paste(r, key, 1, sep = "/")]]
+      expect_equal(matrix$recovered, reference, tolerance = 1e-10)
+      expect_equal(matrix$excess, matrix$recovered - matrix$ideal)
+    }
+  }
+  expect_false(diag$settings$automatic_correction)
+  edge <- events; edge$A$onset[1] <- -10
+  outside <- diagnose_crossrun_recovery(got, edge)
+  expect_true(all(is.na(outside$events$amplitude_gain[outside$events$run == "A" & outside$events$event == 1])))
+})
