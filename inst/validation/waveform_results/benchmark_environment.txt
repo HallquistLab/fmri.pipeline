@@ -1,0 +1,28 @@
+R version 4.5.1 (2025-06-13)
+Platform: x86_64-pc-linux-gnu
+Running under: Red Hat Enterprise Linux 9.8 (Plow)
+
+Matrix products: default
+BLAS/LAPACK: /proj/mnhallqlab/sw/openblas-0.3.30/lib/libopenblas_zenp-r0.3.30.so;  LAPACK version 3.12.0
+
+locale:
+ [1] LC_CTYPE=C.UTF-8       LC_NUMERIC=C           LC_TIME=C.UTF-8
+ [4] LC_COLLATE=C.UTF-8     LC_MONETARY=C.UTF-8    LC_MESSAGES=C.UTF-8
+ [7] LC_PAPER=C.UTF-8       LC_NAME=C              LC_ADDRESS=C
+[10] LC_TELEPHONE=C         LC_MEASUREMENT=C.UTF-8 LC_IDENTIFICATION=C
+
+time zone: America/New_York
+tzcode source: system (glibc)
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base
+
+loaded via a namespace (and not attached):
+[1] compiler_4.5.1         tools_4.5.1            RcppArmadillo_15.6.0-1
+[4] Rcpp_1.1.2
+OPENBLAS_NUM_THREADS 1
+OMP_NUM_THREADS 1
+n=256, one HRF/mask/parcel group, no compilation in timing.
+Cold: preprocessing, design/factorization and solve. Warm: preprocessing and solve with cached factors.
+Dense validation prototype: not a whole-brain or 50,000-voxel benchmark.
+Source MD5 6522fdd0a81f10dd23605e8cd13bb55b

@@ -1,0 +1,10 @@
+Frozen source checks, all dataset seeds, method completeness, solver and HRF records: PASS
+Evaluation: 160 datasets; 480 runs; 1600 analysis rows; 76800 voxel fits; 3840 HRF/noise records.
+Convergence flags agree with both recorded primal and dual stopping criteria: PASS.
+37 iteration-limit fits retained: oracle blocks/TV 1, oracle overlap/TV 20, oracle overlap/mixture 16.
+All fitted-HRF/rho evaluation fits converged.
+180 finite-amplitude perturbations converged; 90 final benchmark fits converged.
+86 focused test cases, 1147 assertions; no failures/errors/warnings/skips.
+Test source MD5: e783eea6c2bf20e804e4b4859fef79b5
+Diagnostic driver MD5: 6522fdd0a81f10dd23605e8cd13bb55b
+Report driver MD5: efb2439fc801cb89582cca60e3160173

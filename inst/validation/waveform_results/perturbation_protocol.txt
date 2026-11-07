@@ -1,0 +1,8 @@
+Seed: 28000101; TR 1; n=160; true and fitted positive-gamma HRF shape=6; fixed rho=.5.
+Finite-amplitude conditional maps: [F(y+H*delta)-F(y)]/amplitude.
+BOLD scaling frozen to noisy reference for both contexts and every perturbation.
+Probe-only iteration cap 60000; primary study remains 12000; all other stopping settings unchanged.
+Nonconverged probe gains are missing and flagged explicitly in the CSV.
+Evaluation-only constant offset alignment; no time shift or gain correction.
+These are not a global linear resolution matrix or posterior uncertainty.
+Source MD5 6522fdd0a81f10dd23605e8cd13bb55b
