@@ -1,0 +1,8 @@
+Study parent commit 3a5dc3d6a392b34c4f8ba6d055bdcf116ffe7a35
+Installed package 0.4.1
+R R version 4.5.1 (2025-06-13)
+d998cf391a84503306b92ea24471e9aa  R/crossrun_hrf.R
+9b2bd7687fa400695f9a3b23cdd0c12e  R/deconvolve_reglin.R
+d65390438449f2dec8c4eac5efce2f06  R/hrf_noise_evidence.R
+80b2264b6499213fbeab2b5aad83b824  src/crossrun_hrf.cpp
+067e7fef4daf7abd6bd57758868bf3c6  /tmp/fmri-hrf-noise/optimized-lib/fmri.pipeline/libs/fmri.pipeline.so
