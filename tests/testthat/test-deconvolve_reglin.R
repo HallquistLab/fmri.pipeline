@@ -464,3 +464,32 @@ test_that("fixed-parameter fast paths agree with diagnostic fits", {
     }
   }
 })
+
+test_that("banded Cholesky and Takahashi trace match dense R reference across kernels and edge cases", {
+  set.seed(4102)
+  y <- matrix(rnorm(180), 60, 3)
+  kernels_list <- list(
+    short = c(0.1, 0.6, 0.3),
+    canonical = as.numeric(fmri.pipeline:::spm_hrf(1)$hrf[1:12])
+  )
+  for (k in kernels_list) {
+    for (penalty in c("ridge", "diff1", "diff2")) {
+      for (rho in c(0, 0.65)) {
+        for (rule in c("min", "1se")) {
+          args <- list(BOLDobs = y, kernel = k, lambda_grid = c(1e-4, 1e-2, 1, 10),
+            hrf_lags = c(-1L, 0L, 1L), penalty = penalty, tune_by = "global",
+            gcv_rule = rule, prewhiten_gcv = rho != 0, prewhiten_rho = rho,
+            trim_kernel = FALSE, return_diagnostics = TRUE)
+          cpp_fit <- do.call(deconvolve_reglin, c(args, list(backend = "cpp")))
+          r_fit <- do.call(deconvolve_reglin, c(args, list(backend = "r")))
+          expect_equal(cpp_fit$tuning$df, r_fit$tuning$df, tolerance = 1e-10)
+          expect_equal(cpp_fit$tuning$rss, r_fit$tuning$rss, tolerance = 1e-9)
+          expect_equal(cpp_fit$tuning$gcv, r_fit$tuning$gcv, tolerance = 1e-9)
+          expect_equal(cpp_fit$activity, r_fit$activity, ignore_attr = TRUE, tolerance = 1e-8)
+          expect_equal(cpp_fit$lambda, r_fit$lambda)
+          expect_equal(cpp_fit$kernel_index, r_fit$kernel_index)
+        }
+      }
+    }
+  }
+})
