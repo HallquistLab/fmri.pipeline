@@ -212,3 +212,52 @@ test_that("schedule diagnostics equal explicit event injection and subtract idea
   outside <- diagnose_crossrun_recovery(got, edge)
   expect_true(all(is.na(outside$events$amplitude_gain[outside$events$run == "A" & outside$events$event == 1])))
 })
+
+test_that("calibrated spatial borrowing admits task-supported parcel anchors when single-voxel shape power is modest", {
+  set.seed(9042)
+  n <- 110L
+  h <- cbind(early = c(0, .25, .5, .2, .05, 0), late = c(0, .15, .45, .3, .1, 0))
+  h <- sweep(h, 2L, colSums(h), "/")
+  ev <- data.frame(onset = seq(8, n - 12, by = 14) + .3, condition = "feedback")
+  events <- setNames(rep(list(ev), 3L), c("A", "B", "C"))
+  x <- hrf_event_design_cpp(n, 1, 0, ev$onset, rep(0, nrow(ev)),
+    rep(1L, nrow(ev)), 1L, h)
+  # Voxels 1-3 have strong late-HRF signal (establishing the parcel anchor);
+  # Voxel 4 has a late-HRF signal strong enough for task support (task_p <= .05)
+  # and higher R^2 under late than early, but modest enough that single-voxel
+  # shape_p > .05; Voxel 5 genuinely follows the early (canonical) HRF.
+  bold <- lapply(events, function(e) {
+    s_late <- as.numeric(x[[2L]])
+    s_early <- as.numeric(x[[1L]])
+    cbind(
+      v1 = 100 + s_late + rnorm(n, sd = .01),
+      v2 = 100 + s_late + rnorm(n, sd = .01),
+      v3 = 100 + s_late + rnorm(n, sd = .01),
+      v4 = 100 + s_late + rnorm(n, sd = .22),
+      v5 = 100 + s_early + rnorm(n, sd = .01)
+    )
+  })
+  groups <- setNames(rep("p1", 5L), colnames(bold$A))
+  fit_spatial <- estimate_crossrun_hrf(bold, events, 1, h, spatial_groups = groups,
+    pooling = "voxel", spatial_strength = .02, min_parcel_voxels = 3L,
+    amplitude_model = "condition", noise_rho = 0, return_scores = TRUE)
+  sel_s <- fit_spatial$selections$A
+  expect_equal(sel_s$parcel_kernel_index[4L], 2L)
+  expect_gt(sel_s$selected_shape_p[4L], .05)
+  expect_lte(sel_s$selected_task_p[4L], .05)
+  expect_equal(sel_s$kernel_index[4L], 2L)
+  expect_equal(sel_s$status[4L], "voxel_spatial")
+  expect_equal(sel_s$voxel_evidence[4L], "unidentified")
+  # Genuinely canonical voxel 5 retains kernel 1 under modest spatial penalty.
+  expect_equal(sel_s$kernel_index[5L], 1L)
+
+  fit_fallback <- estimate_crossrun_hrf(bold, events, 1, h, spatial_groups = groups,
+    pooling = "voxel", spatial_strength = 0, canonical_strength = 0, min_parcel_voxels = 3L,
+    amplitude_model = "condition", noise_rho = 0, return_scores = TRUE)
+  sel_f <- fit_fallback$selections$A
+  expect_equal(sel_f$kernel_index[4L], 2L)
+  expect_equal(sel_f$status[4L], "fallback_parcel")
+  expect_equal(sel_f$voxel_evidence[4L], "unidentified")
+  expect_equal(sel_f$kernel_index[5L], 1L)
+  expect_equal(sel_f$status[5L], "voxel")
+})

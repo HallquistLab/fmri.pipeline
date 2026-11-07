@@ -47,7 +47,7 @@ test_that("internal extraction uses the same masked indices as voxel metadata", 
   expect_true(all(is.na(d$decon[d$vnum != 1L])))
   y <- as.numeric(scale(matrix(f$data, nrow = 8L)[2L, ]))
   expect_equal(original$BOLD_z[original$vnum == 1L], y, tolerance = 1e-7)
-  reference <- deconvolve_reglin(c(y, rep(0, 3L)), kernel = c(0, 0.5, 0.5),
+  reference <- deconvolve_reglin(y, kernel = c(0, 0.5, 0.5),
     lambda_grid = c(0.01, 0.1), normalize = FALSE, demean = FALSE)[seq_len(30L), 1L]
   expect_equal(d$decon[d$vnum == 1L], reference, tolerance = 1e-7)
   expect_false(file.exists(file.path(f$root, "deconvolve_errors")))
@@ -152,7 +152,7 @@ test_that("voxelwise linear scaling is explicit, recorded and preserves amplitud
     transform <- data.table::fread(paste0(file, ".scaling.csv"))
     expect_equal(transform$scaling, mode)
     y <- (raw - transform$center) / transform$scale
-    reference <- deconvolve_reglin(c(y, 0, 0, 0), c(0, 0.5, 0.5), lambda = 0.1,
+    reference <- deconvolve_reglin(y, c(0, 0.5, 0.5), lambda = 0.1,
       scaling = "none")[1:30, 1]
     expect_equal(d$decon, reference, tolerance = 1e-7)
     original <- data.table::fread(file.path(f$root, "atlas", "original", paste0(mode, "_original.csv.gz")))
@@ -160,6 +160,15 @@ test_that("voxelwise linear scaling is explicit, recorded and preserves amplitud
     expect_equal("BOLD_z" %in% names(original), mode == "zscore")
     expect_equal(data.table::fread(paste0(file, ".metadata.csv"))$scaling, mode)
   }
+  # Explicit tail_padding is respected when requested for reglin.
+  voxelwise_deconvolution(f$bold, TR = 1, atlas_files = f$atlas, mask = f$mask,
+    nprocs = 1, algorithm = "reglin", out_dir = f$root,
+    out_file_expression = expression("padded"),
+    decon_settings = list(kernel = c(0, 0.5, 0.5), lambda = 0.1, scaling = "none", tail_padding = 3L))
+  padded_fit <- data.table::fread(file.path(f$root, "atlas", "deconvolved", "padded_deconvolved.csv.gz"))
+  padded_ref <- deconvolve_reglin(c(raw, 0, 0, 0), c(0, 0.5, 0.5), lambda = 0.1,
+    scaling = "none")[1:30, 1]
+  expect_equal(padded_fit$decon, padded_ref, tolerance = 1e-7)
   # The legacy opt-out must reach the solver without an earlier hidden z-score.
   voxelwise_deconvolution(f$bold, TR = 1, atlas_files = f$atlas, mask = f$mask,
     nprocs = 1, algorithm = "reglin", out_dir = f$root,

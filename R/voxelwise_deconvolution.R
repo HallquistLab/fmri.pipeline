@@ -53,7 +53,10 @@
 #'   itself degrade the conditioning of the fixed linear inverse, but it changes
 #'   signal weights during global tuning. See \code{\link{deconvolve_reglin}}.
 #'
-#'   Scaling uses the observed run once, before the existing zero tail is appended;
+#'   Scaling uses the observed run once, before any zero tail is appended
+#'   (\code{decon_settings$tail_padding}, defaulting to \code{0L} for
+#'   \code{reglin}/\code{regularized_linear} and \code{length(decon_settings$kernel)}
+#'   for \code{bush2011}/\code{bush2015});
 #'   solver normalization is disabled, as is linear-solver demeaning of padded data. Each output has
 #'   a \code{.scaling.csv} sidecar containing voxel number, mode, subtracted center,
 #'   divisor, and validity status. Its \code{.metadata.csv} records algorithm, scaling,
@@ -123,10 +126,14 @@ voxelwise_deconvolution <- function(
       "use reglin for alternative input units.")
   }
 
-  if (!is.null(decon_settings$kernel)) {
-    hrf_pad <- length(decon_settings$kernel)
-  } else {
+  if (is.null(decon_settings$kernel)) {
     stop("At present no alternative way to set hrf_pad if $kernel not passed in decon_settings")
+  }
+  if (is.null(decon_settings$tail_padding)) {
+    hrf_pad <- if (algorithm %in% c("reglin", "regularized_linear")) 0L else length(decon_settings$kernel)
+  } else {
+    checkmate::assert_int(decon_settings$tail_padding, lower = 0L)
+    hrf_pad <- as.integer(decon_settings$tail_padding)
   }
 
   # Configuration errors must be raised before workers can turn fit failures
@@ -264,11 +271,13 @@ voxelwise_deconvolution <- function(
         warning(sum(!valid_voxels), " constant or nonfinite voxel signals excluded from deconvolution: ", niftis[si])
       }
 
-      # Zero pad the tail end to keep the deconvolved signal stable at the
-      # boundary and trim the same padding after deconvolution.
-      alg_input <- to_deconvolve[valid_voxels, , drop = FALSE] %>%
-        cbind(matrix(0, nrow = sum(valid_voxels), ncol = hrf_pad)) %>%
-        as.matrix()
+      # Zero pad the tail end when requested (default for Bush algorithms) and
+      # trim the same padding after deconvolution.
+      alg_input <- to_deconvolve[valid_voxels, , drop = FALSE]
+      if (hrf_pad > 0L) {
+        alg_input <- cbind(alg_input, matrix(0, nrow = sum(valid_voxels), ncol = hrf_pad))
+      }
+      alg_input <- as.matrix(alg_input)
 
       #test1 <- deconvolve_nlreg(to_deconvolve[117,], kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon)
       #test2 <- deconvolve_nlreg(to_deconvolve[118,], kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon)

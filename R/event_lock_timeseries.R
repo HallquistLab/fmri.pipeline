@@ -431,11 +431,10 @@ compress_mts_pca <- function(mts, pexp_target=0.9, scale_columns=TRUE) {
   mts <- mts[, !apply(mts, 2, function(x) all(is.na(x))), drop=FALSE] #drop columns/time series that are all NA (edge of brain)
   mts <- na.omit(mts) #now drop rows that have NAs (event censoring)
 
-  #screen for lousy time series (no variation or extreme means)
-  mms <- apply(mts, 2, mean)
+  #screen for lousy time series (no variation)
   sds <- apply(mts, 2, sd)
 
-  bad <- sds < 1e-3 | mms < 1e-6 #very small SD or super-low mean
+  bad <- !is.finite(sds) | sds < 1e-3 #very small or nonfinite SD
   mts <- mts[, !bad, drop=FALSE]
 
   if (nrow(mts) <= 3 || ncol(mts) <= 1) {
@@ -451,7 +450,7 @@ compress_mts_pca <- function(mts, pexp_target=0.9, scale_columns=TRUE) {
     #if (isTRUE(scale_columns)) { mts <- scale(mts) } #z-score columns of matrix before compression (standard practice)
     #for some reason, scale is blowing up svd (infinite/missing values -- just use manual z-scoring)
     if (isTRUE(scale_columns)) { 
-      mts <- apply(mts, 2, function(x) {  (x - mean(x))/mean(x) })
+      mts <- apply(mts, 2, function(x) { (x - mean(x)) / sd(x) })
     }
 
     dd <- svd(mts)

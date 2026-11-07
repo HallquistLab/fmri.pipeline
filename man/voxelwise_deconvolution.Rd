@@ -94,7 +94,10 @@ positive baseline rather than residualized/zero-mean data. Raw scale does not by
 itself degrade the conditioning of the fixed linear inverse, but it changes
 signal weights during global tuning. See \code{\link{deconvolve_reglin}}.
 
-Scaling uses the observed run once, before the existing zero tail is appended;
+Scaling uses the observed run once, before any zero tail is appended
+(\code{decon_settings$tail_padding}, defaulting to \code{0L} for
+\code{reglin}/\code{regularized_linear} and \code{length(decon_settings$kernel)}
+for \code{bush2011}/\code{bush2015});
 solver normalization is disabled, as is linear-solver demeaning of padded data. Each output has
 a \code{.scaling.csv} sidecar containing voxel number, mode, subtracted center,
 divisor, and validity status. Its \code{.metadata.csv} records algorithm, scaling,

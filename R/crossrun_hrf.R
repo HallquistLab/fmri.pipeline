@@ -331,17 +331,33 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
       }
       if (pooling == "voxel") {
         objective <- scores[, eligible, drop = FALSE]
+        penalized <- which(!is.na(anchor[eligible]))
+        admissible_voxel <- if (is.null(gate)) NULL else gate$supported[, eligible, drop = FALSE]
         if (!is.null(gate)) {
           objective <- objective - canonical_strength * distance[, fallback_kernel]
-          objective[!gate$supported[, eligible, drop = FALSE]] <- -Inf
+          if (spatial_strength > 0 && length(penalized)) {
+            anchor_idx <- cbind(anchor[eligible[penalized]], penalized)
+            admissible_voxel[anchor_idx] <- admissible_voxel[anchor_idx] |
+              gate$task_supported[cbind(anchor[eligible[penalized]], eligible[penalized])]
+          }
+          objective[!admissible_voxel] <- -Inf
         }
-        penalized <- which(!is.na(anchor[eligible]))
         if (spatial_strength > 0 && length(penalized))
           objective[, penalized] <- objective[, penalized, drop = FALSE] -
             spatial_strength * distance[, anchor[eligible[penalized]], drop = FALSE]
         candidates <- max.col(t(objective), ties.method = "first")
         keep <- scores[cbind(candidates, eligible)] >= min_r2
-        if (!is.null(gate)) keep <- keep & gate$supported[cbind(candidates, eligible)]
+        if (!is.null(gate)) {
+          keep <- keep & admissible_voxel[cbind(candidates, seq_along(eligible))]
+          if (spatial_strength == 0 && length(penalized)) {
+            no_depart <- colSums(gate$supported[-fallback_kernel, eligible[penalized], drop = FALSE]) == 0L
+            anchor_task <- gate$task_supported[cbind(anchor[eligible[penalized]], eligible[penalized])]
+            anchor_obj <- scores[cbind(anchor[eligible[penalized]], eligible[penalized])] -
+              canonical_strength * distance[anchor[eligible[penalized]], fallback_kernel]
+            fallback_obj <- scores[fallback_kernel, eligible[penalized]]
+            keep[penalized[no_depart & anchor_task & anchor_obj > fallback_obj]] <- FALSE
+          }
+        }
         chosen[eligible[keep]] <- candidates[keep]
         reason[eligible[keep]] <- ifelse(spatial_strength > 0 & !is.na(anchor[eligible[keep]]),
           "voxel_spatial", "voxel")

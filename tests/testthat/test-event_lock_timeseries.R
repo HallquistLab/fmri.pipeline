@@ -98,3 +98,31 @@ test_that("original trial mappings survive event copying and missing epochs", {
   expect_equal(result$signal_mean, c(10, NA_real_))
   expect_equal(names(object$get_events(orig_names = TRUE)), c("subject", "block", "attempt", "onset"))
 })
+
+test_that("compress_mts_pca retains zero-mean columns and standardizes by SD", {
+  t_seq <- seq(0, 2 * pi, length.out = 25L)
+  base_mat <- cbind(
+    v1 = sin(t_seq),
+    v2 = sin(t_seq) + 0.25 * cos(t_seq),
+    v3 = cos(t_seq),
+    v4 = rep(0, length(t_seq)) # constant column should be screened out
+  )
+  # Zero-mean and negative-mean columns with disparate scales must be retained
+  # and produce identical correlation-PCA compression to unit-scaled positive-mean columns.
+  shifted_scaled <- cbind(
+    v1 = 10 * (base_mat[, 1L] - mean(base_mat[, 1L])),
+    v2 = 0.05 * (base_mat[, 2L] - mean(base_mat[, 2L])) - 5,
+    v3 = 100 * (base_mat[, 3L] - mean(base_mat[, 3L])) - 50,
+    v4 = base_mat[, 4L]
+  )
+  positive_unit <- cbind(
+    v1 = as.numeric(scale(base_mat[, 1L])) + 10,
+    v2 = as.numeric(scale(base_mat[, 2L])) + 10,
+    v3 = as.numeric(scale(base_mat[, 3L])) + 10,
+    v4 = base_mat[, 4L]
+  )
+  res_shifted <- fmri.pipeline:::compress_mts_pca(shifted_scaled, pexp_target = 0.8, scale_columns = TRUE)
+  res_pos <- fmri.pipeline:::compress_mts_pca(positive_unit, pexp_target = 0.8, scale_columns = TRUE)
+  expect_equal(res_shifted$compress_nt, 3L)
+  expect_equal(res_shifted, res_pos, tolerance = 1e-12)
+})

@@ -71,13 +71,14 @@ hrf_fold_evidence <- function(results, train, counts, scores, fallback, alpha, m
     p[!is.finite(p)] <- 1
     compatible <- compatible & sweep(p, 2L, cutoff, ">")
   }
-  supported <- compatible & task <= alpha & scores >= min_r2
-  supported[is.na(supported)] <- FALSE
+  task_supported <- compatible & task <= alpha & scores >= min_r2
+  task_supported[is.na(task_supported)] <- FALSE
   depart <- shape <= alpha & sweep(scores, 2L, scores[fallback, ], ">")
   depart[is.na(depart)] <- FALSE
   depart[fallback, ] <- TRUE
   list(task_p = task, shape_p = shape, compatible = compatible,
-    supported = supported & depart)
+    task_supported = task_supported, depart = depart,
+    supported = task_supported & depart)
 }
 
 hrf_whitening_matrix <- function(rows, rho) {
