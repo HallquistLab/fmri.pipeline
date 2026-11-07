@@ -1,5 +1,14 @@
 # fmri.pipeline 0.4-1
 
+## Parametric recovery validation
+
+* Add a separate simulation study with genuine neural trial variability,
+  task-active RPE nulls, correlated task confounds, and paired true-HRF,
+  true-covariance, noiseless and matched-grid references. Audit coefficient bias,
+  coverage, false positives and power across runs and independent datasets at
+  eight fixed lambdas. Native inverse operators and trial regression
+  factorizations are reused. See `PARAMETRIC_RECOVERY_VALIDATION.md`.
+
 ## Noise-aware HRF evidence and event recovery diagnostics
 
 * Cross-run HRF fitting now defaults to pooled grid-REML AR(1) covariance,
