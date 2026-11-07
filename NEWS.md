@@ -1,5 +1,22 @@
 # fmri.pipeline 0.4-1
 
+## Cross-run HRF estimation and spatial regularization
+
+* `hrf_library()` constructs a small unit-sum HRF library.
+  `estimate_crossrun_hrf()` selects HRFs using other runs only, with batched
+  Rcpp/BLAS training fits, nuisance regressors, observation masks, explicit
+  support gates, and a recorded parcel/prespecified fallback hierarchy.
+  Training can use condition means or free event amplitudes for signed trial
+  responses that would otherwise average away, without supplying RPE values.
+* Explicit parcel pooling and optional voxel shape penalties toward
+  training-derived parcel HRFs provide spatial regularization. These constrain
+  HRF selection without spatially smoothing recovered neural activity. Strength
+  and evidence thresholds are user-controlled and are not significance tests.
+* `deconvolve_crossrun_hrf()` applies frozen HRFs with required fixed lambda,
+  grouped inverse operators, bounded caching, block multiplication, and recorded
+  per-voxel scaling. Existing NIfTI/file deconvolution defaults are unchanged.
+  See `CROSSRUN_HRF_GUIDE.md` and the reproducible review/benchmark scripts.
+
 ## Deconvolution scaling, Wiener tuning, and performance
 
 * Linear deconvolution supports explicit `scaling = "zscore"`, `"demean"`,

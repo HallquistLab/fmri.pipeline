@@ -39,6 +39,14 @@ convolve_double_gamma <- function(stimulus, a1 = 6.0, a2 = 12.0, b1 = 0.9, b2 = 
     .Call(`_fmri_pipeline_convolve_double_gamma`, stimulus, a1, a2, b1, b2, cc)
 }
 
+hrf_event_design_cpp <- function(n_time, tr, offset, onsets, durations, conditions, n_conditions, kernels) {
+    .Call(`_fmri_pipeline_hrf_event_design_cpp`, n_time, tr, offset, onsets, durations, conditions, n_conditions, kernels)
+}
+
+hrf_score_run_cpp <- function(bold, designs, nuisance, rows, batch_size = 2048L, rank_tol = 1e-8) {
+    .Call(`_fmri_pipeline_hrf_score_run_cpp`, bold, designs, nuisance, rows, batch_size, rank_tol)
+}
+
 #' C++ port of Bush and Cisler 2013, Magnetic Resonance Imaging
 #' Adapted from the original provided by Keith Bush
 #' as well as C++ code from Jiang Bian
