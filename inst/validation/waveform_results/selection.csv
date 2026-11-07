@@ -1,0 +1,6 @@
+"method","lambda","spatial","id"
+"diff2",0.1,0,"diff2/0.100"
+"tv",0.03,0,"tv/0.030"
+"mixture",0.03,0,"mixture/0.030"
+"tv_spatial",0.01,0.01,"tv_spatial/0.010"
+"diff2_fixed",0.01,0,"diff2_fixed/0.010"
