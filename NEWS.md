@@ -1,5 +1,13 @@
 # fmri.pipeline 0.4-1
 
+## Coefficient recovery validation
+
+* Test fixed window-sum and calibrated-template amplitude readouts, and
+  regression through the frozen inverse's transformed event design. Include
+  active/confounded nulls, off-library HRFs, matched references and a direct
+  forward GLS benchmark. See `COEFFICIENT_RECOVERY_VALIDATION.md`. These are
+  validation candidates; package algorithms and defaults are unchanged.
+
 ## Parametric recovery validation
 
 * Add a separate simulation study with genuine neural trial variability,
