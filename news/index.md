@@ -2,6 +2,19 @@
 
 ## fmri.pipeline 0.4-1
 
+### Banded linear deconvolution solver and exact Takahashi trace
+
+- `deconvolve_reglin_cpp()` now exploits the strict banded structure of
+  $`H_k^\top H_k + \lambda P + \delta I`$ (half-bandwidth
+  $`b = \max(\text{kernel\_len} - 1 + \mathbb{I}(\text{prewhiten}), \; b_P)`$),
+  replacing dense $`O(n_{\text{latent}}^3)`$ normal-equation solves and
+  dense matrix-RHS trace evaluations with an in-place
+  $`O(n_{\text{latent}} b^2)`$ lower-banded Cholesky factorization,
+  contiguous multi-signal forward/backward substitution, and the exact
+  $`O(n_{\text{latent}} b^2)`$ Takahashi banded-inverse recursion for
+  effective degrees of freedom
+  $`\operatorname{tr}(A(\lambda)^{-1} H_k^\top H_k)`$.
+
 ### Coefficient recovery validation
 
 - Test fixed window-sum and calibrated-template amplitude readouts, and
