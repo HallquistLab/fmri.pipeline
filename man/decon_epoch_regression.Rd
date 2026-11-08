@@ -20,6 +20,8 @@ decon_epoch_regression(
   source_model = c("impulse", "window", "duration"),
   trial_durations = NULL,
   duration_scale = c("rate", "integral"),
+  weighting = c("precision", "gls", "none"),
+  whiten_panel = FALSE,
   return_epochs = FALSE,
   return_panel = FALSE
 )
@@ -85,6 +87,19 @@ when \code{source_model = "duration"}: \code{"rate"} (default; trial
 amplitude represents neural firing rate / boxcar height per TR bin) or
 \code{"integral"} (each trial boxcar is normalized to unit time-integrated
 neural mass across its duration).}
+
+\item{weighting}{Trial regression weighting scheme across target trials and
+runs: \code{"precision"} (default; Empirical-Bayes / floor-stabilized
+inverse error-variance weights propagating per-trial operator standard
+errors and run noise scale), \code{"gls"} (within-run ZCA covariance
+whitening plus precision weighting accounting for off-diagonal trial-to-trial
+error correlations), or \code{"none"} (unweighted OLS).}
+
+\item{whiten_panel}{Logical; if \code{TRUE} and \code{return_panel = TRUE},
+adds within-run variance-preserving ZCA-whitened outcome
+(\code{decon_demixed_whitened}) and covariate (\code{<var>_whitened})
+columns to \code{panel} for downstream \code{mixed_by()} modeling.
+Default: \code{FALSE}.}
 
 \item{return_epochs}{Logical; whether to include raw and de-mixed trial-by-voxel
 epoch matrices per lag. Default: \code{FALSE}.}

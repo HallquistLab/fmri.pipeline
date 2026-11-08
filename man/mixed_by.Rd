@@ -31,7 +31,8 @@ mixed_by(
   emmeans_pairs_args = list(),
   emtrends_spec = NULL,
   emtrends_pairs = FALSE,
-  emtrends_pairs_args = list()
+  emtrends_pairs_args = list(),
+  weights = NULL
 )
 }
 \arguments{
@@ -115,6 +116,11 @@ Any arguments that are valid for emtrends can be passed through the list structu
 
 \item{emtrends_pairs_args}{A named list of arguments passed to \code{pairs()} (e.g.,
 \code{list(adjust = "tukey")}).}
+
+\item{weights}{Optional character scalar naming a numeric column in \code{data}
+(or \code{external_df}) containing positive observation/trial precision
+weights (e.g., \code{"precision_weight"} from \code{decon_epoch_regression()})
+to be normalized within each split and passed to the mixed-model engine.}
 }
 \value{
 A list containing coefficient tables, fit statistics, optional post-hoc outputs

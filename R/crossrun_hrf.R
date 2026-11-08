@@ -741,7 +741,7 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       status[status == "ok" & unknown] <- "noise_unidentified"
     }
     out <- matrix(NA_real_, n, ncol(y), dimnames = dimnames(y))
-    centers <- divisors <- rep(NA_real_, ncol(y))
+    centers <- divisors <- noise_sds <- rep(NA_real_, ncol(y))
     strata <- paste(selected, sprintf("%.17g", rho), sep = ":")
     for (key in unique(strata[status == "ok"])) {
       columns <- which(strata == key & status == "ok")
@@ -768,6 +768,11 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
             scaling = "none", backend = "wiener")[seq_len(n), , drop = FALSE]
         } else operator %*% scaled$y
         centers[indices] <- scaled$center; divisors[indices] <- scaled$scale
+        noise_sds[indices] <- if (identical(scaling, "noise_sd")) {
+          scaled$scale
+        } else {
+          estimate_decon_noise_sd(y[rows, indices, drop = FALSE], noise_rho = ar)
+        }
       }
     }
     attr(out, "tr") <- hrf_fit$settings$tr
@@ -775,8 +780,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
     attr(out, "observation_mask") <- seq_len(n) %in% rows
     activity[[r]] <- out
     scaling_tables[[r]] <- data.frame(run = names(bold)[r], voxel = colnames(y),
-      status = status, center = centers, scale = divisors, scaling = scaling,
-      noise_rho = rho, n_observations = length(rows))
+      status = status, center = centers, scale = divisors, noise_sd = noise_sds,
+      scaling = scaling, noise_rho = rho, n_observations = length(rows))
   }
   list(activity = activity, scaling = scaling_tables, hrf_fit = hrf_fit, settings = settings)
 }

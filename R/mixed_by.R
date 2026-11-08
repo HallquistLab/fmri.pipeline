@@ -187,6 +187,10 @@
 #' @param return_models A boolean indicating whether to return fitted model objects, which can be used for
 #'   post hoc contrasts, visualization and statistics. Note that model objects can get very large, so be
 #'   careful with this option since it could generate a massive data object.
+#' @param weights Optional character scalar naming a numeric column in \code{data}
+#'   (or \code{external_df}) containing positive observation/trial precision
+#'   weights (e.g., \code{"precision_weight"} from \code{decon_epoch_regression()})
+#'   to be normalized within each split and passed to the mixed-model engine.
 #'   
 #' @details In general, restricted maximum likelihood (REML) should be used for making inferences about parameter
 #'   estimates, whereas ML should be used for model comparisons based on log-likelihood (e.g., AIC). 
@@ -233,10 +237,16 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
                      calculate=c("parameter_estimates_reml", "parameter_estimates_ml", "fit_statistics"),
                      return_models = FALSE, emmeans_spec = NULL, emmeans_pairs = FALSE,
                      emmeans_pairs_args = list(), emtrends_spec=NULL, emtrends_pairs = FALSE,
-                     emtrends_pairs_args = list()) {
+                     emtrends_pairs_args = list(), weights = NULL) {
 
   engine <- match.arg(engine)
   checkmate::assert_list(engine_args, names = "unique")
+  if (is.null(weights) && !is.null(engine_args$weights) &&
+      checkmate::test_string(engine_args$weights)) {
+    weights <- engine_args$weights
+    engine_args$weights <- NULL
+  }
+  checkmate::assert_string(weights, null.ok = TRUE)
   if (engine == "rstanarm" && !requireNamespace("rstanarm", quietly = TRUE)) {
     stop("Package \"rstanarm\" must be installed to use engine = \"rstanarm\".", call. = FALSE)
   }
@@ -344,7 +354,7 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
 
   # worker subfunction to fit a given model to a data split
   model_worker <- function(data, model_formula, lmer_control, outcome_transform = NULL, scale_predictors = NULL,
-                           REML = TRUE, engine = "lme4", engine_args = list()) {
+                           REML = TRUE, engine = "lme4", engine_args = list(), weights = NULL) {
     if (!is.null(outcome_transform)) { # apply transformation to outcome
       lhs <- all.vars(model_formula)[1]
       data[[lhs]] <- outcome_transform(data[[lhs]])
@@ -358,6 +368,27 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
         for (aa in intersect(scale_predictors, model_terms)) {
           data[[aa]] <- as.vector(scale(data[[aa]]))
         }
+      }
+    }
+
+    if (!is.null(weights)) {
+      w_vec <- as.numeric(data[[weights]])
+      bad_w <- !is.finite(w_vec) | (w_vec <= 0)
+      if (any(bad_w)) {
+        w_vec[bad_w] <- NA_real_
+      }
+      ok_w <- is.finite(w_vec) & (w_vec > 0)
+      if (any(ok_w)) {
+        w_vec[ok_w] <- w_vec[ok_w] / mean(w_vec[ok_w])
+      }
+      if (engine == "jlmer") {
+        lhs <- all.vars(model_formula)[1]
+        if (any(bad_w)) data[[lhs]][bad_w] <- NA_real_
+        vv_jl <- all.vars(model_formula)
+        comp_jl <- stats::complete.cases(as.data.frame(data)[, vv_jl, drop = FALSE])
+        engine_args$wts <- w_vec[comp_jl]
+      } else {
+        engine_args$weights <- w_vec
       }
     }
     
@@ -559,6 +590,10 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
     # verify that outcomes and split variables are present in data
     checkmate::assert_subset(model_set$outcome, names(data))
     checkmate::assert_subset(split_on, names(data))
+    if (!is.null(weights)) {
+      checkmate::assert_subset(weights, names(data))
+      checkmate::assert_numeric(data[[weights]])
+    }
 
     # nest data.tables for each combination of split factors
     data.table::setkeyv(data, split_on)
@@ -623,7 +658,12 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
         vv <- all.vars(ff)
         
         miss_data <- as.data.frame(ret$dt[[1]])[, vv, drop = FALSE]
-        n_present <- sum(stats::complete.cases(miss_data))
+        valid_rows <- stats::complete.cases(miss_data)
+        if (!is.null(weights)) {
+          w_chk <- as.numeric(ret$dt[[1]][[weights]])
+          valid_rows <- valid_rows & is.finite(w_chk) & (w_chk > 0)
+        }
+        n_present <- sum(valid_rows)
         
         if (n_present == 0) {
           ret[, dt := NULL]
@@ -663,7 +703,7 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
 
           if (isTRUE(needs_model)) {
             thism <- model_worker(ret$dt[[1]], ff, lmer_control, outcome_transform, scale_predictors,
-                                  REML = NA, engine = engine, engine_args = engine_args)
+                                  REML = NA, engine = engine, engine_args = engine_args, weights = weights)
           }
 
           if ("parameter_estimates_reml" %in% calculate) {
@@ -686,7 +726,7 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
         } else {
           if ("parameter_estimates_reml" %in% calculate) {
             thism <- model_worker(ret$dt[[1]], ff, lmer_control, outcome_transform, scale_predictors,
-                                  REML = TRUE, engine = engine, engine_args = engine_args)
+                                  REML = TRUE, engine = engine, engine_args = engine_args, weights = weights)
             coef_reml <- do.call(broom.mixed::tidy, c(list(x = thism), tidy_args))
             coef_reml$estimator <- "REML"
             ret[, coef_df_reml := list(coef_reml)]
@@ -694,7 +734,7 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
 
           if (any(c("parameter_estimates_ml", "fit_statistics") %in% calculate)) {
             thism_ml <- model_worker(ret$dt[[1]], ff, lmer_control, outcome_transform, scale_predictors,
-                                     REML = FALSE, engine = engine, engine_args = engine_args) #refit with ML for AIC/BIC
+                                     REML = FALSE, engine = engine, engine_args = engine_args, weights = weights) #refit with ML for AIC/BIC
             if ("fit_statistics" %in% calculate) {
               ret[, fit_df := list(glance_model(thism_ml, "ML"))]
             }
@@ -709,7 +749,7 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
             !is.null(emmeans_spec) || !is.null(emtrends_spec) || isTRUE(return_models)
           if (isTRUE(needs_posthoc) && is.null(thism) && is.null(thism_ml)) {
             thism <- model_worker(ret$dt[[1]], ff, lmer_control, outcome_transform, scale_predictors,
-                                  REML = TRUE, engine = engine, engine_args = engine_args)
+                                  REML = TRUE, engine = engine, engine_args = engine_args, weights = weights)
           }
         }
 
