@@ -46,7 +46,7 @@
 deconvolution_impulse_diagnostics <- function(event_data, kernel, n_time, tr, lambda,
     onset = "onset", trial = "trial", time_offset = 0, time_before = -3, time_after = 3,
     output_resolution = tr, backend = c("cpp", "r", "wiener"),
-    penalty = c("diff2", "diff1", "ridge"), forward_kernel = NULL,
+    penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"), forward_kernel = NULL,
     prewhiten_rho = 0, ridge_floor = 1e-8, input_scale = 1, input_demean = FALSE,
     tail_padding = 0L, source_trials = NULL, batch_size = 32L, return_timeseries = FALSE) {
   backend <- match.arg(backend)

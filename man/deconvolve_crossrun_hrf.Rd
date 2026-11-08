@@ -7,16 +7,18 @@
 deconvolve_crossrun_hrf(
   bold,
   hrf_fit,
-  lambda,
+  lambda = NULL,
   scaling = "zscore",
-  penalty = c("diff2", "diff1", "ridge"),
+  penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"),
   backend = c("cpp", "r", "wiener"),
   batch_size = 2048L,
   tail_padding = 0L,
   ridge_floor = 1e-08,
   operator_cache_mb = 128,
   nuisance_mode = NULL,
-  observation_mask = NULL
+  observation_mask = NULL,
+  lambda_grid = 10^seq(-3, 1.5, length.out = 12),
+  gcv_rule = c("min", "1se")
 )
 }
 \arguments{
@@ -25,12 +27,13 @@ the HRF fit. These should be the same preprocessed BOLD used for estimation.}
 
 \item{hrf_fit}{Object returned by estimate_crossrun_hrf().}
 
-\item{lambda}{Required fixed nonnegative regularization strength. No target-run
-HRF or lambda search is performed. Choose externally or within training data.}
+\item{lambda}{Nonnegative regularization strength. If \code{NULL}, selected
+automatically from \code{lambda_grid} by prewhitened generalized
+cross-validation using \code{gcv_rule}.}
 
-\item{scaling}{Input scaling: zscore (default), demean, none, or psc.}
+\item{scaling}{Input scaling: zscore (default), noise_sd, demean, none, or psc.}
 
-\item{penalty}{Quadratic penalty: diff2, diff1, or ridge.}
+\item{penalty}{Quadratic penalty: diff2, diff1, ridge, matern1, or sobolev.}
 
 \item{backend}{Fixed linear inverse backend: cpp, r, or scalar wiener.}
 
@@ -53,6 +56,12 @@ it for the intended design rather than assuming it improves recovery.}
 
 \item{observation_mask}{Use fit's valid_rows in the inverse (fit), or all
 observations (all). Defaults to fit for AR/calibrated, all for OLS/legacy.}
+
+\item{lambda_grid}{Candidate regularization values evaluated when
+\code{lambda = NULL}.}
+
+\item{gcv_rule}{Selection rule (\code{"min"} or \code{"1se"}) used when
+\code{lambda = NULL}.}
 }
 \value{
 A list with activity matrices, per-run scaling/status tables, the HRF

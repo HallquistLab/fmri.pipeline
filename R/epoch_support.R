@@ -17,9 +17,30 @@ resolve_overlap_policy <- function(overlap_policy, collide_before, collide_after
   match.arg(overlap_policy, c("allow", "truncate", "exclude"))
 }
 
+epoch_kernel_quadrature <- function(readout_kernel = "linear", readout_width = NULL, max_gap = 1.0) {
+  readout_kernel <- match.arg(readout_kernel, c("linear", "boxcar", "triangle", "gaussian"))
+  if (readout_kernel == "linear") {
+    return(list(kernel = "linear", width = 0, offsets = 0, weights = 1))
+  }
+  if (is.null(readout_width)) readout_width <- 1.5 * max_gap
+  checkmate::assert_number(readout_width, lower = .Machine$double.eps, finite = TRUE)
+  h <- 0.5 * readout_width
+  offsets <- seq(-0.9 * h, 0.9 * h, length.out = 9L)
+  weights <- switch(
+    readout_kernel,
+    boxcar = rep(1, length(offsets)),
+    triangle = pmax(0, 1 - abs(offsets) / h),
+    gaussian = exp(-0.5 * (offsets / (0.5 * h))^2)
+  )
+  weights <- weights / sum(weights)
+  list(kernel = readout_kernel, width = readout_width, offsets = offsets, weights = weights)
+}
+
 # Never remove invalid rows before locating interpolation brackets. A missing
 # row blocks its adjacent intervals; deleted rows are detected by elapsed time.
-interpolate_epoch_unit <- function(time, value, source_id, censored, tout, max_gap) {
+interpolate_epoch_unit <- function(time, value, source_id, censored, tout, max_gap,
+    readout_kernel = "linear", readout_width = NULL) {
+  quad <- epoch_kernel_quadrature(readout_kernel, readout_width, max_gap)
   keep <- is.finite(time)
   order <- order(time[keep])
   time <- time[keep][order]
@@ -62,6 +83,36 @@ interpolate_epoch_unit <- function(time, value, source_id, censored, tout, max_g
     out$.estimate[good] <- (1 - weight) * value[lo[valid]] + weight * value[hi[valid]]
     out$.left[good] <- source_id[lo[valid]]
     out$.right[good] <- source_id[hi[valid]]
+  }
+  if (quad$kernel != "linear") {
+    good_rows <- which(out$.support %in% c("observed", "interpolated"))
+    if (length(good_rows)) {
+      usable <- !censored & is.finite(value)
+      bridge <- if (length(time) > 1L) {
+        usable[-length(time)] & usable[-1L] & (diff(time) <= max_gap + tol)
+      } else logical(0L)
+      seg_id <- c(1L, 1L + cumsum(!bridge))
+      center_lo <- ifelse(exact[good_rows], index[good_rows], left[good_rows])
+      for (idx in seq_along(good_rows)) {
+        r <- good_rows[idx]
+        s_id <- seg_id[center_lo[idx]]
+        in_seg <- which(usable & seg_id == s_id)
+        if (length(in_seg) == 1L) {
+          out$.estimate[r] <- value[in_seg]
+        } else {
+          t_seg <- time[in_seg]
+          v_seg <- value[in_seg]
+          q_times <- tout[r] + quad$offsets
+          in_bounds <- q_times >= min(t_seg) - tol & q_times <= max(t_seg) + tol
+          if (any(in_bounds)) {
+            q_clamped <- pmin(max(t_seg), pmax(min(t_seg), q_times[in_bounds]))
+            q_vals <- stats::approx(t_seg, v_seg, xout = q_clamped, rule = 2L, ties = "ordered")$y
+            w_sub <- quad$weights[in_bounds]
+            out$.estimate[r] <- sum(w_sub * q_vals) / sum(w_sub)
+          }
+        }
+      }
+    }
   }
   out
 }
@@ -122,7 +173,8 @@ epoch_stat_row <- function(value, support, left, right, epoch, time) {
 # output-grid arrays for the entire run. Common rectangular acquisition grids
 # use shared brackets and matrix arithmetic; ragged grids use the unit oracle.
 interpolate_epoch_group <- function(data, unit_keys, time_column, tout, max_gap,
-    trial_grouped, use_matrix = TRUE) {
+    trial_grouped, use_matrix = TRUE, readout_kernel = "linear", readout_width = NULL) {
+  quad <- epoch_kernel_quadrature(readout_kernel, readout_width, max_gap)
   data <- data.table::copy(data)
   if (length(unit_keys)) data[, .unit := .GRP, by = unit_keys] else data[, .unit := 1L]
   n_unit <- max(data$.unit)
@@ -151,7 +203,36 @@ interpolate_epoch_group <- function(data, unit_keys, time_column, tout, max_gap,
     blocked <- censored[lo, , drop = FALSE] | censored[hi, , drop = FALSE]
     missing <- !is.finite(values[lo, , drop = FALSE]) | !is.finite(values[hi, , drop = FALSE])
     estimates <- values[lo, , drop = FALSE] * (1 - weight) + values[hi, , drop = FALSE] * weight
-    estimates[blocked | missing | !supported] <- NA_real_
+    valid_center <- !(blocked | missing) & matrix(supported, nrow = length(tout), ncol = n_unit)
+    if (quad$kernel != "linear" && length(times) > 1L) {
+      bad_sample <- censored | !is.finite(values)
+      num <- matrix(0, nrow = length(tout), ncol = n_unit)
+      den <- matrix(0, nrow = length(tout), ncol = n_unit)
+      for (m in seq_along(quad$offsets)) {
+        tm <- interpolate_epoch_unit(times, times, ids, rep(FALSE, length(times)),
+          tout + quad$offsets[m], max_gap)
+        sup_m <- !is.na(tm$.left)
+        lo_m <- pmax(1L, match(tm$.left, ids), na.rm = TRUE)
+        hi_m <- match(tm$.right, ids)
+        hi_m[is.na(hi_m)] <- lo_m[is.na(hi_m)]
+        w_m <- rep(0, length(tout))
+        btw_m <- sup_m & !is.na(tm$.right)
+        w_m[btw_m] <- (tout[btw_m] + quad$offsets[m] - times[lo_m[btw_m]]) /
+          (times[hi_m[btw_m]] - times[lo_m[btw_m]])
+        est_m <- values[lo_m, , drop = FALSE] * (1 - w_m) + values[hi_m, , drop = FALSE] * w_m
+        for (i in which(supported & sup_m)) {
+          span_idx <- min(lo[i], lo_m[i]):max(hi[i], hi_m[i])
+          ok_u <- valid_center[i, ] & (colSums(bad_sample[span_idx, , drop = FALSE]) == 0L)
+          if (any(ok_u)) {
+            num[i, ok_u] <- num[i, ok_u] + quad$weights[m] * est_m[i, ok_u]
+            den[i, ok_u] <- den[i, ok_u] + quad$weights[m]
+          }
+        }
+      }
+      has_den <- den > 0
+      estimates[has_den] <- num[has_den] / den[has_den]
+    }
+    estimates[!valid_center] <- NA_real_
     return(data.table::rbindlist(lapply(seq_along(tout), function(i) {
       support <- if (!supported[i]) rep("outside_support", n_unit) else
         ifelse(blocked[i, ], "censored", ifelse(missing[i, ], "missing_value", template$.support[i]))
@@ -161,7 +242,7 @@ interpolate_epoch_group <- function(data, unit_keys, time_column, tout, max_gap,
   }
   units <- data[, {
     result <- interpolate_epoch_unit(get(..time_column), value, .align_source_id,
-      .align_censored, tout, max_gap)
+      .align_censored, tout, max_gap, readout_kernel = quad$kernel, readout_width = quad$width)
     result$.epoch <- .align_epoch_id[1L]
     result
   }, by = unit_keys]

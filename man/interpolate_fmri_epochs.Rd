@@ -12,7 +12,9 @@ interpolate_fmri_epochs(
   output_resolution = 1,
   group_by = NULL,
   time_audit = FALSE,
-  max_gap = NULL
+  max_gap = NULL,
+  readout_kernel = "linear",
+  readout_width = NULL
 )
 }
 \arguments{
@@ -31,6 +33,10 @@ interpolate_fmri_epochs(
 \item{time_audit}{If TRUE, additional columns will be added to the output showing how alignment is calculated vis-a-vis event timing}
 
 \item{max_gap}{Maximum source bracket duration (default acquisition TR).}
+
+\item{readout_kernel}{Readout kernel applied at each output grid time.}
+
+\item{readout_width}{Full window width in seconds for non-linear readout kernels.}
 }
 \description{
 Interpolate an aligned fmri_ts object onto a consistent time grid with respect to a target event

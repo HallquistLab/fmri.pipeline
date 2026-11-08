@@ -27,7 +27,9 @@ estimate_crossrun_hrf(
   noise_grid = seq(-0.8, 0.9, by = 0.1),
   evidence = c("calibrated", "legacy"),
   evidence_alpha = 0.05,
-  canonical_strength = 0.01
+  canonical_strength = 0.01,
+  spatial_coords = NULL,
+  spatial_fwhm = 8
 )
 }
 \arguments{
@@ -99,6 +101,12 @@ multiple testing across the brain. Not a posterior probability.}
 
 \item{canonical_strength}{Fixed shape-distance penalty toward fallback_kernel
 in calibrated mode, default 0.01. Zero removes this additional shrinkage.}
+
+\item{spatial_coords}{Optional numeric matrix of 3D voxel coordinates (N x 3)
+used for local Gaussian-weighted anchor pooling.}
+
+\item{spatial_fwhm}{Optional numeric spatial Gaussian FWHM (in coordinate
+units) for local anchor pooling.}
 }
 \value{
 An object of class crossrun_hrf with normalized kernels, per-target-run

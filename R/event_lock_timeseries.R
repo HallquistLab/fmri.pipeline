@@ -191,6 +191,12 @@ event_lock_ts <- function(fmri_obj, event=NULL, time_before=-3, time_after=3,
 #' @param max_gap Maximum interpolation bracket duration in seconds, defaulting
 #'   to the acquisition TR. Explicit invalid rows always block interpolation;
 #'   this tolerance only permits wider brackets across deleted rows.
+#' @param readout_kernel Readout kernel applied at each output grid time:
+#'   \code{"linear"} (default two-point bracket interpolation), \code{"boxcar"},
+#'   \code{"triangle"}, or \code{"gaussian"} local window integration within each
+#'   contiguous uncensored segment.
+#' @param readout_width Full window width (in seconds) for non-linear
+#'   \code{readout_kernel} modes. Defaults to \code{1.5 * max_gap}.
 #' @details The interpolation grid includes zero and remains within the requested
 #'   interval, including zero-width and one-sided windows. When trial is a grouping
 #'   variable, missing and unsupported epochs retain missing estimates and an
@@ -214,7 +220,8 @@ get_medusa_interpolated_ts <- function(fmri_obj, event=NULL, time_before=-3.0, t
                                        collide_before=NULL, collide_after=NULL,
                                        pad_before=-1.5, pad_after=1.5, output_resolution=NULL,
                                        group_by="trial", time_audit=FALSE, overlap_policy=NULL,
-                                       valid_col=NULL, neighbor_events=NULL, max_gap=NULL) {
+                                       valid_col=NULL, neighbor_events=NULL, max_gap=NULL,
+                                       readout_kernel="linear", readout_width=NULL) {
 
   stopifnot(inherits(fmri_obj, "fmri_ts"))
 
@@ -231,7 +238,8 @@ get_medusa_interpolated_ts <- function(fmri_obj, event=NULL, time_before=-3.0, t
 
   #need to interpolate by key variables
   interpolated_epochs <- interpolate_fmri_epochs(talign, time_before=time_before, time_after=time_after,
-    output_resolution=output_resolution, group_by=group_by, time_audit = time_audit, max_gap = max_gap)
+    output_resolution=output_resolution, group_by=group_by, time_audit = time_audit, max_gap = max_gap,
+    readout_kernel = readout_kernel, readout_width = readout_width)
 
   return(interpolated_epochs)
 }
@@ -326,11 +334,12 @@ get_medusa_compression_score <- function(fmri_obj, event=NULL, time_before=-3, t
 #' @keywords internal
 interpolate_fmri_epochs <- function(a_obj, evt_time="evt_time", time_before=-3, time_after=3,
                                     output_resolution=1.0, group_by=NULL, time_audit=FALSE,
-                                    max_gap=NULL) {
+                                    max_gap=NULL, readout_kernel="linear", readout_width=NULL) {
   stopifnot(inherits(a_obj, "fmri_ts"))
   tout <- epoch_output_grid(time_before, time_after, output_resolution)
   if (is.null(max_gap)) max_gap <- a_obj$tr
   checkmate::assert_number(max_gap, lower = .Machine$double.eps, finite = TRUE)
+  quad <- epoch_kernel_quadrature(readout_kernel, readout_width, max_gap)
   input <- a_obj$get_ts(orig_names = TRUE)
   for (column in a_obj$vm$value) {
     checkmate::assert_numeric(input[[column]], all.missing = TRUE)
@@ -353,7 +362,7 @@ interpolate_fmri_epochs <- function(a_obj, evt_time="evt_time", time_before=-3, 
   # The group worker interpolates each unit before summarizing, using shared
   # matrix brackets on regular grids and a bounded-memory ragged-grid fallback.
   interp_dt <- interp_dt[, interpolate_epoch_group(.SD, unit_keys, time_col, tout,
-    max_gap, trial_grouped), by = c(".vkey", group_by)]
+    max_gap, trial_grouped, readout_kernel = quad$kernel, readout_width = quad$width), by = c(".vkey", group_by)]
   interp_dt[, .result_id := seq_len(.N)]
   source_groups <- c(".vkey", setdiff(group_by, trial_col))
   usage <- interp_dt[, list(.member = as.character(unlist(.usage, use.names = FALSE))),
@@ -740,7 +749,9 @@ evt_align_decon_files <- function(d_files, trial_df, alignment = list(), aggrega
         output_resolution = alignment$output_resolution,
         group_by = unique(c(aggregate_by, "trial")), time_audit = time_audit,
         overlap_policy = alignment$overlap_policy, valid_col = alignment$valid_col,
-        neighbor_events = alignment$neighbor_events, max_gap = alignment$max_gap)
+        neighbor_events = alignment$neighbor_events, max_gap = alignment$max_gap,
+        readout_kernel = if (is.null(alignment$readout_kernel)) "linear" else alignment$readout_kernel,
+        readout_width = alignment$readout_width)
       clock <- attr(subj_align, "source_clock")
       file_key <- normalizePath(fname, mustWork = TRUE)
       clock$alignment_file <- rep(file_key, nrow(clock))
@@ -842,6 +853,12 @@ validate_alignments <- function(alignments, tr, trial_df) {
       unique = TRUE, null.ok = TRUE)
     checkmate::assert_subset(alignments[[aa]]$neighbor_events, names(trial_df))
     checkmate::assert_number(alignments[[aa]]$max_gap, lower = .Machine$double.eps,
+      finite = TRUE, null.ok = TRUE)
+    if (!is.null(alignments[[aa]]$readout_kernel)) {
+      alignments[[aa]]$readout_kernel <- match.arg(alignments[[aa]]$readout_kernel,
+        c("linear", "boxcar", "triangle", "gaussian"))
+    }
+    checkmate::assert_number(alignments[[aa]]$readout_width, lower = .Machine$double.eps,
       finite = TRUE, null.ok = TRUE)
     checkmate::assert_number(alignments[[aa]]$time_before, upper = 0, finite = TRUE)
     checkmate::assert_number(alignments[[aa]]$time_after, lower = 0, finite = TRUE)

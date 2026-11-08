@@ -9,7 +9,8 @@ hrf_library(
   peak_delays = c(5, 6, 7),
   dispersions = c(0.8, 1, 1.2),
   undershoot_ratios = 6,
-  duration = 32
+  duration = 32,
+  preset = c("custom", "standard", "extended", "dense")
 )
 }
 \arguments{
@@ -22,6 +23,9 @@ hrf_library(
 \item{undershoot_ratios}{Positive response-to-undershoot ratios.}
 
 \item{duration}{Kernel duration in seconds (at least two acquisition intervals).}
+
+\item{preset}{Optional preset grid configuration: \code{"custom"} (default),
+\code{"standard"}, \code{"extended"}, or \code{"dense"}.}
 }
 \value{
 A unit-sum kernel matrix, with time rows, candidate columns, and a

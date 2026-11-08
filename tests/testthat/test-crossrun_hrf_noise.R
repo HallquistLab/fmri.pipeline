@@ -366,3 +366,75 @@ test_that("coordinate-aware spatial regularization and Empirical Bayes shrinkage
     min_parcel_voxels = 4L, amplitude_model = "trial", noise_model = "ols")
   expect_equal(fit_coords$selections$run1$kernel_index, true_idx)
 })
+
+test_that("deconvolve_crossrun_hrf supports noise_sd scaling, matern1/sobolev penalties, and decon_epoch_regression", {
+  set.seed(7204)
+  lib <- hrf_library(1, peak_delays = c(5, 6), dispersions = 1, undershoot_ratios = 6)
+  hrf <- lib[, 2L]
+  n_time <- 160L
+  n_trials <- 20L
+  true_beta <- 0.80
+
+  bold <- events <- rpe_list <- list()
+  for (r in 1:2) {
+    t_cue <- seq(6, by = 7, length.out = n_trials)
+    t_fb <- t_cue + runif(n_trials, 1.5, 2.3)
+    rpe <- rnorm(n_trials, sd = if (r == 1L) 0.7 else 1.4)
+    ev <- rbind(
+      data.frame(onset = t_cue, duration = 0, condition = "cue"),
+      data.frame(onset = t_fb, duration = 0, condition = "feedback")
+    )
+    des_cue <- hrf_event_design_cpp(n_time, 1, 0, t_cue, rep(0, n_trials),
+      seq_len(n_trials), n_trials, matrix(hrf, ncol = 1L))[[1L]]
+    des_fb <- hrf_event_design_cpp(n_time, 1, 0, t_fb, rep(0, n_trials),
+      seq_len(n_trials), n_trials, matrix(hrf, ncol = 1L))[[1L]]
+    amp_cue <- (if (r == 1L) 1.2 else 2.2) + 0.4 * rnorm(n_trials)
+    amp_fb <- 0.5 + true_beta * rpe
+    sig <- as.numeric(des_cue %*% amp_cue + des_fb %*% amp_fb)
+    y <- cbind(
+      v1 = 100 + sig + rnorm(n_time, sd = 0.2),
+      v2 = 100 + sig + rnorm(n_time, sd = 0.2),
+      v3 = 100 + sig + rnorm(n_time, sd = 0.2),
+      v4 = 100 + sig + rnorm(n_time, sd = 0.2)
+    )
+    bold[[paste0("run", r)]] <- y
+    events[[paste0("run", r)]] <- ev
+    rpe_list[[paste0("run", r)]] <- rpe
+  }
+
+  fit <- estimate_crossrun_hrf(bold, events, 1, lib, noise_model = "ar1", evidence = "calibrated")
+  for (pen in c("matern1", "sobolev")) {
+    for (nm in c("ignore", "joint")) {
+      dec_cpp <- deconvolve_crossrun_hrf(bold, fit, lambda = 1.0, scaling = "noise_sd",
+        penalty = pen, nuisance_mode = nm, backend = "cpp")
+      dec_r <- deconvolve_crossrun_hrf(bold, fit, lambda = 1.0, scaling = "noise_sd",
+        penalty = pen, nuisance_mode = nm, backend = "r")
+      expect_equal(dec_cpp$activity$run1, dec_r$activity$run1, tolerance = 1e-10)
+      expect_equal(dec_cpp$activity$run2, dec_r$activity$run2, tolerance = 1e-10)
+    }
+  }
+
+  dec_base <- deconvolve_crossrun_hrf(bold, fit, lambda = 1.0, scaling = "zscore", penalty = "diff2")
+  dec_imp <- deconvolve_crossrun_hrf(bold, fit, lambda = NULL, scaling = "noise_sd", penalty = "sobolev")
+  expect_true(is.finite(dec_imp$settings$lambda) && dec_imp$settings$lambda > 0)
+  expect_true(is.data.frame(dec_imp$settings$lambda_tuning))
+
+  reg_base <- decon_epoch_regression(dec_base, rpe_list, events = events,
+    target_condition = "feedback", lags = c(-1, 0, 1), readout_kernel = "linear",
+    demix_other_events = FALSE, demix_target_trials = FALSE, restore_scale = TRUE)
+  reg_imp <- decon_epoch_regression(dec_imp, rpe_list, events = events,
+    target_condition = "feedback", lags = c(-1, 0, 1), readout_kernel = "triangle",
+    readout_width = 1.5, demix_other_events = TRUE, demix_target_trials = TRUE,
+    restore_scale = TRUE, source_model = "window", return_epochs = TRUE, return_panel = TRUE)
+
+  expect_true(is.list(reg_imp$epochs))
+  expect_true(is.data.frame(reg_imp$panel))
+  expect_true(all(c("run", "trial", "evt_time", "voxel", "decon_raw", "decon_demixed") %in% names(reg_imp$panel)))
+  # Improved de-mixed regression has higher trial correlation and much smaller amplitude bias at lag = 0
+  r0_base <- reg_base$summary$mean_r_raw[reg_base$summary$lag == 0]
+  r0_imp <- reg_imp$summary$mean_r_demixed[reg_imp$summary$lag == 0]
+  b0_base <- reg_base$summary$mean_beta_raw[reg_base$summary$lag == 0]
+  b0_imp <- reg_imp$summary$mean_beta_corrected[reg_imp$summary$lag == 0]
+  expect_gt(r0_imp, r0_base)
+  expect_lt(abs(b0_imp - true_beta), 0.35 * abs(b0_base - true_beta))
+})

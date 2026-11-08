@@ -592,10 +592,11 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
 #' @param bold Named time-by-voxel run matrices with IDs/order/dimensions matching
 #'   the HRF fit. These should be the same preprocessed BOLD used for estimation.
 #' @param hrf_fit Object returned by estimate_crossrun_hrf().
-#' @param lambda Required fixed nonnegative regularization strength. No target-run
-#'   HRF or lambda search is performed. Choose externally or within training data.
-#' @param scaling Input scaling: zscore (default), demean, none, or psc.
-#' @param penalty Quadratic penalty: diff2, diff1, or ridge.
+#' @param lambda Nonnegative regularization strength. If \code{NULL}, selected
+#'   automatically from \code{lambda_grid} by prewhitened generalized
+#'   cross-validation using \code{gcv_rule}.
+#' @param scaling Input scaling: zscore (default), noise_sd, demean, none, or psc.
+#' @param penalty Quadratic penalty: diff2, diff1, ridge, matern1, or sobolev.
 #' @param backend Fixed linear inverse backend: cpp, r, or scalar wiener.
 #' @param batch_size Maximum voxel columns per scaling/multiplication block.
 #' @param tail_padding Number of appended zero BOLD observations, default zero.
@@ -611,6 +612,10 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
 #'   it for the intended design rather than assuming it improves recovery.
 #' @param observation_mask Use fit's valid_rows in the inverse (fit), or all
 #'   observations (all). Defaults to fit for AR/calibrated, all for OLS/legacy.
+#' @param lambda_grid Candidate regularization values evaluated when
+#'   \code{lambda = NULL}.
+#' @param gcv_rule Selection rule (\code{"min"} or \code{"1se"}) used when
+#'   \code{lambda = NULL}.
 #' @return A list with activity matrices, per-run scaling/status tables, the HRF
 #'   fit and frozen inverse settings. Activity matrices retain voxel IDs and carry
 #'   tr and time_offset attributes for subsequent event alignment.
@@ -630,17 +635,19 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
 #'   Scaling is applied once before optional padding, and its centers/divisors are
 #'   returned. Different run z-scores do not preserve absolute between-run units.
 #' @export
-deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda, scaling = "zscore",
-    penalty = c("diff2", "diff1", "ridge"), backend = c("cpp", "r", "wiener"),
+deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zscore",
+    penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"), backend = c("cpp", "r", "wiener"),
     batch_size = 2048L, tail_padding = 0L, ridge_floor = 1e-8, operator_cache_mb = 128,
-    nuisance_mode = NULL, observation_mask = NULL) {
+    nuisance_mode = NULL, observation_mask = NULL,
+    lambda_grid = 10^seq(-3, 1.5, length.out = 12), gcv_rule = c("min", "1se")) {
   hrf_validate_bold(bold)
   if (!inherits(hrf_fit, "crossrun_hrf")) stop("hrf_fit must be a crossrun_hrf object")
   if (!identical(names(bold), hrf_fit$run_ids) || !identical(colnames(bold[[1L]]), hrf_fit$voxel_ids) ||
       !identical(vapply(bold, nrow, integer(1)), hrf_fit$n_time))
     stop("BOLD run/voxel IDs and dimensions must match the HRF fit")
-  checkmate::assert_number(lambda, lower = 0, finite = TRUE)
-  scaling <- match.arg(scaling, c("zscore", "demean", "none", "psc"))
+  checkmate::assert_number(lambda, lower = 0, finite = TRUE, null.ok = TRUE)
+  gcv_rule <- match.arg(gcv_rule)
+  scaling <- match.arg(scaling, c("zscore", "demean", "none", "psc", "noise_sd"))
   penalty <- match.arg(penalty); backend <- match.arg(backend)
   checkmate::assert_integerish(batch_size, lower = 1, len = 1L)
   checkmate::assert_integerish(tail_padding, lower = 0, len = 1L)
@@ -654,7 +661,51 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda, scaling = "zscore",
   if (backend == "wiener" && (identical(hrf_fit$settings$noise_model, "ar1") ||
       nuisance_mode != "ignore" || observation_mask != "all"))
     stop("Wiener does not implement masked, nuisance-adjusted AR GLS; use cpp/r, or an OLS fit with nuisance_mode = 'ignore', observation_mask = 'all'")
-  settings <- list(lambda = lambda, scaling = scaling, penalty = penalty,
+
+  lambda_tuning <- NULL
+  if (is.null(lambda)) {
+    checkmate::assert_numeric(lambda_grid, lower = 0, any.missing = FALSE, min.len = 1L, finite = TRUE)
+    lambda_grid <- sort(unique(as.numeric(lambda_grid)))
+    for (r_tune in seq_along(bold)) {
+      y_t <- bold[[r_tune]]
+      n_t <- nrow(y_t)
+      mask_t <- if (observation_mask == "fit") hrf_fit$specification$valid_rows[[r_tune]] else rep(TRUE, n_t)
+      rows_t <- which(!is.na(mask_t) & mask_t)
+      if (length(rows_t) < 3L) next
+      st_t <- decon_signal_status(y_t[rows_t, , drop = FALSE])
+      ok_cols <- which(st_t == "ok")
+      if (!length(ok_cols)) next
+      if (length(ok_cols) > 256L) ok_cols <- ok_cols[seq_len(256L)]
+      sel_t <- hrf_fit$selections[[r_tune]]$kernel_index[ok_cols]
+      k_mode <- as.integer(names(sort(table(sel_t), decreasing = TRUE))[1L])
+      rho_t <- if (is.null(hrf_fit$noise)) 0 else stats::median(hrf_fit$noise[[r_tune]]$rho[ok_cols], na.rm = TRUE)
+      if (!is.finite(rho_t)) rho_t <- 0
+      sc_t <- scale_decon_input(y_t[rows_t, ok_cols, drop = FALSE], scaling = scaling, noise_rho = rho_t)
+      tune_res <- deconvolve_reglin(
+        BOLDobs = sc_t$y,
+        kernel = hrf_fit$kernels[, k_mode],
+        lambda = NULL,
+        lambda_grid = lambda_grid,
+        penalty = penalty,
+        tune_by = "global",
+        normalize = FALSE,
+        demean = FALSE,
+        ridge_floor = ridge_floor,
+        return_diagnostics = TRUE,
+        prewhiten_gcv = rho_t != 0,
+        prewhiten_rho = rho_t,
+        backend = if (backend == "wiener") "wiener" else "cpp",
+        gcv_rule = gcv_rule,
+        scaling = "none"
+      )
+      lambda <- as.numeric(tune_res$lambda[1L])
+      lambda_tuning <- tune_res$tuning
+      break
+    }
+    if (is.null(lambda) || !is.finite(lambda)) lambda <- lambda_grid[1L]
+  }
+
+  settings <- list(lambda = lambda, lambda_tuning = lambda_tuning, scaling = scaling, penalty = penalty,
     backend = backend, tail_padding = as.integer(tail_padding), ridge_floor = ridge_floor,
     batch_size = as.integer(batch_size), operator_cache_mb = operator_cache_mb,
     hrf_selection = "frozen_crossrun", nuisance_mode = nuisance_mode,
@@ -705,7 +756,7 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda, scaling = "zscore",
         }
       }
       for (indices in split(columns, ceiling(seq_along(columns) / batch_size))) {
-        scaled <- scale_decon_input(y[rows, indices, drop = FALSE], scaling = scaling)
+        scaled <- scale_decon_input(y[rows, indices, drop = FALSE], scaling = scaling, noise_rho = ar)
         out[, indices] <- if (backend == "wiener") {
           fit_input <- rbind(scaled$y, matrix(0, tail_padding, length(indices)))
           deconvolve_reglin(fit_input, hrf_fit$kernels[, k], lambda = lambda,

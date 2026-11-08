@@ -126,3 +126,35 @@ test_that("compress_mts_pca retains zero-mean columns and standardizes by SD", {
   expect_equal(res_shifted$compress_nt, 3L)
   expect_equal(res_shifted, res_pos, tolerance = 1e-12)
 })
+
+test_that("epoch kernel readouts match unit oracle and respect censor and gap boundaries", {
+  set.seed(6101)
+  ts_dt <- data.table::CJ(id = 1L, run = 1L, vnum = 1:3, time = seq(0, 30, by = 1.0))
+  ts_dt[, signal := cos(time / 2.5) + 0.1 * vnum]
+  ts_dt[, valid := !(time %in% c(9, 21))]
+  ev_dt <- data.table::data.table(id = 1L, run = 1L, trial = 1:4, onset = c(4.4, 8.8, 15.2, 24.6))
+  f_obj <- fmri_ts$new(ts_data = ts_dt, event_data = ev_dt, tr = 1.0,
+    vm = list(value = "signal", key = "vnum"))
+
+  locked <- event_lock_ts(f_obj, event = "onset", time_before = -2, time_after = 2,
+    pad_before = -1.5, pad_after = 1.5, valid_col = "valid")
+  melted <- data.table::melt(locked$get_ts(orig_names = TRUE),
+    measure.vars = "signal", variable.name = ".vkey", value.name = "value")
+  grid <- fmri.pipeline:::epoch_output_grid(-2, 2, 0.5)
+
+  for (rk in c("linear", "boxcar", "triangle", "gaussian")) {
+    mat_res <- melted[, fmri.pipeline:::interpolate_epoch_group(.SD, "vnum", "evt_time", grid, 1.0,
+      trial_grouped = TRUE, use_matrix = TRUE, readout_kernel = rk, readout_width = 1.5), by = c(".vkey", "trial")]
+    unit_res <- melted[, fmri.pipeline:::interpolate_epoch_group(.SD, "vnum", "evt_time", grid, 1.0,
+      trial_grouped = TRUE, use_matrix = FALSE, readout_kernel = rk, readout_width = 1.5), by = c(".vkey", "trial")]
+    expect_equal(mat_res$value_mean, unit_res$value_mean, tolerance = 1e-12)
+    expect_equal(mat_res$value_n_censored, unit_res$value_n_censored)
+
+    medusa <- get_medusa_interpolated_ts(f_obj, event = "onset", time_before = -2, time_after = 2,
+      output_resolution = 0.5, valid_col = "valid", readout_kernel = rk, readout_width = 1.5)
+    # Trial 2 (onset 8.8) at evt_time = 0 is bracketed by time = 8 and censored time = 9 -> must be NA
+    t2_zero <- medusa[medusa$trial == 2 & abs(medusa$evt_time) < 1e-8, ]
+    expect_true(is.na(t2_zero$signal_mean))
+    expect_equal(t2_zero$signal_n_censored, 3L)
+  }
+})

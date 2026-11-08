@@ -393,8 +393,21 @@ arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
   if (kernel.n_elem < 2 || !kernel.is_finite() || nuisance.n_rows != (arma::uword)n_time ||
       !std::isfinite(rho) || std::abs(rho) >= 1 || lambda < 0 || ridge_floor < 0 || tail_padding < 0)
     Rcpp::stop("Invalid masked inverse parameters");
-  if (penalty != "ridge" && penalty != "diff1" && penalty != "diff2")
+  double pen_w0 = 0.0, pen_w1 = 0.0, pen_w2 = 0.0;
+  arma::uword pen_band = 0;
+  if (penalty == "ridge") {
+    pen_w0 = 1.0; pen_band = 0;
+  } else if (penalty == "diff1") {
+    pen_w1 = 1.0; pen_band = 1;
+  } else if (penalty == "diff2") {
+    pen_w2 = 1.0; pen_band = 2;
+  } else if (penalty == "matern1") {
+    pen_w0 = 0.10; pen_w1 = 0.90; pen_band = 1;
+  } else if (penalty == "sobolev") {
+    pen_w0 = 0.05; pen_w1 = 0.45; pen_w2 = 0.50; pen_band = 2;
+  } else {
     Rcpp::stop("Unknown inverse penalty");
+  }
 
   arma::uword measured = keep.n_elem, k_len = kernel.n_elem, history = k_len - 1;
   if (tail_padding) keep = arma::join_cols(keep,
@@ -433,7 +446,7 @@ arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
   const double* kp = k_rev.memptr();
 
   // Fast banded Cholesky + L1-tiled SIMD solve when no dense nuisance projection is present
-  arma::uword kd = max_gap + history;
+  arma::uword kd = std::max(max_gap + history, pen_band);
   if (q.n_cols == 0 && kd < latent / 3) {
     arma::mat ab(kd + 1, latent, arma::fill::zeros);
     for (arma::uword i = 0; i < m; ++i) {
@@ -459,15 +472,20 @@ arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
         }
       }
     }
-    if (penalty == "ridge") ab.row(0) += lambda;
-    else {
-      int order = penalty == "diff1" ? 1 : 2;
-      const double d1[] = {-1, 1}, d2[] = {1, -2, 1};
-      const double* dp = order == 1 ? d1 : d2;
-      for (arma::uword i = 0; i + order < latent; ++i)
-        for (int a = 0; a <= order; ++a)
-          for (int b = a; b <= order; ++b)
-            ab(b - a, i + a) += lambda * dp[a] * dp[b];
+    if (pen_w0 > 0.0) ab.row(0) += lambda * pen_w0;
+    if (pen_w1 > 0.0) {
+      const double d1[] = {-1, 1};
+      for (arma::uword i = 0; i + 1 < latent; ++i)
+        for (int a = 0; a <= 1; ++a)
+          for (int b = a; b <= 1; ++b)
+            ab(b - a, i + a) += (lambda * pen_w1) * d1[a] * d1[b];
+    }
+    if (pen_w2 > 0.0) {
+      const double d2[] = {1, -2, 1};
+      for (arma::uword i = 0; i + 2 < latent; ++i)
+        for (int a = 0; a <= 2; ++a)
+          for (int b = a; b <= 2; ++b)
+            ab(b - a, i + a) += (lambda * pen_w2) * d2[a] * d2[b];
     }
     ab.row(0) += ridge_floor;
 
@@ -630,15 +648,20 @@ arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
     }
   }
 
-  if (penalty == "ridge") lhs.diag() += lambda;
-  else {
-    int order = penalty == "diff1" ? 1 : 2;
-    const double d1[] = {-1, 1}, d2[] = {1, -2, 1};
-    const double* dp = order == 1 ? d1 : d2;
-    for (arma::uword i = 0; i + order < latent; ++i)
-      for (int a = 0; a <= order; ++a)
-        for (int b = a; b <= order; ++b)
-          lhs(i + b, i + a) += lambda * dp[a] * dp[b];
+  if (pen_w0 > 0.0) lhs.diag() += lambda * pen_w0;
+  if (pen_w1 > 0.0) {
+    const double d1[] = {-1, 1};
+    for (arma::uword i = 0; i + 1 < latent; ++i)
+      for (int a = 0; a <= 1; ++a)
+        for (int b = a; b <= 1; ++b)
+          lhs(i + b, i + a) += (lambda * pen_w1) * d1[a] * d1[b];
+  }
+  if (pen_w2 > 0.0) {
+    const double d2[] = {1, -2, 1};
+    for (arma::uword i = 0; i + 2 < latent; ++i)
+      for (int a = 0; a <= 2; ++a)
+        for (int b = a; b <= 2; ++b)
+          lhs(i + b, i + a) += (lambda * pen_w2) * d2[a] * d2[b];
   }
   lhs.diag() += ridge_floor;
 
