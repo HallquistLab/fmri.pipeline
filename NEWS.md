@@ -9,6 +9,12 @@
   lower-banded Cholesky factorization, contiguous multi-signal forward/backward
   substitution, and the exact $O(n_{\text{latent}} b^2)$ Takahashi banded-inverse
   recursion for effective degrees of freedom $\operatorname{tr}(A(\lambda)^{-1} H_k^\top H_k)$.
+* `hrf_inverse_operator_cpp()`, `hrf_score_run_cpp()`, and `hrf_noise_profile_cpp()`
+  now eliminate dense $m \times m$ AR(1) whitening matrix construction and
+  dense $O(m^2 L)$ / $O(L m m_0)$ matrix multiplications in favor of
+  in-place column-wise bidiagonal whitening, tridiagonal $W^\top W$ stencil
+  accumulation, L1-tiled banded Cholesky solves (for `nuisance_mode = "ignore"`),
+  and single-pass batch normalization across the REML noise grid.
 
 ## Coefficient recovery validation
 

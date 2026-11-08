@@ -18,16 +18,50 @@ arma::mat hrf_basis(const arma::mat& x, double tol) {
 
 // Marginal AR(1) innovations on the ORIGINAL acquisition clock. Missing rows
 // are integrated out: a gap of d uses rho^d and its accumulated variance.
-arma::mat hrf_whiten(const arma::mat& x, const arma::uvec& rows, double rho) {
-  arma::mat out = x;
-  if (rho == 0) return out;
-  out.row(0) *= std::sqrt(1 - rho * rho);
-  for (arma::uword i = 1; i < rows.n_elem; ++i) {
+void hrf_whiten_coefs(const arma::uvec& rows, double rho, arma::vec& d, arma::vec& s) {
+  arma::uword m = rows.n_elem;
+  d.ones(m);
+  s.zeros(m);
+  if (rho == 0) return;
+  double s0 = std::sqrt(1 - rho * rho);
+  d(0) = s0;
+  for (arma::uword i = 1; i < m; ++i) {
     double a = std::pow(rho, (double)(rows(i) - rows(i - 1)));
-    out.row(i) = (x.row(i) - a * x.row(i - 1)) *
-      std::sqrt((1 - rho * rho) / (1 - a * a));
+    double mult = s0 / std::sqrt(1 - a * a);
+    d(i) = mult;
+    s(i) = -a * mult;
   }
-  return out;
+}
+
+void hrf_whiten_inplace(arma::mat& x, const arma::vec& d, const arma::vec& s, double rho) {
+  if (rho == 0 || x.n_cols == 0 || x.n_rows == 0) return;
+  const arma::uword m = x.n_rows;
+  const double* dp = d.memptr();
+  const double* sp = s.memptr();
+  for (arma::uword j = 0; j < x.n_cols; ++j) {
+    double* col = x.colptr(j);
+    for (arma::uword i = m - 1; i >= 1; --i) {
+      col[i] = dp[i] * col[i] + sp[i] * col[i - 1];
+    }
+    col[0] *= dp[0];
+  }
+}
+
+arma::mat hrf_extract_rows(const arma::mat& src_mat, const arma::uvec& keep,
+                           arma::uword start, arma::uword end) {
+  arma::uword m = keep.n_elem, b = end - start + 1;
+  arma::mat y(m, b);
+  if (m == src_mat.n_rows) {
+    std::memcpy(y.memptr(), src_mat.colptr(start), m * b * sizeof(double));
+  } else {
+    const arma::uword* kp = keep.memptr();
+    for (arma::uword j = 0; j < b; ++j) {
+      const double* src = src_mat.colptr(start + j);
+      double* dst = y.colptr(j);
+      for (arma::uword i = 0; i < m; ++i) dst[i] = src[kp[i]];
+    }
+  }
+  return y;
 }
 
 arma::uvec hrf_rows(const Rcpp::IntegerVector& rows, arma::uword n) {
@@ -105,16 +139,20 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
   if (!std::isfinite(rho) || std::abs(rho) >= 1 || fallback_index < 1 || fallback_index > designs.size())
     Rcpp::stop("Invalid AR coefficient or fallback index");
   arma::uvec keep = hrf_rows(rows, bold.n_rows);
+  arma::vec d_ar, s_ar;
+  hrf_whiten_coefs(keep, rho, d_ar, s_ar);
   arma::mat z = nuisance.rows(keep);
   if (!z.is_finite()) Rcpp::stop("Nuisance values must be finite on usable rows");
-  arma::mat qn = hrf_basis(hrf_whiten(z, keep, rho), rank_tol);
+  hrf_whiten_inplace(z, d_ar, s_ar, rho);
+  arma::mat qn = hrf_basis(z, rank_tol);
   int base_df = keep.n_elem - qn.n_cols;
   std::vector<arma::mat> qt(designs.size());
   Rcpp::IntegerVector ranks(designs.size());
   for (int k = 0; k < designs.size(); ++k) {
     arma::mat x = Rcpp::as<arma::mat>(designs[k]);
     if (x.n_rows != bold.n_rows || !x.is_finite()) Rcpp::stop("Invalid event design");
-    x = hrf_whiten(x.rows(keep), keep, rho);
+    x = x.rows(keep);
+    hrf_whiten_inplace(x, d_ar, s_ar, rho);
     arma::rowvec original_norm = arma::sqrt(arma::sum(arma::square(x), 0));
     if (qn.n_cols) x -= qn * (qn.t() * x);
     // A wholly absorbed task regressor must not become a spurious rank-one
@@ -152,8 +190,7 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
   if (comparable) for (arma::uword start = 0; start < bold.n_cols; start += batch_size) {
     Rcpp::checkUserInterrupt();
     arma::uword end = std::min(bold.n_cols - 1, start + batch_size - 1);
-    arma::mat y = bold.cols(start, end);
-    y = y.rows(keep);
+    arma::mat y = hrf_extract_rows(bold, keep, start, end);
     for (arma::uword j = 0; j < y.n_cols; ++j) {
       if (!y.col(j).is_finite()) {
         status[start + j] = "nonfinite";
@@ -165,7 +202,7 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
         if (norm > 0) y.col(j) /= norm;
       }
     }
-    y = hrf_whiten(y, keep, rho);
+    hrf_whiten_inplace(y, d_ar, s_ar, rho);
     if (qn.n_cols) y -= qn * (qn.t() * y);
     arma::rowvec sst = arma::sum(arma::square(y), 0);
     for (arma::uword j = 0; j < y.n_cols; ++j) {
@@ -228,46 +265,66 @@ arma::mat hrf_noise_profile_cpp(const arma::mat& bold, const arma::mat& mean_des
   int df = keep.n_elem - basis.n_cols;
   arma::mat profile(rho_grid.n_elem, bold.n_cols, arma::fill::value(NA_REAL));
   if (df < 10) return profile;
+  struct RhoFactor {
+    double rho;
+    arma::vec d_ar, s_ar;
+    arma::mat q;
+    double log_term;
+  };
+  std::vector<RhoFactor> factors(rho_grid.n_elem);
   for (arma::uword k = 0; k < rho_grid.n_elem; ++k) {
     Rcpp::checkUserInterrupt();
     double rho = rho_grid(k);
     if (!std::isfinite(rho) || std::abs(rho) >= 1) Rcpp::stop("Invalid noise grid");
-    arma::mat wx = hrf_whiten(basis, keep, rho), q, v;
+    RhoFactor& f = factors[k];
+    f.rho = rho;
+    hrf_whiten_coefs(keep, rho, f.d_ar, f.s_ar);
+    arma::mat wx = basis, v;
+    hrf_whiten_inplace(wx, f.d_ar, f.s_ar, rho);
     arma::vec s;
-    if (!arma::svd_econ(q, s, v, wx)) Rcpp::stop("Noise design SVD failed");
+    if (!arma::svd_econ(f.q, s, v, wx)) Rcpp::stop("Noise design SVD failed");
     double logdet_design = 2 * arma::sum(arma::log(s));
     double logdet_w = .5 * std::log1p(-rho * rho);
     for (arma::uword i = 1; i < keep.n_elem; ++i) {
       double a = std::pow(rho, (double)(keep(i) - keep(i - 1)));
       logdet_w += .5 * (std::log1p(-rho * rho) - std::log1p(-a * a));
     }
-    for (arma::uword start = 0; start < bold.n_cols; start += batch_size) {
-      arma::uword end = std::min(bold.n_cols - 1, start + batch_size - 1);
-      arma::mat y = bold.cols(start, end); y = y.rows(keep);
-      arma::uvec valid(y.n_cols, arma::fill::ones);
-      for (arma::uword j = 0; j < y.n_cols; ++j) {
-        if (!y.col(j).is_finite()) { valid(j) = 0; y.col(j).zeros(); continue; }
-        y.col(j) -= arma::mean(y.col(j));
-        double norm = arma::norm(y.col(j));
-        if (norm <= 0) valid(j) = 0;
-        else y.col(j) /= norm;
-      }
-      y = hrf_whiten(y, keep, rho);
+    f.log_term = logdet_design - 2 * logdet_w;
+  }
+  x.reset();
+  basis.reset();
+  arma::mat y;
+  for (arma::uword start = 0; start < bold.n_cols; start += batch_size) {
+    Rcpp::checkUserInterrupt();
+    arma::uword end = std::min(bold.n_cols - 1, start + batch_size - 1);
+    arma::mat y_base = hrf_extract_rows(bold, keep, start, end);
+    arma::uvec valid(y_base.n_cols, arma::fill::ones);
+    for (arma::uword j = 0; j < y_base.n_cols; ++j) {
+      if (!y_base.col(j).is_finite()) { valid(j) = 0; y_base.col(j).zeros(); continue; }
+      y_base.col(j) -= arma::mean(y_base.col(j));
+      double norm = arma::norm(y_base.col(j));
+      if (norm <= 0) valid(j) = 0;
+      else y_base.col(j) /= norm;
+    }
+    for (arma::uword k = 0; k < rho_grid.n_elem; ++k) {
+      const RhoFactor& f = factors[k];
+      y = y_base;
+      hrf_whiten_inplace(y, f.d_ar, f.s_ar, f.rho);
       arma::rowvec total = arma::sum(arma::square(y), 0), rss = total;
-      if (q.n_cols) {
-        arma::mat coefficients = q.t() * y;
+      if (f.q.n_cols) {
+        arma::mat coefficients = f.q.t() * y;
         rss -= arma::sum(arma::square(coefficients), 0);
         // Avoid a second large BLAS multiplication for ordinary-SNR voxels.
         // Explicit residuals protect near-perfect fits from cancellation in
         // ||y||^2 - ||Q'y||^2 (including negative roundoff differences).
         for (arma::uword j = 0; j < y.n_cols; ++j)
           if (valid(j) && rss(j) < 1e-4 * total(j)) {
-            arma::vec residual = y.col(j) - q * coefficients.col(j);
+            arma::vec residual = y.col(j) - f.q * coefficients.col(j);
             rss(j) = arma::dot(residual, residual);
           }
       }
       for (arma::uword j = 0; j < y.n_cols; ++j) if (valid(j) && rss(j) > rank_tol * rank_tol)
-        profile(k, start + j) = df * std::log(rss(j) / df) + logdet_design - 2 * logdet_w;
+        profile(k, start + j) = df * std::log(rss(j) / df) + f.log_term;
     }
   }
   return profile;
@@ -283,35 +340,262 @@ arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
   if (kernel.n_elem < 2 || !kernel.is_finite() || nuisance.n_rows != (arma::uword)n_time ||
       !std::isfinite(rho) || std::abs(rho) >= 1 || lambda < 0 || ridge_floor < 0 || tail_padding < 0)
     Rcpp::stop("Invalid masked inverse parameters");
-  arma::uword measured = keep.n_elem, history = kernel.n_elem - 1;
+  if (penalty != "ridge" && penalty != "diff1" && penalty != "diff2")
+    Rcpp::stop("Unknown inverse penalty");
+
+  arma::uword measured = keep.n_elem, k_len = kernel.n_elem, history = k_len - 1;
   if (tail_padding) keep = arma::join_cols(keep,
     arma::regspace<arma::uvec>(n_time, n_time + tail_padding - 1));
-  arma::uword latent = n_time + tail_padding + history;
-  arma::mat h(keep.n_elem, latent, arma::fill::zeros);
-  for (arma::uword i = 0; i < keep.n_elem; ++i)
-    for (arma::uword lag = 0; lag < kernel.n_elem; ++lag) h(i, keep(i) + history - lag) = kernel(lag);
-  arma::mat w = hrf_whiten(arma::eye(keep.n_elem, keep.n_elem), keep, rho);
-  h = w * h;
-  arma::mat z(keep.n_elem, nuisance.n_cols, arma::fill::zeros);
-  z.rows(0, measured - 1) = nuisance.rows(keep.head(measured));
-  if (!z.is_finite()) Rcpp::stop("Nuisance values must be finite on usable rows");
-  arma::mat q = hrf_basis(w * z, 1e-8);
-  arma::mat rhs = w.cols(0, measured - 1);
-  if (q.n_cols) { h -= q * (q.t() * h); rhs -= q * (q.t() * rhs); }
-  arma::mat lhs = h.t() * h;
+  arma::uword m = keep.n_elem, latent = n_time + tail_padding + history;
+
+  // Bidiagonal AR(1) whitening coefficients on the observation clock (no m x m matrix)
+  arma::vec d, s;
+  hrf_whiten_coefs(keep, rho, d, s);
+
+  arma::mat q;
+  if (nuisance.n_cols > 0) {
+    arma::mat z(m, nuisance.n_cols, arma::fill::zeros);
+    z.rows(0, measured - 1) = nuisance.rows(keep.head(measured));
+    if (!z.is_finite()) Rcpp::stop("Nuisance values must be finite on usable rows");
+    hrf_whiten_inplace(z, d, s, rho);
+    q = hrf_basis(z, 1e-8);
+  } else {
+    arma::mat z_check = nuisance.rows(keep.head(measured));
+    if (!z_check.is_finite()) Rcpp::stop("Nuisance values must be finite on usable rows");
+  }
+
+  // Symmetric tridiagonal entries of M = W^T W
+  arma::vec m_diag(m), m_sub(m, arma::fill::zeros);
+  arma::uword max_gap = 0;
+  for (arma::uword i = 0; i < m; ++i) {
+    m_diag(i) = d(i) * d(i) + (i + 1 < m ? s(i + 1) * s(i + 1) : 0.0);
+    if (i > 0) {
+      m_sub(i) = d(i) * s(i);
+      if (rho != 0) max_gap = std::max(max_gap, keep(i) - keep(i - 1));
+    }
+  }
+
+  arma::vec k_rev = arma::reverse(kernel);
+  arma::mat g = k_rev * k_rev.t();
+  const double* kp = k_rev.memptr();
+
+  // Fast banded Cholesky + L1-tiled SIMD solve when no dense nuisance projection is present
+  arma::uword kd = max_gap + history;
+  if (q.n_cols == 0 && kd < latent / 3) {
+    arma::mat ab(kd + 1, latent, arma::fill::zeros);
+    for (arma::uword i = 0; i < m; ++i) {
+      arma::uword r0 = keep(i);
+      double md = m_diag(i);
+      for (arma::uword u = 0; u < k_len; ++u) {
+        arma::uword col_idx = r0 + u;
+        for (arma::uword v = u; v < k_len; ++v) {
+          ab(v - u, col_idx) += md * g(v, u);
+        }
+      }
+      if (i > 0 && m_sub(i) != 0) {
+        arma::uword rp = keep(i - 1);
+        double ms = m_sub(i);
+        for (arma::uword u = 0; u < k_len; ++u) {
+          arma::uword r_curr = r0 + u;
+          for (arma::uword v = 0; v < k_len; ++v) {
+            arma::uword r_prev = rp + v;
+            double val = ms * g(u, v);
+            if (r_curr >= r_prev) ab(r_curr - r_prev, r_prev) += val;
+            if (r_prev >= r_curr) ab(r_prev - r_curr, r_curr) += val;
+          }
+        }
+      }
+    }
+    if (penalty == "ridge") ab.row(0) += lambda;
+    else {
+      int order = penalty == "diff1" ? 1 : 2;
+      const double d1[] = {-1, 1}, d2[] = {1, -2, 1};
+      const double* dp = order == 1 ? d1 : d2;
+      for (arma::uword i = 0; i + order < latent; ++i)
+        for (int a = 0; a <= order; ++a)
+          for (int b = a; b <= order; ++b)
+            ab(b - a, i + a) += lambda * dp[a] * dp[b];
+    }
+    ab.row(0) += ridge_floor;
+
+    arma::blas_int n_lat = static_cast<arma::blas_int>(latent);
+    arma::blas_int kd_int = static_cast<arma::blas_int>(kd);
+    arma::blas_int ldab = kd_int + 1;
+    arma::blas_int info = 0;
+    char uplo = 'L';
+    arma::lapack::pbtrf(&uplo, &n_lat, &kd_int, ab.memptr(), &ldab, &info);
+    if (info == 0) {
+      for (arma::uword j = 0; j < latent; ++j) {
+        ab(0, j) = 1.0 / ab(0, j);
+      }
+      arma::mat out(n_time, measured);
+      constexpr arma::uword TILE = 32;
+      arma::mat tile(TILE, latent);
+
+      for (arma::uword c0 = 0; c0 < measured; c0 += TILE) {
+        arma::uword c1 = std::min(measured, c0 + TILE);
+        arma::uword b_cols = c1 - c0;
+        arma::uword j_start = (c0 > 0 && m_sub(c0) != 0) ? keep(c0 - 1) : keep(c0);
+        arma::uword clear_start = std::min(history, j_start);
+        std::memset(tile.colptr(clear_start), 0, (latent - clear_start) * TILE * sizeof(double));
+
+        for (arma::uword idx = 0; idx < b_cols; ++idx) {
+          arma::uword j = c0 + idx;
+          arma::uword r0 = keep(j);
+          double md = m_diag(j);
+          for (arma::uword u = 0; u < k_len; ++u) tile(idx, r0 + u) += md * kp[u];
+          if (j > 0 && m_sub(j) != 0) {
+            arma::uword rp = keep(j - 1);
+            double ms = m_sub(j);
+            for (arma::uword u = 0; u < k_len; ++u) tile(idx, rp + u) += ms * kp[u];
+          }
+          if (j + 1 < m && m_sub(j + 1) != 0) {
+            arma::uword rn = keep(j + 1);
+            double ms = m_sub(j + 1);
+            for (arma::uword u = 0; u < k_len; ++u) tile(idx, rn + u) += ms * kp[u];
+          }
+        }
+
+        for (arma::uword j = j_start; j < latent; ++j) {
+          const double* l_col = ab.colptr(j);
+          double inv_d = l_col[0];
+          double* yj = tile.colptr(j);
+          for (arma::uword i = 0; i < b_cols; ++i) yj[i] *= inv_d;
+          arma::uword kmax = std::min(kd, latent - 1 - j);
+          for (arma::uword k = 1; k <= kmax; ++k) {
+            double lk = l_col[k];
+            double* yjk = tile.colptr(j + k);
+            for (arma::uword i = 0; i < b_cols; ++i) {
+              yjk[i] -= lk * yj[i];
+            }
+          }
+        }
+
+        for (arma::uword jj = latent; jj > history; --jj) {
+          arma::uword j = jj - 1;
+          const double* l_col = ab.colptr(j);
+          double inv_d = l_col[0];
+          double* yj = tile.colptr(j);
+          arma::uword kmax = std::min(kd, latent - 1 - j);
+          for (arma::uword k = 1; k <= kmax; ++k) {
+            double lk = l_col[k];
+            const double* yjk = tile.colptr(j + k);
+            for (arma::uword i = 0; i < b_cols; ++i) {
+              yj[i] -= lk * yjk[i];
+            }
+          }
+          for (arma::uword i = 0; i < b_cols; ++i) yj[i] *= inv_d;
+        }
+
+        for (arma::uword idx = 0; idx < b_cols; ++idx) {
+          double* out_col = out.colptr(c0 + idx);
+          for (arma::uword t = 0; t < (arma::uword)n_time; ++t) {
+            out_col[t] = tile(idx, history + t);
+          }
+        }
+      }
+      return out;
+    }
+  }
+
+  // General path (joint nuisance projection or wide-band gap) using stencil accumulation
+  arma::mat lhs(latent, latent, arma::fill::zeros);
+  for (arma::uword i = 0; i < m; ++i) {
+    arma::uword r0 = keep(i);
+    double md = m_diag(i);
+    for (arma::uword u = 0; u < k_len; ++u) {
+      double* col_ptr = lhs.colptr(r0 + u);
+      for (arma::uword v = u; v < k_len; ++v) {
+        col_ptr[r0 + v] += md * g(v, u);
+      }
+    }
+    if (i > 0 && m_sub(i) != 0) {
+      arma::uword rp = keep(i - 1);
+      double ms = m_sub(i);
+      for (arma::uword u = 0; u < k_len; ++u) {
+        arma::uword r_curr = r0 + u;
+        for (arma::uword v = 0; v < k_len; ++v) {
+          arma::uword r_prev = rp + v;
+          double val = ms * g(u, v);
+          if (r_curr >= r_prev) lhs(r_curr, r_prev) += val;
+          if (r_prev >= r_curr) lhs(r_prev, r_curr) += val;
+        }
+      }
+    }
+  }
+
+  arma::mat rhs(latent, measured, arma::fill::zeros);
+  for (arma::uword j = 0; j < measured; ++j) {
+    double* col = rhs.colptr(j);
+    arma::uword r0 = keep(j);
+    double md = m_diag(j);
+    for (arma::uword u = 0; u < k_len; ++u) col[r0 + u] += md * kp[u];
+    if (j > 0 && m_sub(j) != 0) {
+      arma::uword rp = keep(j - 1);
+      double ms = m_sub(j);
+      for (arma::uword u = 0; u < k_len; ++u) col[rp + u] += ms * kp[u];
+    }
+    if (j + 1 < m && m_sub(j + 1) != 0) {
+      arma::uword rn = keep(j + 1);
+      double ms = m_sub(j + 1);
+      for (arma::uword u = 0; u < k_len; ++u) col[rn + u] += ms * kp[u];
+    }
+  }
+
+  if (q.n_cols > 0) {
+    arma::mat q_tilde(m, q.n_cols);
+    for (arma::uword c = 0; c < q.n_cols; ++c) {
+      const double* qc = q.colptr(c);
+      double* qtc = q_tilde.colptr(c);
+      for (arma::uword i = 0; i + 1 < m; ++i) qtc[i] = d(i) * qc[i] + s(i + 1) * qc[i + 1];
+      qtc[m - 1] = d(m - 1) * qc[m - 1];
+    }
+    arma::vec uc(latent);
+    for (arma::uword c = 0; c < q.n_cols; ++c) {
+      uc.zeros();
+      double* ucp = uc.memptr();
+      const double* qtc = q_tilde.colptr(c);
+      for (arma::uword i = 0; i < m; ++i) {
+        double w_ic = qtc[i];
+        arma::uword r0 = keep(i);
+        for (arma::uword u = 0; u < k_len; ++u) ucp[r0 + u] += w_ic * kp[u];
+      }
+      for (arma::uword j = 0; j < latent; ++j) {
+        double u_jc = ucp[j];
+        double* lhs_col = lhs.colptr(j);
+        for (arma::uword r = j; r < latent; ++r) {
+          lhs_col[r] -= u_jc * ucp[r];
+        }
+      }
+      for (arma::uword j = 0; j < measured; ++j) {
+        double q_jc = qtc[j];
+        double* rhs_col = rhs.colptr(j);
+        for (arma::uword r = 0; r < latent; ++r) {
+          rhs_col[r] -= q_jc * ucp[r];
+        }
+      }
+    }
+  }
+
   if (penalty == "ridge") lhs.diag() += lambda;
   else {
     int order = penalty == "diff1" ? 1 : 2;
-    if (penalty != "diff1" && penalty != "diff2") Rcpp::stop("Unknown inverse penalty");
     const double d1[] = {-1, 1}, d2[] = {1, -2, 1};
-    const double* d = order == 1 ? d1 : d2;
+    const double* dp = order == 1 ? d1 : d2;
     for (arma::uword i = 0; i + order < latent; ++i)
-      for (int a = 0; a <= order; ++a) for (int b = 0; b <= order; ++b)
-        lhs(i + a, i + b) += lambda * d[a] * d[b];
+      for (int a = 0; a <= order; ++a)
+        for (int b = a; b <= order; ++b)
+          lhs(i + b, i + a) += lambda * dp[a] * dp[b];
   }
   lhs.diag() += ridge_floor;
-  arma::mat out;
-  if (!arma::solve(out, lhs, h.t() * rhs, arma::solve_opts::likely_sympd))
-    Rcpp::stop("Masked GLS inverse failed; increase ridge_floor");
-  return out.rows(history, history + n_time - 1);
+
+  arma::blas_int n_lat = static_cast<arma::blas_int>(latent);
+  arma::blas_int n_rhs = static_cast<arma::blas_int>(measured);
+  arma::blas_int info = 0;
+  char uplo = 'L';
+  arma::lapack::potrf(&uplo, &n_lat, lhs.memptr(), &n_lat, &info);
+  if (info != 0) Rcpp::stop("Masked GLS inverse failed; increase ridge_floor");
+  arma::lapack::potrs(&uplo, &n_lat, &n_rhs, lhs.memptr(), &n_lat, rhs.memptr(), &n_lat, &info);
+  if (info != 0) Rcpp::stop("Masked GLS inverse failed; increase ridge_floor");
+  return rhs.rows(history, history + n_time - 1);
 }
