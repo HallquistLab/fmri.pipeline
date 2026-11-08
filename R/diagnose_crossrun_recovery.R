@@ -140,12 +140,22 @@ diagnose_crossrun_recovery <- function(deconvolution, events = NULL, lags = 0,
 
 build_epoch_readout_matrix <- function(onsets, lag, n_time, tr, offset,
     readout_kernel = "linear", readout_width = NULL) {
-  quad <- epoch_kernel_quadrature(readout_kernel, readout_width, tr)
   m <- length(onsets)
+  if (is.null(readout_width) || length(readout_width) <= 1L) {
+    quad <- epoch_kernel_quadrature(readout_kernel, readout_width, tr)
+    width_scale <- rep(1, m)
+  } else {
+    if (length(readout_width) != m) {
+      stop("readout_width must be NULL, a scalar, or a vector of length(onsets)")
+    }
+    checkmate::assert_numeric(readout_width, lower = .Machine$double.eps, finite = TRUE, any.missing = FALSE)
+    quad <- epoch_kernel_quadrature(readout_kernel, 1.0, tr)
+    width_scale <- as.numeric(readout_width)
+  }
   readout <- matrix(0, m, n_time)
   weight_sum <- rep(0, m)
   for (q in seq_along(quad$offsets)) {
-    at <- (onsets + lag + quad$offsets[q] - offset) / tr
+    at <- (onsets + lag + quad$offsets[q] * width_scale - offset) / tr
     lo <- floor(at)
     fraction <- at - lo
     ok <- is.finite(at) & at >= 0 & at <= n_time - 1L
@@ -167,6 +177,41 @@ build_epoch_readout_matrix <- function(onsets, lag, n_time, tr, offset,
   }
   readout[!valid, ] <- NA_real_
   readout
+}
+
+solve_duration_demix_operator <- function(S_tau, operator, G_tau_unc, G_tau_cent,
+    scaling_mode, demix_ridge, gain_floor) {
+  m_ok <- nrow(S_tau)
+  n_obs <- ncol(operator)
+  K_norm <- S_tau %*% (operator %*% G_tau_cent)
+  K_unc <- S_tau %*% (operator %*% G_tau_unc)
+  g_unc <- diag(K_unc)
+  g_safe <- sign(ifelse(g_unc == 0, 1, g_unc)) * pmax(abs(g_unc), gain_floor)
+  R_unc <- sweep(K_unc, 1L, g_safe, "/")
+  Q <- diag(m_ok) - matrix(1 / m_ok, m_ok, m_ok)
+  lhs <- crossprod(R_unc) + demix_ridge * Q + 1e-8 * diag(m_ok)
+  W_unc <- solve(lhs, sweep(t(R_unc), 2L, g_safe, "/"))
+  if (scaling_mode != "none") {
+    c0 <- as.numeric(S_tau %*% (operator %*% rep(1, n_obs)))
+    mu_G <- colMeans(G_tau_unc)
+    u0 <- as.numeric(W_unc %*% c0)
+    denom <- 1 - sum(mu_G * u0)
+    if (!is.finite(denom) || abs(denom) < 0.05) {
+      denom <- sign(ifelse(!is.finite(denom) || denom == 0, 1, denom)) * 0.05
+    }
+    W_full <- W_unc + outer(u0, as.numeric(crossprod(mu_G, W_unc))) / denom
+  } else {
+    W_full <- W_unc
+  }
+  eff_gain <- if (m_ok > 1L) {
+    sum(diag(Q %*% W_full %*% K_norm %*% Q)) / (m_ok - 1L)
+  } else {
+    1 / (1 + demix_ridge)
+  }
+  if (!is.finite(eff_gain) || abs(eff_gain) < gain_floor) {
+    eff_gain <- 1 / (1 + demix_ridge)
+  }
+  list(W = W_full, K_norm = K_norm, eff_gain = eff_gain)
 }
 
 #' Operator-based epoch de-mixing and gain-corrected trial regression across lags
@@ -209,9 +254,25 @@ build_epoch_readout_matrix <- function(onsets, lag, n_time, tr, offset,
 #'   units rather than standardized (\code{zscore}/\code{noise_sd}) units.
 #'   Default: \code{FALSE}.
 #' @param source_model Forward neural source model at each target lag:
-#'   \code{"impulse"} (default unit impulse at \code{onset + lag}) or
+#'   \code{"impulse"} (default unit impulse at \code{onset + lag}),
 #'   \code{"window"} (local sustained boxcar of width \code{readout_width}
-#'   centered at \code{onset + lag}).
+#'   centered at \code{onset + lag}), or \code{"duration"} (trial-varying
+#'   sustained boxcar over \code{[onset + lag, onset + lag + d_i]} using each
+#'   target trial's duration \code{d_i} from \code{trial_durations} or
+#'   \code{events[[r]]$duration}, with duration-matched readout and unpenalized
+#'   baseline-rate de-confounding).
+#' @param trial_durations Optional numeric vector (concatenated across runs) or
+#'   run-named list of non-negative target trial durations (in seconds), such as
+#'   per-trial reaction times. Overrides \code{events[[r]]$duration} for target
+#'   trials and defaults \code{source_model} to \code{"duration"} when
+#'   \code{source_model} is not explicitly specified.
+#' @param duration_scale Scaling convention for positive-duration target trials
+#'   when \code{source_model = "duration"}: \code{"rate"} (default; trial
+#'   amplitude represents neural firing rate / boxcar height per TR bin, so
+#'   integrated neural activity scales with duration and constant baseline firing
+#'   rates are de-confounded from duration variability) or \code{"integral"}
+#'   (each trial boxcar is normalized to unit time-integrated neural mass across
+#'   its duration).
 #' @param return_epochs Logical; whether to include raw and de-mixed trial-by-voxel
 #'   epoch matrices per lag. Default: \code{FALSE}.
 #' @param return_panel Logical; whether to return a tidy MEDUSA-compatible
@@ -236,7 +297,9 @@ decon_epoch_regression <- function(
   demix_ridge = 0.05,
   gain_floor = 0.05,
   restore_scale = FALSE,
-  source_model = c("impulse", "window"),
+  source_model = c("impulse", "window", "duration"),
+  trial_durations = NULL,
+  duration_scale = c("rate", "integral"),
   return_epochs = FALSE,
   return_panel = FALSE
 ) {
@@ -249,8 +312,13 @@ decon_epoch_regression <- function(
   if (settings$backend == "wiener") {
     stop("decon_epoch_regression requires the cpp or r GLS inverse")
   }
+  source_model_supplied <- !missing(source_model)
   readout_kernel <- match.arg(readout_kernel)
   source_model <- match.arg(source_model)
+  duration_scale <- match.arg(duration_scale)
+  if (!is.null(trial_durations) && !source_model_supplied) {
+    source_model <- "duration"
+  }
   checkmate::assert_numeric(lags, min.len = 1L, any.missing = FALSE, finite = TRUE)
   checkmate::assert_string(target_condition, null.ok = TRUE)
   checkmate::assert_flag(demix_other_events)
@@ -323,6 +391,36 @@ decon_epoch_regression <- function(
   n_lags <- length(lags)
   tr <- fit$settings$tr
 
+  ends <- cumsum(target_counts)
+  starts <- ends - target_counts + 1L
+  dur_target_list <- vector("list", n_runs)
+  if (!is.null(trial_durations)) {
+    if (is.list(trial_durations) && !is.data.frame(trial_durations)) {
+      if (length(trial_durations) != n_runs) {
+        stop("When trial_durations is a list, it must have one element per run")
+      }
+      for (r in seq_len(n_runs)) {
+        d_r <- as.numeric(trial_durations[[r]])
+        if (length(d_r) != target_counts[r]) {
+          stop("trial_durations[[", r, "]] length (", length(d_r),
+            ") does not match target event count (", target_counts[r], ")")
+        }
+        checkmate::assert_numeric(d_r, lower = 0, any.missing = FALSE, finite = TRUE)
+        dur_target_list[[r]] <- d_r
+      }
+    } else {
+      d_all <- as.numeric(trial_durations)
+      if (length(d_all) != sum(target_counts)) {
+        stop("Total length of trial_durations (", length(d_all),
+          ") must equal total target events across runs (", sum(target_counts), ")")
+      }
+      checkmate::assert_numeric(d_all, lower = 0, any.missing = FALSE, finite = TRUE)
+      for (r in seq_len(n_runs)) {
+        dur_target_list[[r]] <- d_all[starts[r]:ends[r]]
+      }
+    }
+  }
+
   raw_epochs <- demixed_epochs <- vector("list", n_lags)
   names(raw_epochs) <- names(demixed_epochs) <- sprintf("lag_%g", lags)
   for (li in seq_len(n_lags)) {
@@ -334,8 +432,6 @@ decon_epoch_regression <- function(
   gain_by_lag_voxel <- matrix(NA_real_, n_lags, n_voxels, dimnames = list(NULL, fit$voxel_ids))
   x_centered_list <- lapply(cov_list, function(x_r) sweep(x_r, 2L, colMeans(x_r, na.rm = TRUE), "-"))
 
-  ends <- cumsum(target_counts)
-  starts <- ends - target_counts + 1L
   gain_accum <- matrix(0, n_lags, n_voxels)
   gain_count <- matrix(0L, n_lags, n_voxels)
 
@@ -348,7 +444,13 @@ decon_epoch_regression <- function(
     m_all <- nrow(ev)
     m_target <- length(t_idx)
     row_span <- starts[r]:ends[r]
-    duration <- if (is.null(ev$duration)) rep(0, m_all) else ev$duration
+    duration <- if (is.null(ev$duration)) rep(0, m_all) else as.numeric(ev$duration)
+    checkmate::assert_numeric(duration, lower = 0, len = m_all, any.missing = FALSE, finite = TRUE)
+    if (!is.null(trial_durations)) {
+      duration[t_idx] <- dur_target_list[[r]]
+    }
+    dur_target <- duration[t_idx]
+    w_src <- if (is.null(readout_width)) 1.5 * tr else readout_width[1L]
 
     mask <- if (settings$observation_mask == "fit") fit$specification$valid_rows[[r]] else rep(TRUE, n)
     rows <- which(!is.na(mask) & mask)
@@ -368,16 +470,34 @@ decon_epoch_regression <- function(
       act_r[, valid] <- sweep(act_r[, valid, drop = FALSE], 2L, div_r[valid], "*")
     }
 
-    S_all_0 <- build_epoch_readout_matrix(ev$onset, 0, n, tr, offset,
-      readout_kernel = readout_kernel, readout_width = readout_width)
+    dur_kernel <- if (readout_kernel == "linear" && source_model == "duration" && any(dur_target > 0)) {
+      "boxcar"
+    } else {
+      readout_kernel
+    }
+    if (source_model == "duration" && any(duration > 0)) {
+      S_all_0 <- build_epoch_readout_matrix(ev$onset + 0.5 * duration, 0, n, tr, offset,
+        readout_kernel = dur_kernel, readout_width = pmax(w_src, duration))
+    } else {
+      S_all_0 <- build_epoch_readout_matrix(ev$onset, 0, n, tr, offset,
+        readout_kernel = readout_kernel, readout_width = readout_width)
+    }
     S_lags <- lapply(lags, function(lag_val) {
       build_epoch_readout_matrix(ev$onset[t_idx], lag_val, n, tr, offset,
         readout_kernel = readout_kernel, readout_width = readout_width)
     })
+    S_lags_model <- if (source_model == "duration") {
+      lapply(lags, function(lag_val) {
+        build_epoch_readout_matrix(ev$onset[t_idx] + 0.5 * dur_target, lag_val, n, tr, offset,
+          readout_kernel = dur_kernel, readout_width = pmax(w_src, dur_target))
+      })
+    } else {
+      S_lags
+    }
 
     for (li in seq_len(n_lags)) {
       raw_epochs[[li]][row_span, valid] <- S_lags[[li]] %*% act_r[, valid, drop = FALSE]
-      demixed_epochs[[li]][row_span, valid] <- raw_epochs[[li]][row_span, valid, drop = FALSE]
+      demixed_epochs[[li]][row_span, valid] <- S_lags_model[[li]] %*% act_r[, valid, drop = FALSE]
     }
 
     for (key in unique(keys[valid])) {
@@ -388,8 +508,17 @@ decon_epoch_regression <- function(
       operator <- hrf_inverse_operator(n, hrf_k[, 1L], rows, ar, z, settings)
 
       # Forward design for all events at their own onsets (for non-target leakage removal)
-      G_all_0 <- hrf_event_design_cpp(n, tr, offset, ev$onset, duration,
+      dur_all_model <- duration
+      if (source_model == "impulse") dur_all_model[t_idx] <- 0
+      G_all_0 <- hrf_event_design_cpp(n, tr, offset, ev$onset, dur_all_model,
         seq_len(m_all), m_all, hrf_k)[[1L]][rows, , drop = FALSE]
+      if (source_model == "duration" && duration_scale == "integral") {
+        pos_t <- t_idx[dur_target > 0]
+        if (length(pos_t)) {
+          G_all_0[, pos_t] <- sweep(G_all_0[, pos_t, drop = FALSE], 2L,
+            dur_target[dur_target > 0] / tr, "/")
+        }
+      }
       if (settings$scaling != "none") G_all_0 <- sweep(G_all_0, 2L, colMeans(G_all_0), "-")
       DG_all_0 <- operator %*% G_all_0
 
@@ -433,54 +562,118 @@ decon_epoch_regression <- function(
         }
       }
 
+      # For duration source_model, estimate baseline firing rate alpha0_hat at lag = 0
+      # so differential time-on-task baseline leakage is removed across all lags
+      alpha0_hat <- NULL
+      DG_target_0_sum <- NULL
+      if (source_model == "duration") {
+        S_0 <- build_epoch_readout_matrix(ev$onset[t_idx] + 0.5 * dur_target, 0, n, tr, offset,
+          readout_kernel = dur_kernel, readout_width = pmax(w_src, dur_target))
+        ok_0 <- rowSums(!is.finite(S_0)) == 0L
+        G_0_unc <- hrf_event_design_cpp(n, tr, offset, ev$onset[t_idx], dur_target,
+          seq_len(m_target), m_target, hrf_k)[[1L]][rows, , drop = FALSE]
+        if (duration_scale == "integral" && any(dur_target > 0)) {
+          d_pos0 <- dur_target > 0
+          G_0_unc[, d_pos0] <- sweep(G_0_unc[, d_pos0, drop = FALSE], 2L, dur_target[d_pos0] / tr, "/")
+        }
+        G_0_cent <- if (settings$scaling != "none") {
+          sweep(G_0_unc, 2L, colMeans(G_0_unc), "-")
+        } else {
+          G_0_unc
+        }
+        if (any(ok_0)) {
+          DG_target_0_sum <- operator %*% rowSums(G_0_cent[, ok_0, drop = FALSE])
+          Y_0 <- S_0[ok_0, , drop = FALSE] %*% act_r[, voxels, drop = FALSE]
+          if (!is.null(a_other_hat)) {
+            R_other_0 <- S_0[ok_0, , drop = FALSE] %*% DG_all_0[, o_idx, drop = FALSE]
+            Y_0 <- Y_0 - R_other_0 %*% a_other_hat
+          }
+          demix_0 <- solve_duration_demix_operator(
+            S_0[ok_0, , drop = FALSE], operator,
+            G_0_unc[, ok_0, drop = FALSE], G_0_cent[, ok_0, drop = FALSE],
+            settings$scaling, demix_ridge, gain_floor
+          )
+          alpha0_hat <- colMeans(demix_0$W %*% Y_0)
+        }
+      }
+
       for (li in seq_len(n_lags)) {
-        S_tau <- S_lags[[li]]
+        S_tau <- S_lags_model[[li]]
         ok_tau <- rowSums(!is.finite(S_tau)) == 0L
         if (!any(ok_tau)) next
-        Y_clean <- raw_epochs[[li]][row_span, voxels, drop = FALSE]
+        Y_clean <- demixed_epochs[[li]][row_span, voxels, drop = FALSE]
 
         if (!is.null(a_other_hat)) {
           R_other_tau <- S_tau[ok_tau, , drop = FALSE] %*% DG_all_0[, o_idx, drop = FALSE]
           Y_clean[ok_tau, ] <- Y_clean[ok_tau, , drop = FALSE] - R_other_tau %*% a_other_hat
         }
 
-        # Local target resolution matrix K_tau for unit sources at target onset + lag
-        w_src <- if (is.null(readout_width)) 1.5 * tr else readout_width
-        dur_tau <- if (source_model == "window") rep(w_src, m_target) else duration[t_idx]
-        shift_center <- if (source_model == "window") lags[li] - 0.5 * w_src else lags[li]
-        shifted_onsets <- pmin(max(ev$onset), pmax(offset, ev$onset[t_idx] + shift_center))
-        G_tau <- hrf_event_design_cpp(n, tr, offset, shifted_onsets, dur_tau,
-          seq_len(m_target), m_target, hrf_k)[[1L]][rows, , drop = FALSE]
-        if (settings$scaling != "none") G_tau <- sweep(G_tau, 2L, colMeans(G_tau), "-")
-        K_tau <- S_tau[ok_tau, , drop = FALSE] %*% (operator %*% G_tau[, ok_tau, drop = FALSE])
-
-        # For positive-duration boxcar events or window source_model, normalize by ideal readout diagonal;
-        # for impulse events (duration == 0), G_tau is already a unit impulse source.
-        if (any(dur_tau > 0)) {
-          neural_tau <- hrf_event_design_cpp(n, tr, offset, shifted_onsets, dur_tau,
-            seq_len(m_target), m_target, matrix(c(1, 0), ncol = 1L))[[1L]]
-          ideal_diag <- diag(S_tau[ok_tau, , drop = FALSE] %*% neural_tau[, ok_tau, drop = FALSE])
-          ideal_diag[!is.finite(ideal_diag) | abs(ideal_diag) < 1e-4] <- 1
-          d_pos <- dur_tau[ok_tau] > 0
-          K_norm <- K_tau
-          if (any(d_pos)) K_norm[d_pos, ] <- K_tau[d_pos, , drop = FALSE] / ideal_diag[d_pos]
+        if (source_model == "duration") {
+          shifted_onsets <- pmin(max(ev$onset), pmax(offset, ev$onset[t_idx] + lags[li]))
+          G_tau_unc <- hrf_event_design_cpp(n, tr, offset, shifted_onsets, dur_target,
+            seq_len(m_target), m_target, hrf_k)[[1L]][rows, , drop = FALSE]
+          if (duration_scale == "integral" && any(dur_target > 0)) {
+            d_pos <- dur_target > 0
+            G_tau_unc[, d_pos] <- sweep(G_tau_unc[, d_pos, drop = FALSE], 2L, dur_target[d_pos] / tr, "/")
+          }
+          G_tau <- if (settings$scaling != "none") {
+            sweep(G_tau_unc, 2L, colMeans(G_tau_unc), "-")
+          } else {
+            G_tau_unc
+          }
+          demix_tau <- solve_duration_demix_operator(
+            S_tau[ok_tau, , drop = FALSE], operator,
+            G_tau_unc[, ok_tau, drop = FALSE], G_tau[, ok_tau, drop = FALSE],
+            settings$scaling, demix_ridge, gain_floor
+          )
+          K_norm <- demix_tau$K_norm
+          g_vec <- diag(K_norm)
+          mean_g <- mean(g_vec[is.finite(g_vec)])
+          if (is.finite(mean_g)) {
+            gain_accum[li, voxels] <- gain_accum[li, voxels] + mean_g
+            gain_count[li, voxels] <- gain_count[li, voxels] + 1L
+          }
+          if (demix_target_trials) {
+            Y_sub <- Y_clean[ok_tau, , drop = FALSE]
+            if (!is.null(alpha0_hat) && !is.null(DG_target_0_sum) && abs(lags[li]) > 1e-8) {
+              k_base_0 <- as.numeric(S_tau[ok_tau, , drop = FALSE] %*% DG_target_0_sum)
+              k_base_tau <- rowSums(K_norm)
+              Y_sub <- Y_sub - outer(k_base_0 - k_base_tau, alpha0_hat)
+            }
+            A_hat <- demix_tau$W %*% Y_sub
+            A_mean <- colMeans(A_hat)
+            Y_clean[ok_tau, ] <- sweep(
+              sweep(A_hat, 2L, A_mean, "-") / demix_tau$eff_gain,
+              2L, A_mean, "+"
+            )
+          }
         } else {
-          K_norm <- K_tau
-        }
-        g_vec <- diag(K_norm)
-        mean_g <- mean(g_vec[is.finite(g_vec)])
-        if (is.finite(mean_g)) {
-          gain_accum[li, voxels] <- gain_accum[li, voxels] + mean_g
-          gain_count[li, voxels] <- gain_count[li, voxels] + 1L
-        }
+          # Local target resolution matrix K_tau for unit sources at target onset + lag
+          dur_tau <- if (source_model == "window") rep(w_src, m_target) else rep(0, m_target)
+          shift_center <- if (source_model == "window") lags[li] - 0.5 * w_src else lags[li]
+          shifted_onsets <- pmin(max(ev$onset), pmax(offset, ev$onset[t_idx] + shift_center))
+          G_tau <- hrf_event_design_cpp(n, tr, offset, shifted_onsets, dur_tau,
+            seq_len(m_target), m_target, hrf_k)[[1L]][rows, , drop = FALSE]
+          if (source_model == "window" && w_src > 0) {
+            G_tau <- G_tau / (w_src / tr)
+          }
+          if (settings$scaling != "none") G_tau <- sweep(G_tau, 2L, colMeans(G_tau), "-")
+          K_norm <- S_tau[ok_tau, , drop = FALSE] %*% (operator %*% G_tau[, ok_tau, drop = FALSE])
+          g_vec <- diag(K_norm)
+          mean_g <- mean(g_vec[is.finite(g_vec)])
+          if (is.finite(mean_g)) {
+            gain_accum[li, voxels] <- gain_accum[li, voxels] + mean_g
+            gain_count[li, voxels] <- gain_count[li, voxels] + 1L
+          }
 
-        if (demix_target_trials) {
-          g_safe <- sign(ifelse(g_vec == 0, 1, g_vec)) * pmax(abs(g_vec), gain_floor)
-          # Unit-diagonal target cross-talk matrix C_tau
-          C_tau <- sweep(K_norm, 2L, g_safe, "/")
-          lhs_c <- crossprod(C_tau) + demix_ridge * diag(nrow(C_tau))
-          Y_demix_unit <- solve(lhs_c, crossprod(C_tau, Y_clean[ok_tau, , drop = FALSE]))
-          Y_clean[ok_tau, ] <- Y_demix_unit / g_safe
+          if (demix_target_trials) {
+            g_safe <- sign(ifelse(g_vec == 0, 1, g_vec)) * pmax(abs(g_vec), gain_floor)
+            # Unit-diagonal target cross-talk matrix C_tau
+            C_tau <- sweep(K_norm, 2L, g_safe, "/")
+            lhs_c <- crossprod(C_tau) + demix_ridge * diag(nrow(C_tau))
+            Y_demix_unit <- solve(lhs_c, crossprod(C_tau, Y_clean[ok_tau, , drop = FALSE]))
+            Y_clean[ok_tau, ] <- Y_demix_unit / g_safe
+          }
         }
         demixed_epochs[[li]][row_span, voxels] <- Y_clean
       }
@@ -621,7 +814,8 @@ decon_epoch_regression <- function(
       demix_ridge = demix_ridge,
       gain_floor = gain_floor,
       restore_scale = restore_scale,
-      source_model = source_model
+      source_model = source_model,
+      duration_scale = duration_scale
     )
   )
 }

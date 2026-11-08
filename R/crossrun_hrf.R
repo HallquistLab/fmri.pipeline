@@ -645,6 +645,7 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
   if (!identical(names(bold), hrf_fit$run_ids) || !identical(colnames(bold[[1L]]), hrf_fit$voxel_ids) ||
       !identical(vapply(bold, nrow, integer(1)), hrf_fit$n_time))
     stop("BOLD run/voxel IDs and dimensions must match the HRF fit")
+  if (missing(lambda)) stop("Specify lambda explicitly (or pass lambda = NULL for GCV tuning)")
   checkmate::assert_number(lambda, lower = 0, finite = TRUE, null.ok = TRUE)
   gcv_rule <- match.arg(gcv_rule)
   scaling <- match.arg(scaling, c("zscore", "demean", "none", "psc", "noise_sd"))
