@@ -1,0 +1,186 @@
+---
+title: "MEDuSA: from blurred BOLD signals to trial-level questions"
+author: "fmri.pipeline contributors"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+vignette: >
+  %\VignetteIndexEntry{MEDuSA: conceptual foundations}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Start with a scientific question
+
+Suppose a learning task contains a cue, a choice, and feedback on every trial. You want to know whether a reward prediction error (RPE) predicts activity specifically around feedback, and whether that relationship differs across people. A conventional parametric GLM asks whether BOLD covaries with an RPE-weighted, HRF-convolved event regressor. **MEDuSA (Multilevel Event-locked Deconvolved Signal Analysis) instead supports trial-level modeling of event-aligned estimates of latent activity across a range of time lags.** These are complementary ways of asking about brain–behavior relationships.
+
+The challenge is that feedback does not arrive on an empty stage: BOLD from the cue and choice is still evolving, and the next trial may start before that response has ended. Recovering a feedback-specific effect therefore requires choices about vascular response shape, regularization, event overlap, and the duration of neural activity. PRs #42–#54 improve different parts of this problem; they do not turn deconvolution into a direct recording of neuronal firing.
+
+This primer assumes familiarity with regression, covariance, and matrix multiplication. Read it before the [worked workflow](medusa-workflows.html). The [technical review](medusa_deconvolution_review_prs_42_53.html) preserves longer derivations and simulation demonstrations. The filename of that review is retained for existing links; its scope now includes PR #54.
+
+# Three quantities that should stay distinct
+
+| Quantity | What it represents | What we can infer |
+|---|---|---|
+| Observed BOLD, $y(t)$ | The measured, preprocessed fMRI signal | A vascularly filtered and noisy consequence of activity |
+| Latent activity estimate, $\hat{s}(t)$ | A regularized inverse estimate under an assumed HRF | A model-dependent activity proxy on the acquisition grid |
+| Event-level estimate, $\hat{a}_i(\tau)$ | A readout or fitted source amplitude for trial $i$ at lag $\tau$ | A quantity to relate to behavior, conditional on the readout/source model |
+
+A finer interpolation grid supplies smoother alignment to events occurring between acquisitions. It does **not** create independent sub-TR measurements. Likewise, a sharp peak in an estimated activity trajectory does not establish millisecond timing or a neuronal firing rate in physiological units.
+
+## The forward model: why BOLD is blurred
+
+Convolution means that each brief input contributes a delayed, extended response. If the input is a sequence of impulses, multiply each trial's amplitude by a shifted HRF and add the responses. In matrix form,
+
+$$
+\mathbf y = H\mathbf s + X_0\boldsymbol\gamma + \mathbf e.
+$$
+
+Here $\mathbf y$ contains the observed time points; each column of $H$ is the HRF shifted to one possible activity time; $\mathbf s$ contains latent activity at those times; $X_0\boldsymbol\gamma$ represents nuisance effects; and $\mathbf e$ is residual noise. Ordinary task GLMs constrain $\mathbf s$ through event regressors before fitting. Continuous deconvolution estimates a much more flexible $\mathbf s$ and then aligns it to events.
+
+[Glover (1999)](https://pubmed.ncbi.nlm.nih.gov/10191170/) provides an early fMRI precedent for deblurring with deconvolution, including discussion of where linearity breaks down. The relevant connection is the inverse problem, not a validation of all current MEDuSA options.
+
+# Why we need regularization
+
+Many activity sequences can generate almost the same smooth BOLD signal. Trying to invert the blur exactly can amplify a small measurement error into a large oscillation. Regularization makes the problem tractable by preferring some solutions over others:
+
+$$
+\hat{\mathbf s} = \arg\min_{\mathbf s}
+\left\{\underbrace{\|W(\mathbf y-H\mathbf s)\|^2}_{\text{fit the observations}}
++\underbrace{\lambda\mathbf s^\top P\mathbf s}_{\text{discourage implausible activity}}\right\}.
+$$
+
+$W$ accounts for temporal noise covariance, $P$ specifies what is penalized, and $\lambda$ controls the tradeoff. The numerical implementation also adds a small stabilizing diagonal term. Increasing $\lambda$ usually gives a more stable, more biased estimate. The penalty is part of the scientific measurement model, not merely a computational setting.
+
+| Penalty | Intuition | Practical consideration |
+|---|---|---|
+| `ridge` | Discourage large activity values | Can substantially attenuate amplitudes |
+| `diff1` | Discourage abrupt changes between neighboring samples | Does not penalize constant offsets |
+| `diff2` | Discourage rapid changes in slope | Does not penalize constants or linear ramps |
+| `matern1` | Mix amplitude control with first-difference smoothing | Anchors low frequencies as well as smoothing |
+| `sobolev` | Mix amplitude, first-difference, and curvature penalties | Can reduce baseline wander and ringing in suitable designs |
+
+The last two are fixed discrete quadratic penalties in this package. Their names connect them to smoothness and covariance models in statistics; they do not imply a fitted Gaussian process with an estimated correlation length. They also do not replace drift removal or motion handling.
+
+**Generalized cross-validation (GCV)** selects a tradeoff by balancing reconstruction error against the effective flexibility of the fitted smoother. [Golub, Heath, and Wahba (1979)](https://doi.org/10.1080/00401706.1979.10489751) is the statistical precedent. In MEDuSA, a good BOLD reconstruction score need not identify the best trial-level RPE estimate. Selecting settings because they maximize the eventual RPE correlation would bias the analysis toward that result; use design-matched simulations, independent data, or training-only selection.
+
+PRs #50–#51 exploit the finite temporal reach of the HRF and AR(1) noise model to accelerate matrix calculations. Their main scientific yield is feasibility: more realistic validation, sensitivity analyses, and larger datasets. Faster algebra alone does not increase the information in the scans. The optimized continuous solver and the cross-run API have different memory costs; the latter can still construct/cache large inverse operators.
+
+# Learn the HRF without fitting the target effect
+
+## A vascular delay can look like a cognitive delay
+
+If the assumed HRF is too slow, deconvolution may move estimated activity earlier to explain the observed BOLD. A mismatch can therefore change which within-trial event appears to carry a signal. [Handwerker, Ollinger, and D'Esposito (2004)](https://pubmed.ncbi.nlm.nih.gov/15050587/) documented HRF variation across subjects and regions and its consequences for statistical analysis. This motivates checking HRF sensitivity, not assigning a universally fast or slow HRF to a named brain region.
+
+`estimate_crossrun_hrf()` chooses from a small, prespecified library. For target run A, it learns the shape using B and C, then freezes that shape before deconvolving A. Repeat this for each run. This is **cross-fitting**: the target run cannot choose its own HRF. The separation addresses one source of circularity; it does not eliminate HRF–neural-duration ambiguity, guarantee transfer across runs, or make folds independent participants. The general concern about selecting and testing on the same data is explained by [Kriegeskorte et al. (2009)](https://pmc.ncbi.nlm.nih.gov/articles/PMC2841687/).
+
+## What do the HRF training amplitudes mean?
+
+With `amplitude_model = "condition"`, training uses one amplitude per condition in each run. With `"trial"`, training allows event-specific amplitudes while sharing a candidate HRF shape. In dense, closely coupled multi-condition designs, the implementation compares designs freeing one condition at a time and keeps the most informative training design, limiting the ambiguity from fitting all neighboring events freely at once. Imagine feedback responses proportional to signed RPE: large positive and negative responses can average close to zero. The condition model can then have little mean response from which to learn an HRF, even though trial variation is meaningful. Free trial amplitudes can help, but require more parameters and enough independent timing information. The training function never takes RPE values as input.
+
+This distinction resembles a familiar choice between condition-level GLMs and beta-series models. [Mumford et al. (2012)](https://pmc.ncbi.nlm.nih.gov/articles/PMC3251697/) explains why individual-trial estimates become unstable when event regressors are highly correlated and compares ways of addressing that problem. MEDuSA's free-event HRF fitting is not their least-squares-separate algorithm.
+
+## Why colored noise and conservative fallback matter
+
+A slowly varying noise sequence can resemble a smooth evoked response. Treating successive fMRI volumes as independent can overstate evidence for a customized HRF. AR(1) models neighboring errors as correlated; whitening transforms the fitting problem so that such persistence contributes less misleading evidence. [Woolrich et al. (2001)](https://www.fmrib.ox.ac.uk/datasets/techrep/tr01mw1/tr01mw1/node1.html) gives the fMRI context for temporal autocorrelation modeling.
+
+The current cross-run default uses `noise_model = "ar1"` and `evidence = "calibrated"`. It estimates noise covariance, compares candidates, and can retain the prespecified fallback when evidence is weak or inconsistent. PR #52 refined the candidate/fallback subspace comparison and the design used for free-trial training, making the comparison more useful in dense designs. A fallback is a recorded modeling decision, not a failed voxel and not proof that the canonical HRF is true. The evidence threshold corrects library comparisons, **not whole-brain multiplicity**, and is not a posterior HRF probability.
+
+## Borrowing information across voxels
+
+An independently defined parcel can provide a more stable HRF reference than a noisy single voxel. Hard `pooling = "parcel"` shares a selected shape. Soft voxel regularization uses a parcel anchor while permitting voxel differences. PR #52 adds concordance weighting so voxels with disagreeing candidate-score profiles borrow less from neighboring profiles; optional spatial coordinates can make borrowing more local.
+
+This pools information about **HRF shape**, not neural activity values. Parcel boundaries need not match vascular territories, and hard pooling can hurt heterogeneous regions. Start with voxel selection and no spatial penalty as a transparent comparison; add borrowing only with a justified atlas and sensitivity checks. [Prince et al. (2022), GLMsingle](https://pmc.ncbi.nlm.nih.gov/articles/PMC9708069/) is a useful neighboring approach: candidate HRFs and regularized single-trial estimates have benefits in other fMRI workflows. Its estimator and empirical results should not be attributed to MEDuSA.
+
+# Put amplitudes on an interpretable scale
+
+Suppose two voxels have the same measurement noise but one responds twice as strongly to the task. Dividing each voxel by its **total** standard deviation makes the stronger voxel's denominator larger too, compressing the difference you wanted to study. The same issue arises when runs differ in task modulation variance. Z-scoring is a legitimate choice for standardized within-run questions, but changes the amplitude estimand.
+
+`scaling = "noise_sd"` instead divides by an estimated measurement-noise SD. It uses second differences, $y_t-2y_{t-1}+y_{t-2}$, because smooth BOLD changes contribute less to them than high-frequency noise. An AR(1) adjustment accounts for how temporal correlation changes the variance of those differences. This is a working noise estimate: motion spikes, rapid signal changes, and a poor noise model can distort it.
+
+| Mode | Units of input to the inverse | Suitable interpretation |
+|---|---|---|
+| `zscore` | Total within-run SD units | Standardized activity relative to total signal variation |
+| `noise_sd` | Estimated noise SD units | Activity relative to estimated measurement noise |
+| `demean` | Original input units after centering | Preserve a meaningful acquisition/preprocessing scale |
+| `psc` | Percent of a positive BOLD baseline | Percent-change input; unsuitable for zero-mean residuals |
+| `none` | Unchanged input units | Already centered data or controlled simulations |
+
+`restore_scale = TRUE` in epoch regression reverses the recorded divisor for amplitude reporting. It does not restore an identified neural baseline, undo preprocessing, or calibrate spikes per second. With a fixed linear operator, multiplying a whole run by a constant does not change a within-run Pearson correlation; pooled correlations and amplitude comparisons across differently scaled runs can change. Keep this distinct from the benefits of de-mixing.
+
+# Alignment and de-mixing answer different questions
+
+## Alignment asks: which samples support this epoch?
+
+The established `voxelwise_deconvolution()` → `evt_align_decon_files()` route remains useful. Recent changes extract NIfTI values internally, check spatial geometry, retain invalid voxels with status labels, record scaling and file identities, and interpolate each unit before averaging. An interpolation should not bridge a censoring gap or combine disconnected trial segments.
+
+Overlap policies make a scientific choice explicit: `allow` retains requested windows, `truncate` respects supplied collision boundaries, and `exclude` removes epochs whose requested target windows overlap. Truncation does not remove the already blurred contribution of a preceding event. Excluding trials can also change the behavioral distribution being analyzed. Inspect missingness and `epoch_status`, not just the final plot.
+
+## De-mixing asks: how did the estimator mix neighboring sources?
+
+Even with the correct HRF, a regularized inverse spreads and shrinks a brief input. Write the fixed inverse as $A$, so that $\hat{\mathbf s}=A\mathbf y$. Then, ignoring nuisance terms for this illustration,
+
+$$
+\mathbb E[\hat{\mathbf s}\mid\mathbf s]=\underbrace{AH}_{R}\mathbf s.
+$$
+
+$R$ is the **resolution matrix**: feed in an isolated source and its column shows the expected recovered blur. If a true amplitude of 1 produces a readout of 0.2, the readout has gain 0.2. If it also contributes 0.1 to the following trial, there is cross-talk. A raw slope of 0.2 can thus reflect an estimator's attenuation rather than weak neural coding.
+
+`decon_epoch_regression()` uses the actual event schedule, frozen HRF, scaling, and inverse settings to predict these distortions. It models other event types, stabilizes inversion of target-trial cross-talk, and corrects amplitude gain. A triangle or Gaussian readout averages locally instead of relying on a single interpolated value; its width trades temporal localization for noise reduction. These are weighted readouts, not a guarantee of an optimal matched filter under every covariance model.
+
+Correction remains conditional on the source model. Events that are indistinguishable in the design stay difficult to separate. Small gains amplify noise, and ridge stabilization deliberately retains bias. An attractive corrected curve is insufficient evidence of accurate recovery. Simulate both positive effects and active nulls: for example, strong cue activity with **zero** feedback RPE effect.
+
+# Duration changes the question being estimated
+
+A decision process lasting 2 seconds can create more integrated activity than one lasting 1 second, even at exactly the same activity rate. If value predicts faster decisions, an impulse model may mistake shorter duration for weaker value coding. A nuisance RT column alone is not equivalent to changing the shape of each event's source.
+
+PR #54 adds `source_model = "duration"`. A target source occupies the interval from `onset + lag` to `onset + lag + duration`. Readout adjusts to the interval's midpoint and width, and the correction accounts for a constant task-related rate whose integrated contribution changes with duration. [Grinband et al. (2008)](https://pmc.ncbi.nlm.nih.gov/articles/PMC2654219/) provides a direct neuroscience precedent for variable-duration event models. RT is a hypothesized duration marker, not a measurement of all neuronal processing.
+
+| Source model | Hypothesis at lag $\tau$ | Amplitude meaning |
+|---|---|---|
+| `impulse` | Brief source at onset + $\tau$ | Unit-impulse amplitude in the package's discrete convention |
+| `window` | Fixed-width boxcar centered at onset + $\tau$ | Height of a local sustained source |
+| `duration`, `rate` | Trial-specific interval beginning at onset + $\tau$ | Boxcar height per acquisition bin; longer intervals have greater integrated activity |
+| `duration`, `integral` | Trial-specific interval normalized to unit summed mass | Total discrete source mass, comparable across durations |
+
+“Rate” is a model coefficient, not calibrated firing rate. At fixed TR, discrete mass is proportional to a time integral; comparisons across TRs require the sampling convention to be reconciled. For duration models, lag zero means an interval **starting at the recorded event**, not a point sample at onset. Each lag is a separate shifted-source analysis; the resulting curve is not an unconstrained reconstruction of a single within-trial firing waveform.
+
+Use the actual decision-start onset with RT duration. A response-time onset followed by another RT-long interval would describe a different process. Positive durations in HRF training event tables and in epoch regression should express compatible hypotheses. `trial_durations` overrides target durations for the readout stage only; it does not refit the HRF.
+
+# What the recent changes buy you
+
+| PRs | Problem addressed | Practical MEDuSA yield |
+|---|---|---|
+| #42 | Extraction, geometry, missing signals, file identity | More trustworthy mapping from image voxels to aligned observations |
+| #43 | Implicit units and approximate Wiener tuning | Explicit scale records and corrected finite-observation tuning |
+| #44 | Disconnected interpolation and hidden overlap decisions | Auditable epoch support and impulse diagnostics |
+| #45–#46 | Fixed-HRF mismatch and spurious adaptation to colored noise | Optional cross-run shape learning with noise-aware evidence/fallback |
+| #47–#49 | Unchecked coefficient, amplitude, and waveform recovery | Validation of different estimands; fixes to padding, compression, and borrowing |
+| #50–#51 | Expensive dense algebra | Faster core solvers and whitening; larger sensitivity studies become practical |
+| #52 | Weak HRF evidence in signed/dense designs and unreliable anchors | Refined reference tests, stabilized fits, concordance-weighted borrowing |
+| #53 | Scaling compression, ringing, noisy readouts, cross-event leakage | Noise scaling, composite penalties, kernel readouts, operator-based epoch regression |
+| #54 | Duration correlated with predictors | Variable-duration source models distinguishing rate from integrated activity |
+
+These features are available through **two interfaces**, not one automatic replacement pipeline. The file route supports newer scaling, penalties, and readouts. Cross-run HRF learning and operator-based epoch regression currently require the matrix route. The next vignette shows both and how to move from NIfTI files to matrices.
+
+# Decide whether the result is useful
+
+Evaluate at least four outcomes separately: agreement with known simulated amplitudes, recovery of timing/waveforms, stability of brain–behavior slopes, and false positives under null effects with realistic interfering activity. Better correlation need not mean unbiased amplitude; better BOLD reconstruction need not mean a better neural waveform. Numerical speedups and simulation recovery percentages answer different questions.
+
+For human data, compare a fixed canonical HRF with the learned alternative, inspect fallback and noise estimates, examine sensitivity to source duration and readout width, and test repeatability across runs or sessions. Neural latency and vascular latency remain partly confounded, HRFs may change across runs, and AR(1) may not capture the actual noise. There is no established universal percentage gain for real MEDuSA datasets from these PRs.
+
+Finally, trials, voxels, and neighboring lags are not independent participants. Use the trial panel or participant-level slopes in a prespecified multilevel/group analysis; handle dependence and multiplicity across the tested lag/region family. The convenience statistics returned by epoch regression are not a substitute for that inferential design.
+
+# Suggested reading order {#reading}
+
+1. **Physical motivation:** [Glover, 1999, NeuroImage 9:416–429](https://doi.org/10.1006/nimg.1998.0419). Read for hemodynamic deblurring and the limits of linearity.
+2. **HRF variation:** [Handwerker et al., 2004, NeuroImage 21:1639–1651](https://pubmed.ncbi.nlm.nih.gov/15050587/). Read before treating a canonical response as universal.
+3. **Temporal noise:** [Woolrich et al., 2001, NeuroImage 14:1370–1386](https://doi.org/10.1006/nimg.2001.0931). Connect prewhitening to familiar fMRI GLM practice.
+4. **Regularization selection:** [Golub et al., 1979, Technometrics 21:215–223](https://doi.org/10.1080/00401706.1979.10489751). Read after the inverse-problem section for GCV's statistical foundation.
+5. **Trial overlap:** [Mumford et al., 2012, NeuroImage 59:2636–2643](https://pmc.ncbi.nlm.nih.gov/articles/PMC3251697/). Compare trial estimation approaches without assuming they implement MEDuSA.
+6. **Duration:** [Grinband et al., 2008, NeuroImage 43:509–520](https://pmc.ncbi.nlm.nih.gov/articles/PMC2654219/). Read before deciding whether RT defines duration or an additional predictor.
+7. **A related modern workflow:** [Prince et al., 2022, eLife 11:e77599](https://pmc.ncbi.nlm.nih.gov/articles/PMC9708069/). Compare HRF libraries and regularized single-trial estimation with the continuous-then-event-readout approach here.
+8. **Selection and inference:** [Kriegeskorte et al., 2009, Nature Neuroscience 12:535–540](https://pmc.ncbi.nlm.nih.gov/articles/PMC2841687/). Read before choosing settings or regions using the effect you intend to test.

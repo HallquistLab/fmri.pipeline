@@ -1,0 +1,412 @@
+---
+title: "MEDuSA workflows: from BOLD runs to an analysis-ready trial panel"
+author: "fmri.pipeline contributors"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+vignette: >
+  %\VignetteIndexEntry{MEDuSA: worked workflows}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 8,
+                      fig.height = 4.5, fig.align = "center")
+library(fmri.pipeline)
+library(ggplot2)
+needed <- c("estimate_crossrun_hrf", "deconvolve_crossrun_hrf", "decon_epoch_regression")
+stopifnot(all(vapply(needed, exists, logical(1),
+                    envir = asNamespace("fmri.pipeline"), inherits = FALSE)))
+```
+
+# Choose the route that answers your question
+
+Read the [conceptual primer](medusa-concepts.html) first if HRF selection, regularization, or resolution matrices are unfamiliar. This vignette documents the API through PR #54. It uses a small synthetic dataset so the core workflow runs without an imaging dataset, AFNI, a scheduler, or external files. Blocks labeled **recipe; not executed** require your study inputs. All other R chunks execute when the vignette is rendered.
+
+| Goal | Route | Important boundary |
+|---|---|---|
+| Deconvolve NIfTI runs and align/aggregate them using existing file workflows | `voxelwise_deconvolution()` → `evt_align_decon_files()` (or `run_decon_alignment()`) | Can use new scaling/penalties/readouts; does not automatically learn cross-run HRFs or de-mix epochs |
+| Learn HRFs from other runs and quantify operator-based epoch effects | `estimate_crossrun_hrf()` → `deconvolve_crossrun_hrf()` → `decon_epoch_regression()` | Requires named time-by-voxel matrices and explicit event/covariate matching |
+| Compare a fixed canonical HRF with a learned HRF under the same downstream model | Use a one-column canonical library and a multi-candidate library in the matrix route | Keep lambda, penalty, noise, scale, and readout comparable |
+
+The second route goes beyond the old pair of functions: epoch regression uses the **fitted inverse operator**, not only a saved activity CSV. Do not pass a legacy deconvolution file to `decon_epoch_regression()` or run `evt_align_decon_files()` on its panel. The panel is already event aligned.
+
+Use a package build containing these PRs. For a development checkout, run `pkgload::load_all(".")` from the repository root before rendering. Loading an older installed `fmri.pipeline` can silently omit newer APIs in an interactive session; the check above fails early if they are absent.
+
+# A small learning-task example
+
+We simulate three runs from one participant, with cue, decision, and feedback events. Decision duration is RT; feedback is brief. Six voxels differ in effect magnitude; three use the canonical HRF and three an earlier candidate. The true feedback RPE slope is known, which lets us compare recovery rather than rewarding an estimator simply for producing a large correlation.
+
+## Create events, covariates, and observed BOLD
+
+The simulation uses an explicit acquisition-grid source and ordinary convolution, independent of the package's native event-design builder. Durations use fractional bin occupancy; off-grid impulses split unit mass between neighboring bins. These are discrete modeling conventions, not evidence of sub-TR resolution.
+
+```{r simulate}
+set.seed(5401)
+tr <- 1
+n_time <- 220L
+n_trials <- 20L
+voxel_ids <- paste0("v", 1:6)
+run_ids <- paste0("run", 1:3)
+true_beta <- seq(0.5, 1.0, length.out = length(voxel_ids))
+candidates <- hrf_library(tr, peak_delays = c(5, 6, 7),
+                          dispersions = 1, undershoot_ratios = 6)
+# Canonical (6, 1, 6) is placed first when present in hrf_library().
+true_kernel_index <- c(1L, 1L, 1L, 2L, 2L, 2L)
+
+source_column <- function(onset, duration, n, tr) {
+  left <- (0:(n - 1L)) * tr
+  if (duration > 0) {
+    return(pmax(0, pmin(left + tr, onset + duration) - pmax(left, onset)) / tr)
+  }
+  pmax(0, 1 - abs(left / tr - onset / tr))
+}
+forward_bold <- function(source, hrf) {
+  as.numeric(stats::convolve(source, rev(hrf), type = "open"))[seq_along(source)]
+}
+ar_noise <- function(n, rho, sigma) {
+  as.numeric(stats::arima.sim(list(ar = rho), n = n,
+                             sd = sigma * sqrt(1 - rho^2)))
+}
+
+bold <- events <- covariates <- decision_covariates <- rt_by_run <- list()
+for (r in run_ids) {
+  cue <- seq(6, by = 9.5, length.out = n_trials)
+  decision <- cue + runif(n_trials, 1.0, 1.6)
+  value <- as.numeric(scale(rnorm(n_trials)))
+  rt <- pmin(2.5, pmax(0.5, 1.4 - 0.25 * value + rnorm(n_trials, sd = 0.2)))
+  feedback <- decision + rt + runif(n_trials, 0.8, 1.5)
+  rpe <- as.numeric(scale(rnorm(n_trials)))
+  # Keep the event table sorted; event_index will refer to these exact rows.
+  ev <- rbind(
+    data.frame(onset = cue, duration = 0, condition = "cue", trial_id = 1:n_trials),
+    data.frame(onset = decision, duration = rt, condition = "decision", trial_id = 1:n_trials),
+    data.frame(onset = feedback, duration = 0, condition = "feedback", trial_id = 1:n_trials)
+  )
+  ev <- ev[order(ev$onset), ]
+  rownames(ev) <- NULL
+  E <- vapply(seq_len(nrow(ev)), function(i) {
+    source_column(ev$onset[i], ev$duration[i], n_time, tr)
+  }, numeric(n_time))
+  Y <- vapply(seq_along(voxel_ids), function(v) {
+    amplitude <- ifelse(ev$condition == "cue", 0.8,
+                        ifelse(ev$condition == "decision",
+                               1.0 + 0.35 * value[ev$trial_id],
+                               0.6 + true_beta[v] * rpe[ev$trial_id]))
+    source <- as.numeric(E %*% amplitude)
+    100 + forward_bold(source, candidates[, true_kernel_index[v]]) + ar_noise(n_time, 0.35, 0.04)
+  }, numeric(n_time))
+  colnames(Y) <- voxel_ids
+  bold[[r]] <- Y
+  events[[r]] <- ev
+  # Rows must match the selected event records, not all events in the run.
+  fi <- ev$trial_id[ev$condition == "feedback"]
+  di <- ev$trial_id[ev$condition == "decision"]
+  covariates[[r]] <- data.frame(rpe = rpe[fi])
+  decision_covariates[[r]] <- data.frame(value = value[di])
+  rt_by_run[[r]] <- rt[di]
+}
+stopifnot(identical(names(bold), names(events)),
+          identical(names(bold), names(covariates)),
+          all(vapply(bold, function(y) identical(colnames(y), voxel_ids), logical(1))))
+head(events$run1, 6)
+```
+
+BOLD matrices have **time in rows and voxels in columns**. Event onsets and durations are seconds on the same clock as the retained acquisitions; the first acquisition is zero here. Different run lengths are permitted. All runs must have the same TR and the same uniquely named voxels in the same spatial order. The six synthetic voxels are illustrative, not six independent participants.
+
+Missing/censored observations should retain their rows. Supply a named `valid_rows` list of logical masks rather than deleting volumes and compressing time. If initial volumes were removed before this workflow, either adjust event onsets into the retained clock or supply the correct `time_offset`; do not do both. HRF fitting includes an intercept and linear trend, plus any supplied nuisance matrices. It does not perform your entire fMRI preprocessing pipeline.
+
+```{r observed-plot, fig.cap="Observed BOLD from one synthetic voxel. Event overlap makes the individual cue, decision, and feedback contributions difficult to read directly."}
+ggplot(data.frame(time = (0:(n_time - 1L)) * tr, bold = bold$run1[, 1L]),
+       aes(time, bold)) +
+  geom_line() +
+  geom_vline(xintercept = events$run1$onset[events$run1$condition == "feedback"],
+             color = "#0072B2", alpha = 0.25) +
+  labs(x = "Run time (s)", y = "BOLD input units") + theme_minimal(base_size = 12)
+```
+
+# Learn HRFs on other runs, then freeze them
+
+```{r estimate-hrf}
+hrf_fit <- estimate_crossrun_hrf(
+  bold = bold, events = events, tr = tr, kernel_grid = candidates,
+  amplitude_model = "trial", noise_model = "ar1", evidence = "calibrated",
+  pooling = "voxel", spatial_strength = 0, return_scores = TRUE
+)
+hrf_fit$training_runs$run1
+head(hrf_fit$selections$run1)
+```
+
+Run 1's training manifest should list runs 2 and 3. Trial-amplitude training is requested during this step; in closely coupled multi-condition schedules, the implementation compares designs freeing one condition at a time to reduce ambiguity. In every case, the RPE values have **not** been supplied. We use `"trial"` because trial modulation is central to the example, but `"condition"` remains the faster default and deserves comparison in real data. Weak or inconsistent evidence can retain the first, prespecified canonical kernel.
+
+Inspect the entire selection tables, `hrf_fit$signal_status`, and `hrf_fit$designs`. A plausible shape by eye is insufficient: check support, fallback reasons, candidate scores, and stability across target runs. With only two runs, a fold has only one training run and cannot assess compatibility across training runs. Cross-fitting HRFs does not make the resulting folds independent observations for inference.
+
+**Optional spatial borrowing recipe; not executed.** `parcel_ids` must be a named vector, independently defined, with names exactly equal to the voxel column IDs. This is an alternative fit, not an extra smoothing step on `hrf_fit`.
+
+```{r parcel-recipe, eval=FALSE}
+parcel_fit <- estimate_crossrun_hrf(
+  bold, events, tr, candidates,
+  spatial_groups = parcel_ids, pooling = "voxel", spatial_strength = 0.02,
+  amplitude_model = "trial", noise_model = "ar1", evidence = "calibrated"
+)
+```
+
+The strength above is an illustrative setting, not a validated universal recommendation. Hard parcel pooling (`pooling = "parcel"`) makes a stronger homogeneity assumption. Compare it with unpooled fits before adopting it.
+
+# Recover continuous latent activity
+
+```{r deconvolve}
+decon <- deconvolve_crossrun_hrf(
+  bold, hrf_fit,
+  lambda = 0.1, scaling = "noise_sd", penalty = "sobolev", backend = "cpp",
+  nuisance_mode = "ignore", observation_mask = "fit", tail_padding = 0L
+)
+head(decon$scaling$run1)
+dim(decon$activity$run1)
+```
+
+Here lambda is a fixed teaching value. It is not optimized for RPE recovery and should not be adopted as a study default. `lambda = NULL` explicitly requests GCV over `lambda_grid`; omitting lambda raises an error. GCV optimizes an observation-domain criterion, which is different from trial recovery. Compare prespecified settings in simulations reflecting your event timing, SNR, durations, and noise.
+
+`noise_sd` centers the input and divides by estimated measurement noise rather than total temporal SD. The scale table records the divisor and validity status. Activity matrices preserve the acquisition grid and carry timing attributes. Use `decon$activity` for continuous diagnostics; retain the **whole object** for epoch regression.
+
+We set `nuisance_mode = "ignore"` explicitly to match the default and use data with no simulated drift. In a study, use appropriately cleaned input or a validated joint nuisance model. Nuisance regressors supplied for HRF training are **not automatically removed by the inverse** under `"ignore"`. `"joint"` fits nuisance terms in the inverse, but can make low-frequency activity weakly identified; assess recovery rather than assuming it is superior. Censored acquisition rows are omitted from the observation fit but still have model-based latent estimates on the full grid. Such estimates are not directly observed data.
+
+## Audit the frozen inverse before interpreting it
+
+```{r operator-diagnostics}
+recovery <- diagnose_crossrun_recovery(decon, events = events, lags = 0)
+knitr::kable(recovery$summary[, c("run", "fitted_kernel", "n_voxels",
+                                  "mean_gain", "mean_abs_excess_leakage")], digits = 3)
+```
+
+This diagnostic injects each event separately through the fitted forward/inverse system and measures gain and excess leakage. It reuses the recorded masks, noise, penalty, and centering; it neither refits the HRF nor automatically corrects the activity. Its default point readout differs from the triangle readout below, so its gains need not equal epoch regression's gains. A positive-duration source has unit **height**, not unit area. These are conditional model diagnostics, not confidence intervals or measurements of the unknown true HRF. `source_kernel_grid` can evaluate prespecified alternative generating HRFs. For a single fixed-HRF/file workflow, `deconvolution_impulse_diagnostics()` provides the analogous isolated-impulse audit.
+
+# Read out feedback effects and correct event mixing
+
+```{r feedback-epochs}
+feedback_fit <- decon_epoch_regression(
+  deconvolution = decon, covariates = covariates, events = events,
+  target_condition = "feedback", lags = seq(-2, 4, by = 1),
+  source_model = "impulse", readout_kernel = "triangle", readout_width = 1.5 * tr,
+  demix_other_events = TRUE, demix_target_trials = TRUE,
+  restore_scale = TRUE, return_panel = TRUE
+)
+knitr::kable(feedback_fit$summary, digits = 3)
+```
+
+The function models non-target cue/decision contributions and the operator's target-trial cross-talk. It then estimates covariate slopes after within-run centering. For multiple predictors, supply a data frame or matrix per run with consistent column names/order; do not add a constant intercept column to those centered predictors. Non-target events should remain in `events`, even though covariate rows refer only to feedback records.
+
+`restore_scale = TRUE` reports effects in original input units under the unit-sum HRF convention. It reverses the scaling divisor; it does not make estimates physiologically calibrated or guarantee unbiased amplitudes. `beta_raw` is the uncorrected readout under this same inverse, not the historical Bush pipeline. `beta_corrected` includes model-based de-mixing and gain correction. Correlations in a multi-predictor result are marginal correlations with each predictor, not partial correlations.
+
+```{r recovery-comparison, fig.cap="Raw and corrected feedback RPE slopes. The dashed line marks the simulated onset effect averaged across voxels. Nonzero lag analyses shift the assumed source as well as the readout; they are not independent temporal measurements."}
+s <- feedback_fit$summary
+plot_df <- rbind(
+  data.frame(lag = s$lag, beta = s$mean_beta_raw, estimate = "Raw readout"),
+  data.frame(lag = s$lag, beta = s$mean_beta_corrected, estimate = "Corrected")
+)
+ggplot(plot_df, aes(lag, beta, color = estimate)) +
+  geom_hline(yintercept = mean(true_beta), linetype = "dashed", color = "grey50") +
+  geom_vline(xintercept = 0, linetype = "dotted") + geom_line() + geom_point() +
+  labs(x = "Lag relative to feedback (s)", y = "RPE slope (input units)", color = NULL) +
+  theme_minimal(base_size = 12)
+
+at_zero <- subset(feedback_fit$coefficients, lag == 0)
+knitr::kable(data.frame(
+  voxel = at_zero$voxel,
+  truth = true_beta[match(at_zero$voxel, voxel_ids)],
+  raw = at_zero$beta_raw, corrected = at_zero$beta_corrected
+), digits = 3)
+```
+
+## Keep a fixed-HRF comparator
+
+A one-column library supplies the canonical baseline through the same public API. Keep every downstream setting matched, so that this comparison changes the HRF choice rather than also changing penalty, units, and source model.
+
+```{r canonical-comparison}
+canonical_fit <- estimate_crossrun_hrf(
+  bold, events, tr, candidates[, 1L, drop = FALSE],
+  amplitude_model = "trial", noise_model = "ar1", evidence = "calibrated"
+)
+canonical_decon <- deconvolve_crossrun_hrf(
+  bold, canonical_fit, lambda = 0.1, scaling = "noise_sd", penalty = "sobolev",
+  backend = "cpp", nuisance_mode = "ignore", observation_mask = "fit", tail_padding = 0L
+)
+canonical_feedback <- decon_epoch_regression(
+  canonical_decon, covariates, events = events, target_condition = "feedback",
+  lags = 0, source_model = "impulse", readout_kernel = "triangle",
+  readout_width = 1.5 * tr, restore_scale = TRUE
+)
+comparison <- data.frame(
+  voxel = voxel_ids,
+  true_hrf_column = true_kernel_index,
+  true_beta = true_beta,
+  fixed_hrf_beta = canonical_feedback$coefficients$beta_corrected[
+    match(voxel_ids, canonical_feedback$coefficients$voxel)],
+  learned_hrf_beta = at_zero$beta_corrected[match(voxel_ids, at_zero$voxel)]
+)
+knitr::kable(comparison, digits = 3)
+```
+
+This is one noisy realization of a matched model. Exact truth recovery is not a pass criterion, and this example does not measure population power or false-positive control. Hold the HRF/inverse fixed when comparing raw and corrected estimates, then vary assumptions separately. The longer [technical review](medusa_deconvolution_review_prs_42_53.html) and repository validation scripts examine additional recovery targets and model violations.
+
+# Model a decision interval using its actual duration
+
+An RPE at feedback and a value signal during deliberation need not use the same source model. Our events already describe decision-start onsets with RT durations. We now ask whether decision **height/rate**, rather than duration-integrated activity, covaries with value.
+
+```{r duration-epochs}
+decision_fit <- decon_epoch_regression(
+  deconvolution = decon, covariates = decision_covariates, events = events,
+  target_condition = "decision", lags = c(0, 1),
+  source_model = "duration", trial_durations = rt_by_run, duration_scale = "rate",
+  readout_kernel = "triangle", readout_width = 1.5 * tr,
+  restore_scale = TRUE, return_panel = TRUE
+)
+knitr::kable(decision_fit$summary, digits = 3)
+```
+
+The known simulated decision-height slope is 0.35. Compare the table with that value: a duration-aware source does not by itself eliminate HRF uncertainty, noise, or ambiguity between nearby events. The feedback and decision analyses need not recover their respective truths equally well.
+
+`trial_durations` contains only target decision durations, in the order of decision rows within each run's event table. Omitting it uses `events[[r]]$duration`. Providing it without an explicit source model selects `"duration"`; explicit arguments here make the hypothesis reviewable. Use `duration_scale = "integral"` for total discrete source mass instead of height. These are different estimands and should not be compared as if their coefficients had the same units.
+
+At lag zero, the source begins at decision onset and ends RT seconds later; the readout follows its midpoint and width. Lag one moves that **whole interval** one second later. RT-matched modeling can reduce duration-induced confounding if the hypothesis is correct, but cannot establish that the entire RT interval represents a constant neural process. Compare alternatives using a design-based rationale and active-null simulations.
+
+# Inspect the trial panel and preserve identity
+
+```{r panel-identity}
+panel <- as.data.frame(feedback_fit$panel)
+panel$id <- "sim01"
+# event_index indexes the original events table; trial is a target-row counter.
+panel$trial_id <- vapply(seq_len(nrow(panel)), function(j) {
+  events[[panel$run[j]]]$trial_id[panel$event_index[j]]
+}, integer(1))
+head(panel[, c("id", "run", "trial", "event_index", "trial_id", "evt_time",
+               "voxel", "decon_raw", "decon_demixed", "rpe")])
+stopifnot(!anyDuplicated(panel[c("id", "run", "trial_id", "evt_time", "voxel")]),
+          all(is.finite(panel$decon_demixed)))
+```
+
+`run`, `trial`, `event_index`, `onset`, `evt_time`, and `voxel` describe each observation; `decon_raw` and `decon_demixed` contain its readouts. Covariate columns are included. `trial` is **not necessarily your original behavioral trial ID**. Join behavior through the preserved event-row mapping, then validate one-to-one identity at the intended grain. Add participant and session IDs explicitly before combining people; do not let identical run names imply identical participants.
+
+The finite-value assertion is appropriate to this complete synthetic dataset. In real data, report retained trials by run/lag/voxel, investigate missing estimates, and never silently discard a participant with sparse support. `summary` averages across usable voxels and is descriptive; it is not a population analysis.
+
+## Handoff to group models
+
+**Multi-participant recipe; not executed.** Repeat the participant workflow and retain one panel per participant, with ID/session and event mappings added as above. `participant_panels` below refers to those completed panels, not replications of this simulation.
+
+```{r group-recipe, eval=FALSE}
+all_panels <- data.table::rbindlist(participant_panels, use.names = TRUE)
+all_panels[, run_id := interaction(id, run, drop = TRUE)]
+all_panels[, rpe_within := rpe - mean(rpe), by = .(id, run)]
+stopifnot(data.table::uniqueN(all_panels$id) > 1L)
+
+# One model per voxel and prespecified lag; random effects need design-specific review.
+group_results <- mixed_by(
+  data = all_panels,
+  model_formulae = list(rpe = decon_demixed ~ rpe_within +
+                         (1 + rpe_within | id) + (1 | run_id)),
+  split_on = c("voxel", "evt_time"),
+  engine = "lme4", ncores = 1L
+)
+```
+
+This illustrates the package interface, not a fully validated inferential recipe. De-mixing induces unequal trial uncertainty and residual dependence; the panel currently provides no per-trial precision weights. Ordinary mixed-model standard errors do not automatically propagate HRF selection, regularization, behavioral-model uncertainty, or the full deconvolution covariance. Validate interval coverage/null behavior for the intended study or use a justified participant-level analysis/resampling procedure. Keep folds/runs/trials clustered within participants. Prespecify the lag/region family and its multiplicity correction; neither HRF evidence gates nor descriptive epoch p-values provide that correction. Do not treat voxels as independent participant replicates. A parcel analysis requires an explicit, independently defined voxel-to-parcel mapping and aggregation strategy.
+
+**Saving recipe; not executed.** Keeping only the panel loses the fitted operator context needed for audits.
+
+```{r save-recipe, eval=FALSE}
+saveRDS(list(hrf_fit = hrf_fit, deconvolution = decon,
+             feedback = feedback_fit, decision = decision_fit,
+             events = events, covariates = covariates,
+             session_info = sessionInfo()), "subject_medusa.rds")
+```
+
+# Bridge from NIfTI runs to the matrix route
+
+**Real-data recipe; not executed.** `nifti_paths` is a named vector of one participant's preprocessed runs; `mask_path` identifies the voxels to retain. Verify shared space, dimensions, voxel sizes, and orientation/affine **before** extracting. Equal array dimensions alone are not enough. Keep this voxel metadata with the fit.
+
+```{r nifti-matrix-recipe, eval=FALSE}
+nifti_paths <- c(run1 = "/study/sub01/run1_preprocessed.nii.gz",
+                 run2 = "/study/sub01/run2_preprocessed.nii.gz",
+                 run3 = "/study/sub01/run3_preprocessed.nii.gz")
+mask_path <- "/study/sub01/analysis_mask.nii.gz"
+mask_img <- RNifti::readNifti(mask_path)
+mask_array <- as.array(mask_img)
+voxel_indices <- which(is.finite(mask_array) & mask_array > 0)
+ijk <- arrayInd(voxel_indices, dim(mask_array))
+voxel_ids <- apply(ijk, 1L, function(x) paste(x, collapse = "_"))
+
+# Prefer a valid sform, otherwise qform. Resolve inconsistent headers first.
+mask_affine <- RNifti::xform(mask_img, useQuaternionFirst = FALSE)
+stopifnot(attr(mask_affine, "code") > 0)
+bold <- lapply(nifti_paths, function(path) {
+  img <- RNifti::readNifti(path)
+  affine <- RNifti::xform(img, useQuaternionFirst = FALSE)
+  stopifnot(identical(as.integer(dim(img)[1:3]), as.integer(dim(mask_img))),
+            attr(affine, "code") > 0,
+            isTRUE(all.equal(as.numeric(RNifti::pixdim(img)[1:3]),
+                             as.numeric(RNifti::pixdim(mask_img)[1:3]))),
+            isTRUE(all.equal(unname(affine), unname(mask_affine),
+                             check.attributes = FALSE)))
+  # Public RNifti/R array route: reshape as VOXEL x TIME, select, transpose.
+  # This materializes the image; use a modest mask/run size for this recipe.
+  volume <- matrix(as.numeric(img), nrow = prod(dim(img)[1:3]))
+  y <- t(volume[voxel_indices, , drop = FALSE])
+  colnames(y) <- voxel_ids
+  y
+})
+voxel_map <- data.frame(voxel = voxel_ids, linear_index = voxel_indices,
+                        i = ijk[, 1], j = ijk[, 2], k = ijk[, 3])
+```
+
+Build `events`, covariate lists, nuisance matrices, and logical masks from your study using exactly `names(bold)` and matching order. Check the acquisition TR from the sequence/headers and all event clocks. Pass these to the same three matrix functions used above. This is a manual adapter, not an automatically integrated NIfTI cross-run pipeline. Chunking the voxel dimension may be needed for large masks, but changes to noise pooling or parcel support must be accounted for; splitting voxels arbitrarily need not reproduce a whole-mask fit.
+
+# Keep or update the established file workflow
+
+**File workflow recipe; not executed.** This shows explicit linear-method settings while retaining file-based alignment. Paths and `trial_df` must be replaced with study inputs. Use a fresh output directory because existing output files are skipped and may retain older scaling behavior.
+
+```{r file-workflow-recipe, eval=FALSE}
+voxelwise_deconvolution(
+  niftis = unname(nifti_paths),
+  add_metadata = data.frame(id = "sub01", run = names(nifti_paths)),
+  out_dir = "/study/medusa_linear", TR = tr, atlas_files = atlas_path,
+  mask = mask_path, nprocs = 1L, algorithm = "reglin",
+  decon_settings = list(
+    kernel = hrf_library(tr, peak_delays = 6, dispersions = 1,
+                         undershoot_ratios = 6)[, 1L],
+    scaling = "noise_sd", penalty = "sobolev", lambda = 0.1,
+    backend = "cpp", prewhiten_gcv = TRUE, tail_padding = 0L
+  )
+)
+# Locate only the desired atlas's deconvolved files after the call above.
+d_files <- list.files("/study/medusa_linear/atlas/deconvolved",
+                      pattern = "_deconvolved\\.csv\\.gz$", full.names = TRUE)
+aligned <- evt_align_decon_files(
+  d_files = d_files, trial_df = trial_df,
+  alignment = list(evt_col = "feedback_onset", time_before = -2, time_after = 4,
+                   output_resolution = 1, overlap_policy = "allow",
+                   readout_kernel = "triangle", readout_width = 1.5 * tr),
+  aggregate_by = "atlas_value", tr = tr, ncpus = 1L, fail_on_error = TRUE
+)
+attr(aligned, "file_status")
+```
+
+Here `atlas_path` is the chosen registered atlas, and `trial_df` contains `id`, `run`, trial identity, and a `feedback_onset` column in the appropriate run clock. Replace the `atlas` directory component with the actual atlas basename. The file alignment list calls its onset field `evt_col`; the lower-level `get_medusa_interpolated_ts()` helper calls it `event`. Metadata sidecars identify files; `file_manifest` can explicitly map `file`, `id`, `run`, and optional `session` when needed. The returned status manifest reports file-level failures. Inspect `decon_status`, `epoch_status`, and support/clock diagnostics before fitting models.
+
+`overlap_policy = "allow"` retains overlapping requested windows. Use `"truncate"` with appropriate `collide_before`/`collide_after` columns when the scientific goal calls for collision boundaries, or `"exclude"` for excluding overlapping target windows. Neither is equivalent to operator-based de-mixing. The `valid_col` option applies censoring to **alignment source rows**; it is not a behavioral trial-exclusion flag. Kernel readout and aggregation operate on supported unit-level segments before group averaging.
+
+The default file algorithm remains `"bush2011"`, with z-scored input and bounded encoding outputs. Selecting `"reglin"` is deliberate here: Bush encodings and linear amplitudes have different meanings, and non-zscore input modes are not supported by the voxelwise Bush route. This recipe uses a fixed canonical HRF. The file wrapper can also tune supplied candidates within a run, but that is not leave-one-run-out HRF learning.
+
+# Before interpreting a result
+
+1. Verify event clocks, geometry, IDs, and target-row order before inspecting effects.
+2. Compare fixed and learned HRFs under matched inverse/readout settings; inspect fallbacks and noise estimates.
+3. Check scaling units and source meaning, especially height versus integrated duration effects.
+4. Simulate the actual schedule with both real effects and active nulls; examine amplitude, correlation, timing, and uncertainty separately.
+5. Inspect retained trial counts, gains, boundary effects, and sensitivity to penalties, lambda, and readout width. Small gains imply potentially unstable correction.
+6. Carry participant/session IDs and appropriate dependence into group inference. Report settings and software revision with saved objects.
+
+The [technical review](medusa_deconvolution_review_prs_42_53.html) supplies deeper equations and demonstrations. The [primer's reading guide](medusa-concepts.html#reading) connects each choice to neuroscience and statistics precedents.
