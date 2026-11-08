@@ -9,7 +9,7 @@ deconvolve_reglin(
   kernel,
   lambda = NULL,
   lambda_grid = 10^seq(-4, 2, length.out = 20),
-  penalty = c("diff2", "diff1", "ridge"),
+  penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"),
   kernel_grid = NULL,
   hrf_lags = 0L,
   tune_by = c("global", "signal"),
@@ -40,9 +40,11 @@ or a numeric vector.}
 \item{lambda_grid}{candidate regularization strengths used when
 \code{lambda} is \code{NULL}.}
 
-\item{penalty}{regularization penalty: \code{"diff2"} for smooth curvature,
-\code{"diff1"} for smooth first differences, or \code{"ridge"} for simple
-amplitude shrinkage.}
+\item{penalty}{regularization penalty: \code{"diff2"} for smooth second
+differences, \code{"diff1"} for smooth first differences, \code{"ridge"} for
+amplitude shrinkage, \code{"matern1"} for a damped first-order Matérn
+penalty, or \code{"sobolev"} for a critically damped second-order Sobolev
+penalty.}
 
 \item{kernel_grid}{optional list or matrix of candidate HRF kernels. If
 supplied, \code{kernel} and \code{hrf_lags} are ignored for tuning.}
@@ -95,9 +97,9 @@ is within one standard error of the minimum. The standard error is computed
 across signal columns for \code{tune_by = "global"}.}
 
 
-\item{scaling}{Explicit input scaling: \code{"zscore"}, \code{"demean"},
-\code{"none"}, or \code{"psc"} (percent signal change). When supplied,
-overrides \code{normalize} and \code{demean}. Otherwise those flags retain
+\item{scaling}{Explicit input scaling: \code{"zscore"}, \code{"noise_sd"},
+\code{"demean"}, \code{"none"}, or \code{"psc"} (percent signal change). When
+supplied, overrides \code{normalize} and \code{demean}. Otherwise those flags retain
 their existing behavior; the default is z-scoring.}
 }
 \value{

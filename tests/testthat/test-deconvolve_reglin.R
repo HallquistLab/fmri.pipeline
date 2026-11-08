@@ -473,7 +473,7 @@ test_that("banded Cholesky and Takahashi trace match dense R reference across ke
     canonical = as.numeric(fmri.pipeline:::spm_hrf(1)$hrf[1:12])
   )
   for (k in kernels_list) {
-    for (penalty in c("ridge", "diff1", "diff2")) {
+    for (penalty in c("ridge", "diff1", "diff2", "matern1", "sobolev")) {
       for (rho in c(0, 0.65)) {
         for (rule in c("min", "1se")) {
           args <- list(BOLDobs = y, kernel = k, lambda_grid = c(1e-4, 1e-2, 1, 10),
@@ -492,4 +492,43 @@ test_that("banded Cholesky and Takahashi trace match dense R reference across ke
       }
     }
   }
+})
+
+test_that("noise_sd scaling recovers observation noise SD invariant to task reactivity and matern1/sobolev reduce sidelobes", {
+  set.seed(5120)
+  hrf <- as.numeric(fmri.pipeline:::spm_hrf(1)$hrf)
+  hrf <- hrf / sum(hrf)
+  n_time <- 180L
+  conv_m <- fmri.pipeline:::decon_convolution_matrix(n_time, hrf)
+  onsets <- seq(10, 160, by = 8)
+  s_low <- s_high <- numeric(n_time)
+  s_low[onsets] <- 0.3
+  s_high[onsets] <- 2.5
+  e_noise <- rnorm(n_time, sd = 0.25)
+  y_low <- as.numeric(conv_m %*% c(rep(0, length(hrf) - 1L), s_low)) + e_noise
+  y_high <- as.numeric(conv_m %*% c(rep(0, length(hrf) - 1L), s_high)) + e_noise
+  y_pair <- cbind(low = y_low, high = y_high)
+
+  fit_nsd <- deconvolve_reglin(y_pair, hrf, lambda = 1.0, penalty = "sobolev",
+    scaling = "noise_sd", return_diagnostics = TRUE)
+  fit_z <- deconvolve_reglin(y_pair, hrf, lambda = 1.0, penalty = "sobolev",
+    scaling = "zscore", return_diagnostics = TRUE)
+
+  expect_equal(fit_nsd$scaling, "noise_sd")
+  expect_equal(attr(fit_nsd$activity, "scaling"), "noise_sd")
+  # High-reactivity signal inflates total SD > 1.2x, while noise_sd stays within 6%
+  expect_gt(fit_z$scaled_scale[2] / fit_z$scaled_scale[1], 1.2)
+  expect_lt(abs(fit_nsd$scaled_scale[2] / fit_nsd$scaled_scale[1] - 1), 0.06)
+
+  ev_df <- data.frame(trial = paste0("t", seq_along(onsets)), onset = onsets)
+  diag_d2 <- deconvolution_impulse_diagnostics(ev_df, hrf, n_time = n_time, tr = 1.0,
+    lambda = 1.0, penalty = "diff2", prewhiten_rho = 0.3)
+  diag_sob <- deconvolution_impulse_diagnostics(ev_df, hrf, n_time = n_time, tr = 1.0,
+    lambda = 1.0, penalty = "sobolev", prewhiten_rho = 0.3)
+  diag_mat <- deconvolution_impulse_diagnostics(ev_df, hrf, n_time = n_time, tr = 1.0,
+    lambda = 1.0, penalty = "matern1", prewhiten_rho = 0.3)
+
+  expect_lt(mean(diag_sob$impulses$negative_mass), mean(diag_d2$impulses$negative_mass))
+  expect_lt(mean(diag_mat$impulses$negative_mass), mean(diag_d2$impulses$negative_mass))
+  expect_lt(mean(diag_sob$impulses$pre_onset_l1), mean(diag_d2$impulses$pre_onset_l1))
 })

@@ -230,7 +230,7 @@ voxelwise_deconvolution <- function(
       .packages=c("dplyr", "readr", "data.table", "fmri.pipeline", "foreach", "iterators"),
       .export=c("mat2df", "extract_nifti_voxel_ts", "roi_image_geometry",
         "validate_roi_geometry", "decon_signal_status", "scale_decon_input",
-        "resolve_decon_scaling")) %dopar% {
+        "resolve_decon_scaling", "estimate_decon_noise_sd")) %dopar% {
 
       #get the si-th row of the metadata to match nifti, allow one to use this_subj in out_file_expression
       if (!is.null(add_metadata)) {
@@ -261,7 +261,7 @@ voxelwise_deconvolution <- function(
       centers <- divisors <- rep(NA_real_, nrow(to_deconvolve))
       if (any(valid_voxels)) {
         scaled <- scale_decon_input(t(to_deconvolve[valid_voxels, , drop = FALSE]),
-          scaling = input_scaling)
+          scaling = input_scaling, noise_rho = decon_settings$prewhiten_rho)
         scaled_input[valid_voxels, ] <- t(scaled$y)
         centers[valid_voxels] <- scaled$center
         divisors[valid_voxels] <- scaled$scale
@@ -375,7 +375,7 @@ voxelwise_deconvolution <- function(
       identity_metadata <- data.frame(.nifti = niftis[si], algorithm = algorithm,
         scaling = input_scaling, scaling_file = basename(scaling_file),
         decon_units = if (algorithm %in% c("bush2011", "bush2015")) "bounded_encoding" else
-          switch(input_scaling, zscore = "input_sd", psc = "percent_signal_change", "input_units"))
+          switch(input_scaling, zscore = "input_sd", noise_sd = "noise_sd", psc = "percent_signal_change", "input_units"))
       if (!is.null(add_metadata)) {
         for (column in intersect(c("id", "run", "session"), names(this_subj))) {
           identity_metadata[[column]] <- this_subj[[column]]

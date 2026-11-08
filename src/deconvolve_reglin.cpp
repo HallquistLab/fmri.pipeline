@@ -20,27 +20,48 @@ arma::mat decon_convolution_matrix_cpp(int n_time, const arma::vec& kernel) {
 
 arma::mat decon_penalty_band_cpp(int n_latent, int band, const std::string& penalty) {
   arma::mat p_band(band + 1, n_latent, arma::fill::zeros);
+  double w0 = 0.0, w1 = 0.0, w2 = 0.0;
   if (penalty == "ridge") {
-    p_band.row(0).ones();
-    return p_band;
-  }
-
-  int differences = 2;
-  if (penalty == "diff1") {
-    differences = 1;
-  } else if (penalty != "diff2") {
+    w0 = 1.0;
+  } else if (penalty == "diff1") {
+    w1 = 1.0;
+  } else if (penalty == "diff2") {
+    w2 = 1.0;
+  } else if (penalty == "matern1") {
+    w0 = 0.10;
+    w1 = 0.90;
+  } else if (penalty == "sobolev") {
+    w0 = 0.05;
+    w1 = 0.45;
+    w2 = 0.50;
+  } else {
     stop("Unknown deconvolution penalty: " + penalty);
   }
 
-  const double diff1[] = {-1.0, 1.0};
-  const double diff2[] = {1.0, -2.0, 1.0};
-  const double* stencil = differences == 1 ? diff1 : diff2;
-  for (int row = 0; row < n_latent - differences; ++row) {
-    for (int j = 0; j <= differences; ++j) {
-      int col_j = row + j;
-      for (int k = j; k <= differences; ++k) {
-        int col_k = row + k;
-        p_band(col_k - col_j, col_j) += stencil[j] * stencil[k];
+  if (w0 > 0.0) {
+    p_band.row(0) += w0;
+  }
+  if (w1 > 0.0) {
+    const double diff1[] = {-1.0, 1.0};
+    for (int row = 0; row < n_latent - 1; ++row) {
+      for (int j = 0; j <= 1; ++j) {
+        int col_j = row + j;
+        for (int k = j; k <= 1; ++k) {
+          int col_k = row + k;
+          p_band(col_k - col_j, col_j) += w1 * diff1[j] * diff1[k];
+        }
+      }
+    }
+  }
+  if (w2 > 0.0) {
+    const double diff2[] = {1.0, -2.0, 1.0};
+    for (int row = 0; row < n_latent - 2; ++row) {
+      for (int j = 0; j <= 2; ++j) {
+        int col_j = row + j;
+        for (int k = j; k <= 2; ++k) {
+          int col_k = row + k;
+          p_band(col_k - col_j, col_j) += w2 * diff2[j] * diff2[k];
+        }
       }
     }
   }
@@ -424,7 +445,7 @@ Rcpp::RObject deconvolve_reglin_cpp(
   bool use_ar1 = prewhiten_gcv && std::isfinite(ar1_rho) &&
     std::abs(ar1_rho) > std::numeric_limits<double>::epsilon();
   int band_h = kernel_len - 1 + (use_ar1 ? 1 : 0);
-  int band_p = (penalty == "ridge") ? 0 : ((penalty == "diff1") ? 1 : 2);
+  int band_p = (penalty == "ridge") ? 0 : ((penalty == "diff1" || penalty == "matern1") ? 1 : 2);
   int band = std::max(band_h, band_p);
 
   arma::mat penalty_band = decon_penalty_band_cpp(n_latent, band, penalty);

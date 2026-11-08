@@ -10,9 +10,13 @@
 #'   \code{lambda_grid} by generalized cross-validation.
 #' @param lambda_grid candidate regularization strengths used when
 #'   \code{lambda} is \code{NULL}.
-#' @param penalty regularization penalty: \code{"diff2"} for smooth curvature,
-#'   \code{"diff1"} for smooth first differences, or \code{"ridge"} for simple
-#'   amplitude shrinkage.
+#' @param penalty regularization penalty: \code{"diff2"} for smooth second
+#'   differences, \code{"diff1"} for smooth first differences, \code{"ridge"}
+#'   for amplitude shrinkage, \code{"matern1"} for a damped first-order
+#'   Matérn/Ornstein-Uhlenbeck penalty (\code{0.10 * I + 0.90 * D1'D1}), or
+#'   \code{"sobolev"} for a critically damped second-order Sobolev penalty
+#'   (\code{0.05 * I + 0.45 * D1'D1 + 0.50 * D2'D2}) that suppresses negative
+#'   sidelobe ringing and stabilizes low frequencies.
 #' @param kernel_grid optional list or matrix of candidate HRF kernels. If
 #'   supplied, \code{kernel} and \code{hrf_lags} are ignored for tuning.
 #' @param hrf_lags integer shifts, in TR bins, applied to \code{kernel}. Negative
@@ -49,8 +53,12 @@
 #'   is within one standard error of the minimum. The standard error is computed
 #'   across signal columns for \code{tune_by = "global"}.
 #'
-#' @param scaling Explicit input scaling: \code{"zscore"}, \code{"demean"},
-#'   \code{"none"}, or \code{"psc"} (percent signal change). When supplied,
+#' @param scaling Explicit input scaling: \code{"zscore"}, \code{"noise_sd"},
+#'   \code{"demean"}, \code{"none"}, or \code{"psc"} (percent signal change).
+#'   \code{"noise_sd"} centers each signal and divides by a high-frequency
+#'   second-difference estimate of observation noise SD (adjusted for AR(1)
+#'   autocorrelation when available), standardizing SNR without conflating
+#'   neural task variance with noise variance. When supplied,
 #'   overrides \code{normalize} and \code{demean}. Otherwise those flags retain
 #'   their existing behavior; the default is z-scoring.
 #'
@@ -94,7 +102,7 @@ deconvolve_reglin <- function(
   kernel,
   lambda = NULL,
   lambda_grid = 10^seq(-4, 2, length.out = 20),
-  penalty = c("diff2", "diff1", "ridge"),
+  penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"),
   kernel_grid = NULL,
   hrf_lags = 0L,
   tune_by = c("global", "signal"),
@@ -211,10 +219,10 @@ deconvolve_reglin <- function(
   }
 
   # Keep native scaling for the usual C++ modes, avoiding an R column loop
-  # and extra matrix copies. R scaling is needed for PSC or noise estimation.
-  scaled <- if (backend != "cpp" || scaling == "psc" ||
+  # and extra matrix copies. R scaling is needed for PSC, noise_sd, or noise estimation.
+  scaled <- if (backend != "cpp" || scaling %in% c("psc", "noise_sd") ||
       (prewhiten_gcv && is.null(prewhiten_rho))) {
-    scale_decon_input(BOLDobs, scaling = scaling)
+    scale_decon_input(BOLDobs, scaling = scaling, noise_rho = prewhiten_rho)
   } else NULL
 
   if (isTRUE(prewhiten_gcv) && is.null(prewhiten_rho)) {
@@ -489,18 +497,74 @@ resolve_decon_scaling <- function(scaling = NULL, normalize = TRUE, demean = TRU
   if (is.null(scaling)) {
     return(if (isTRUE(normalize)) "zscore" else if (isTRUE(demean)) "demean" else "none")
   }
-  match.arg(scaling, c("zscore", "demean", "none", "psc"))
+  match.arg(scaling, c("zscore", "demean", "none", "psc", "noise_sd"))
+}
+
+# Estimate marginal observation noise SD from second differences, where smooth
+# HRF-convolved task signal has negligible energy (< 0.5% of ||h||_2^2).
+# Under AR(1) noise with lag-1 correlation rho, Var(Delta^2 e_t) = 2*(1-rho)*(3-rho)*sigma_e^2.
+estimate_decon_noise_sd <- function(y, noise_rho = NULL) {
+  y <- as.matrix(y)
+  n <- nrow(y)
+  p <- ncol(y)
+  if (n < 4L) {
+    divisor <- apply(y, 2L, stats::sd)
+    divisor[!is.finite(divisor) | divisor <= .Machine$double.eps] <- 1
+    return(as.numeric(divisor))
+  }
+  d1 <- y[2:n, , drop = FALSE] - y[1:(n - 1L), , drop = FALSE]
+  d2 <- y[3:n, , drop = FALSE] - 2 * y[2:(n - 1L), , drop = FALSE] + y[1:(n - 2L), , drop = FALSE]
+  rob_scale <- function(mat) {
+    vapply(seq_len(ncol(mat)), function(j) {
+      col <- mat[, j]
+      col <- col[is.finite(col)]
+      if (length(col) < 2L) return(NA_real_)
+      s_sd <- stats::sd(col)
+      s_mad <- stats::mad(col, center = 0)
+      if (is.finite(s_mad) && s_mad > .Machine$double.eps) 0.5 * s_sd + 0.5 * s_mad else s_sd
+    }, numeric(1L))
+  }
+  s2 <- rob_scale(d2)
+  if (!is.null(noise_rho)) {
+    rho_vec <- rep_len(as.numeric(noise_rho), p)
+  } else {
+    rho_vec <- rep(NA_real_, p)
+  }
+  need_rho <- !is.finite(rho_vec)
+  if (any(need_rho)) {
+    # Estimate AR(1) rho purely from the lag-1 autocorrelation r1 of Delta^2 y,
+    # where smooth HRF task signal is annihilated: r1 = -(4 - 3*rho + rho^2) / (2*(3 - rho)).
+    rho_est <- vapply(which(need_rho), function(j) {
+      col <- d2[, j]
+      if (length(col) < 4L || any(!is.finite(col)) || stats::sd(col) <= .Machine$double.eps) return(0)
+      r1 <- stats::cor(col[-length(col)], col[-1L])
+      if (!is.finite(r1)) return(0)
+      r1 <- min(max(r1, -2 / 3), -0.46)
+      b <- 3 + 2 * r1
+      c_val <- 4 + 6 * r1
+      disc <- max(0, b * b - 4 * c_val)
+      0.5 * (b - sqrt(disc))
+    }, numeric(1L))
+    rho_vec[need_rho] <- pmin(pmax(rho_est, 0), 0.90)
+  }
+  rho_vec <- pmin(pmax(rho_vec, -0.90), 0.95)
+  denom <- sqrt(pmax(2 * (1 - rho_vec) * (3 - rho_vec), .Machine$double.eps))
+  divisor <- s2 / denom
+  divisor[!is.finite(divisor) | divisor <= .Machine$double.eps] <- 1
+  as.numeric(divisor)
 }
 
 # Record the actual transform y_scaled = (y - center) / scale. Scaling is
 # independent of the inverse operator; it does not remove regularization bias.
-scale_decon_input <- function(y, normalize = TRUE, demean = TRUE, scaling = NULL) {
+scale_decon_input <- function(y, normalize = TRUE, demean = TRUE, scaling = NULL, noise_rho = NULL) {
   scaling <- resolve_decon_scaling(scaling, normalize, demean)
   center <- if (scaling == "none") rep(0, ncol(y)) else colMeans(y)
   divisor <- rep(1, ncol(y))
   if (scaling == "zscore") {
     divisor <- apply(y, 2L, stats::sd)
     divisor[!is.finite(divisor) | divisor <= .Machine$double.eps] <- 1
+  } else if (scaling == "noise_sd") {
+    divisor <- estimate_decon_noise_sd(y, noise_rho = noise_rho)
   } else if (scaling == "psc") {
     spread <- apply(y, 2L, stats::sd)
     if (any(!is.finite(center) | center <= sqrt(.Machine$double.eps) * spread)) {
@@ -510,7 +574,7 @@ scale_decon_input <- function(y, normalize = TRUE, demean = TRUE, scaling = NULL
     divisor <- center / 100
   }
   if (scaling != "none") y <- sweep(y, 2L, center, "-")
-  if (scaling %in% c("zscore", "psc")) y <- sweep(y, 2L, divisor, "/")
+  if (scaling %in% c("zscore", "psc", "noise_sd")) y <- sweep(y, 2L, divisor, "/")
   list(y = y, center = center, scale = divisor)
 }
 
@@ -854,6 +918,15 @@ smooth_periodogram <- function(x, width = 7L) {
 decon_penalty_crossprod <- function(n_latent, penalty) {
   if (penalty == "ridge") {
     return(diag(n_latent))
+  }
+  if (penalty == "matern1") {
+    d1 <- diff(diag(n_latent), differences = 1L)
+    return(0.10 * diag(n_latent) + 0.90 * crossprod(d1))
+  }
+  if (penalty == "sobolev") {
+    d1 <- diff(diag(n_latent), differences = 1L)
+    d2 <- diff(diag(n_latent), differences = 2L)
+    return(0.05 * diag(n_latent) + 0.45 * crossprod(d1) + 0.50 * crossprod(d2))
   }
 
   differences <- switch(
