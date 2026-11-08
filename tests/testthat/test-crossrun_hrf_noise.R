@@ -438,3 +438,102 @@ test_that("deconvolve_crossrun_hrf supports noise_sd scaling, matern1/sobolev pe
   expect_gt(r0_imp, r0_base)
   expect_lt(abs(b0_imp - true_beta), 0.35 * abs(b0_base - true_beta))
 })
+
+test_that("decon_epoch_regression trial-varying duration source model eliminates RT time-on-task confounding", {
+  set.seed(2026)
+  tr <- 1.0
+  n_time <- 220L
+  n_trials <- 24L
+  lib <- hrf_library(tr, peak_delays = c(5, 6), dispersions = 1, undershoot_ratios = 6)
+  hrf <- lib[, 1L]
+  true_beta <- 0.65
+
+  # 1. Decision-making paradigm where higher value x has faster RT (cor(x, rt) = -0.60)
+  # and positive baseline choice firing rate alpha0 = 1.8
+  bold_val <- bold_null <- bold_int <- ev_imp <- ev_dur <- x_list <- rt_list <- list()
+  for (r in 1:2) {
+    t_cue <- seq(6, by = 8.5, length.out = n_trials)
+    t_choice <- t_cue + runif(n_trials, 1.4, 2.1)
+    x <- as.numeric(scale(rnorm(n_trials)))
+    z_orth <- as.numeric(scale(stats::resid(stats::lm(rnorm(n_trials) ~ x))))
+    rt_neg <- pmin(2.8, pmax(0.4, 1.5 + 0.65 * (-0.60 * x + sqrt(1 - 0.60^2) * z_orth)))
+    des_cue <- hrf_event_design_cpp(n_time, tr, 0, t_cue, rep(0, n_trials),
+      seq_len(n_trials), n_trials, matrix(hrf, ncol = 1L))[[1L]]
+    des_choice <- hrf_event_design_cpp(n_time, tr, 0, t_choice, rt_neg,
+      seq_len(n_trials), n_trials, matrix(hrf, ncol = 1L))[[1L]]
+    amp_cue <- 1.0 + 0.2 * rnorm(n_trials)
+    amp_val <- 1.8 + true_beta * x
+    amp_null <- rep(1.8, n_trials)
+
+    sig_val <- as.numeric(des_cue %*% amp_cue + des_choice %*% amp_val)
+    sig_null <- as.numeric(des_cue %*% amp_cue + des_choice %*% amp_null)
+    des_choice_int <- sweep(des_choice, 2L, rt_neg / tr, "/")
+    sig_int <- as.numeric(des_cue %*% amp_cue + des_choice_int %*% amp_val)
+
+    noise_mat <- replicate(6L, rnorm(n_time, sd = 0.15))
+    colnames(noise_mat) <- paste0("v", 1:6)
+    bold_val[[paste0("run", r)]] <- 100 + sig_val + noise_mat
+    bold_null[[paste0("run", r)]] <- 100 + sig_null + noise_mat
+    bold_int[[paste0("run", r)]] <- 100 + sig_int + noise_mat
+
+    ev_imp[[paste0("run", r)]] <- rbind(
+      data.frame(onset = t_cue, duration = 0, condition = "cue"),
+      data.frame(onset = t_choice, duration = 0, condition = "choice")
+    )
+    ev_dur[[paste0("run", r)]] <- rbind(
+      data.frame(onset = t_cue, duration = 0, condition = "cue"),
+      data.frame(onset = t_choice, duration = rt_neg, condition = "choice")
+    )
+    x_list[[paste0("run", r)]] <- x
+    rt_list[[paste0("run", r)]] <- rt_neg
+  }
+
+  fit_imp <- estimate_crossrun_hrf(bold_val, ev_imp, tr, lib, noise_model = "ols")
+  dec_imp <- deconvolve_crossrun_hrf(bold_val, fit_imp, lambda = 1.0, scaling = "noise_sd", penalty = "sobolev")
+  fit_dur <- estimate_crossrun_hrf(bold_val, ev_dur, tr, lib, noise_model = "ols")
+  dec_dur <- deconvolve_crossrun_hrf(bold_val, fit_dur, lambda = 1.0, scaling = "noise_sd", penalty = "sobolev")
+
+  reg_imp <- decon_epoch_regression(dec_imp, x_list, events = ev_imp,
+    target_condition = "choice", lags = 0, source_model = "impulse", restore_scale = TRUE)
+  reg_win <- decon_epoch_regression(dec_imp, x_list, events = ev_imp,
+    target_condition = "choice", lags = 0, source_model = "window", restore_scale = TRUE)
+  reg_dur <- decon_epoch_regression(dec_dur, x_list, events = ev_imp,
+    target_condition = "choice", lags = 0, trial_durations = rt_list, restore_scale = TRUE)
+
+  expect_equal(reg_dur$settings$source_model, "duration")
+  expect_equal(reg_dur$settings$duration_scale, "rate")
+  expect_gt(reg_dur$summary$mean_r_demixed, reg_imp$summary$mean_r_demixed + 0.35)
+  expect_gt(reg_dur$summary$mean_r_demixed, reg_win$summary$mean_r_demixed + 0.35)
+  expect_lt(abs(reg_dur$summary$mean_beta_corrected - true_beta), 0.12)
+  expect_lt(
+    abs(reg_dur$summary$mean_beta_corrected - true_beta),
+    0.35 * abs(reg_win$summary$mean_beta_corrected - true_beta)
+  )
+
+  # 2. Under null modulation (true_beta = 0) with strong RT-predictor correlation,
+  # impulse/window models suffer severe spurious RT bias, while duration model is unbiased
+  fit_null_imp <- estimate_crossrun_hrf(bold_null, ev_imp, tr, lib, noise_model = "ols")
+  dec_null_imp <- deconvolve_crossrun_hrf(bold_null, fit_null_imp, lambda = 1.0,
+    scaling = "noise_sd", penalty = "sobolev")
+  fit_null_dur <- estimate_crossrun_hrf(bold_null, ev_dur, tr, lib, noise_model = "ols")
+  dec_null_dur <- deconvolve_crossrun_hrf(bold_null, fit_null_dur, lambda = 1.0,
+    scaling = "noise_sd", penalty = "sobolev")
+
+  null_imp <- decon_epoch_regression(dec_null_imp, x_list, events = ev_imp,
+    target_condition = "choice", lags = c(-1, 0, 1), source_model = "impulse", restore_scale = TRUE)
+  null_dur <- decon_epoch_regression(dec_null_dur, x_list, events = ev_dur,
+    target_condition = "choice", lags = c(-1, 0, 1), source_model = "duration", restore_scale = TRUE)
+
+  expect_gt(abs(null_imp$summary$mean_r_demixed[null_imp$summary$lag == 0]), 0.40)
+  expect_lt(max(abs(null_dur$summary$mean_r_demixed)), 0.15)
+  expect_lt(max(abs(null_dur$summary$mean_beta_corrected)), 0.08)
+
+  # 3. Integral duration_scale recovers unit-integral boxcar amplitudes
+  fit_int <- estimate_crossrun_hrf(bold_int, ev_dur, tr, lib, noise_model = "ols")
+  dec_int <- deconvolve_crossrun_hrf(bold_int, fit_int, lambda = 1.0, scaling = "noise_sd", penalty = "sobolev")
+  reg_int <- decon_epoch_regression(dec_int, x_list, events = ev_dur,
+    target_condition = "choice", lags = 0, source_model = "duration",
+    duration_scale = "integral", restore_scale = TRUE)
+  expect_gt(reg_int$summary$mean_r_demixed, 0.70)
+  expect_lt(abs(reg_int$summary$mean_beta_corrected - true_beta), 0.15)
+})

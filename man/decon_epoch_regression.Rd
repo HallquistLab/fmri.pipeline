@@ -17,7 +17,9 @@ decon_epoch_regression(
   demix_ridge = 0.05,
   gain_floor = 0.05,
   restore_scale = FALSE,
-  source_model = c("impulse", "window"),
+  source_model = c("impulse", "window", "duration"),
+  trial_durations = NULL,
+  duration_scale = c("rate", "integral"),
   return_epochs = FALSE,
   return_panel = FALSE
 )
@@ -64,7 +66,25 @@ its recorded \code{deconvolution$scaling[[r]]$scale} divisor. Default:
 \code{FALSE}.}
 
 \item{source_model}{Forward neural source model at each target lag:
-\code{"impulse"} (default) or \code{"window"}.}
+\code{"impulse"} (default unit impulse at \code{onset + lag}),
+\code{"window"} (local sustained boxcar of width \code{readout_width}
+centered at \code{onset + lag}), or \code{"duration"} (trial-varying
+sustained boxcar over \code{[onset + lag, onset + lag + d_i]} using each
+target trial's duration \code{d_i} from \code{trial_durations} or
+\code{events[[r]]$duration}, with duration-matched readout and unpenalized
+baseline-rate de-confounding).}
+
+\item{trial_durations}{Optional numeric vector (concatenated across runs) or
+run-named list of non-negative target trial durations (in seconds), such as
+per-trial reaction times. Overrides \code{events[[r]]$duration} for target
+trials and defaults \code{source_model} to \code{"duration"} when
+\code{source_model} is not explicitly specified.}
+
+\item{duration_scale}{Scaling convention for positive-duration target trials
+when \code{source_model = "duration"}: \code{"rate"} (default; trial
+amplitude represents neural firing rate / boxcar height per TR bin) or
+\code{"integral"} (each trial boxcar is normalized to unit time-integrated
+neural mass across its duration).}
 
 \item{return_epochs}{Logical; whether to include raw and de-mixed trial-by-voxel
 epoch matrices per lag. Default: \code{FALSE}.}
