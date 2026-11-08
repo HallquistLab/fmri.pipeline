@@ -186,6 +186,39 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
       if (d && base_df - ranks[i] - d >= 2)
         pairs.push_back(Pair{i, j, d, base_df - ranks[i] - d, q});
     }
+  struct FallbackAngle { int j, df; arma::mat pin_w, u_orth; };
+  std::vector<FallbackAngle> fb_angles;
+  int fb = fallback_index - 1;
+  if (comparable && evidence && ranks[0] > 3 && fb >= 0 && fb < designs.size() &&
+      base_df - ranks[fb] - 1 >= 2) {
+    const arma::mat& Qi = qt[fb];
+    int df_fb = base_df - ranks[fb] - 1;
+    for (int j = 0; j < designs.size(); ++j) {
+      if (j == fb) continue;
+      const arma::mat& Qj = qt[j];
+      arma::mat U_c, V_c;
+      arma::vec s_c;
+      if (!arma::svd(U_c, s_c, V_c, Qi.t() * Qj)) continue;
+      arma::vec cos_t = arma::clamp(s_c, 0.0, 1.0);
+      arma::vec sin_t = arma::sqrt(arma::clamp(1.0 - arma::square(cos_t), 0.0, 1.0));
+      double max_sin = sin_t.max();
+      if (max_sin <= 1e-6) continue;
+      arma::uvec keep_idx = arma::find(sin_t >= 0.5 * max_sin && cos_t > 0.05);
+      if (keep_idx.is_empty()) {
+        keep_idx = arma::uvec{ sin_t.index_max() };
+      }
+      arma::mat Uc = U_c.cols(keep_idx);
+      arma::mat Vc = V_c.cols(keep_idx);
+      arma::vec cos_k = cos_t.elem(keep_idx);
+      arma::vec sin_k = sin_t.elem(keep_idx);
+      arma::vec tan_k = sin_k / arma::clamp(cos_k, 0.05, 1.0);
+      arma::mat Pin = Qi * Uc;
+      arma::mat Uorth = Qj * Vc - Pin * arma::diagmat(cos_k);
+      Uorth.each_row() /= sin_k.t();
+      arma::mat Pin_w = Pin * arma::diagmat(tan_k);
+      fb_angles.push_back(FallbackAngle{j, df_fb, std::move(Pin_w), std::move(Uorth)});
+    }
+  }
   Rcpp::CharacterVector status(bold.n_cols, "unidentifiable_design");
   if (comparable) for (arma::uword start = 0; start < bold.n_cols; start += batch_size) {
     Rcpp::checkUserInterrupt();
@@ -240,6 +273,26 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
           if (pair.i == fallback_index - 1) fallback_p(pair.j, start + j) = pi;
           if (pair.j == fallback_index - 1) fallback_p(pair.i, start + j) = pj;
         }
+    }
+    if (evidence && !fb_angles.empty()) {
+      for (const FallbackAngle& fa : fb_angles) {
+        arma::mat w = fa.pin_w.t() * y;
+        arma::mat b = fa.u_orth.t() * y;
+        for (arma::uword j = 0; j < y.n_cols; ++j) {
+          if (Rcpp::as<std::string>(status[start + j]) == "ok") {
+            double w_norm = arma::norm(w.col(j));
+            if (w_norm <= 1e-12) {
+              fallback_p(fa.j, start + j) = 1.0;
+              continue;
+            }
+            double u_proj = arma::dot(w.col(j), b.col(j)) / w_norm;
+            double extra_ss = u_proj * u_proj;
+            double ei = all_explained(fb, j);
+            double both = std::min(1.0, std::max(ei, ei + extra_ss));
+            fallback_p(fa.j, start + j) = hrf_f_tail(both - ei, 1, 1.0 - both, fa.df);
+          }
+        }
+      }
     }
   }
   return Rcpp::List::create(Rcpp::Named("scores") = score,

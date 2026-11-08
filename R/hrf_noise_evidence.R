@@ -43,8 +43,27 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
   out
 }
 
-hrf_fold_evidence <- function(results, train, counts, scores, fallback, alpha, min_r2) {
+hrf_effective_candidates <- function(kernels) {
+  if (is.null(kernels) || !is.matrix(kernels) || ncol(kernels) <= 9L) {
+    k <- if (is.matrix(kernels)) ncol(kernels) else 1L
+    return(list(task = k, shape = max(1L, k - 1L)))
+  }
+  k <- ncol(kernels)
+  norms <- sqrt(colSums(kernels^2))
+  norms[norms <= 0] <- 1
+  h_norm <- sweep(kernels, 2L, norms, "/")
+  r_mat <- abs(crossprod(h_norm))
+  eig <- eigen(r_mat, symmetric = TRUE, only.values = TRUE)$values
+  eig <- pmax(eig, 0)
+  # Galwey (2009) spectral effective number of independent tests for dense/extended libraries (K > 9).
+  m_eff <- if (sum(eig) > 0) (sum(sqrt(eig))^2) / sum(eig) else k
+  m_eff <- max(9, min(k, m_eff))
+  list(task = m_eff, shape = max(1, m_eff - 1))
+}
+
+hrf_fold_evidence <- function(results, train, counts, scores, fallback, alpha, min_r2, kernels = NULL) {
   k <- nrow(scores); v <- ncol(scores)
+  eff <- if (is.null(kernels)) list(task = k, shape = max(1L, k - 1L)) else hrf_effective_candidates(kernels)
   combine <- function(field, multiplicity) {
     logs <- matrix(0, k, v)
     for (r in train) {
@@ -59,8 +78,8 @@ hrf_fold_evidence <- function(results, train, counts, scores, fallback, alpha, m
     out[, counts == 0] <- NA_real_
     out
   }
-  task <- combine("task_p", k)
-  shape <- combine("fallback_p", max(1L, k - 1L))
+  task <- combine("task_p", eff$task)
+  shape <- combine("fallback_p", eff$shape)
   compatible <- matrix(TRUE, k, v)
   # Simultaneous candidate compatibility within each voxel over all its usable
   # training runs. No averaging can hide one run's strong rejection of a shape.
