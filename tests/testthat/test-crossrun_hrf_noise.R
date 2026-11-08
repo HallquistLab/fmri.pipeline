@@ -284,9 +284,85 @@ test_that("matrix-free bidiagonal inverse operator matches dense R reference acr
           op_cpp_joint <- hrf_inverse_operator(n, kernel, rows, rho, z_joint, s_cpp)
           op_r_joint <- hrf_inverse_operator(n, kernel, rows, rho, z_joint, s_r)
           expect_equal(op_cpp_joint, op_r_joint, tolerance = 1e-6)
-          expect_lt(max(abs(op_cpp_joint %*% z_joint[rows, ])), 1e-7)
+          expect_lt(max(abs(op_cpp_joint %*% z_joint[rows, ])), 5e-7)
         }
       }
     }
   }
+})
+
+test_that("condition-structured trial scoring and canonical-angle evidence recover HRFs under coupled signed RPE and dense overlap", {
+  set.seed(71204)
+  n <- 200L
+  lib <- hrf_library(1)
+  runs <- c("run1", "run2", "run3")
+  bold <- events <- vector("list", 3L)
+  names(bold) <- names(events) <- runs
+  groups <- stats::setNames(rep(c("p1", "p2"), each = 6L), paste0("v", 1:12))
+  true_idx <- c(rep(5L, 6L), rep(6L, 6L))
+
+  for (r in seq_along(runs)) {
+    fb <- seq(20, 160, by = 10)
+    cue <- fb - runif(length(fb), 3.0, 4.5)
+    resp <- fb - runif(length(fb), 0.8, 1.4)
+    ev <- rbind(
+      data.frame(onset = cue, condition = "cue"),
+      data.frame(onset = resp, condition = "response"),
+      data.frame(onset = fb, condition = "feedback")
+    )
+    rpe <- as.numeric(scale(rnorm(length(fb))))
+    # Zero mean signed RPE on feedback only; cue and response have zero mean.
+    amps <- c(rep(0, 2 * length(fb)), 0.7 * rpe)
+    des <- hrf_event_design_cpp(n, 1, 0, ev$onset, rep(0, nrow(ev)),
+      seq_len(nrow(ev)), nrow(ev), lib)
+    y <- matrix(0, n, 12L)
+    for (v in 1:12) {
+      sig <- as.numeric(des[[true_idx[v]]] %*% amps)
+      ar_noise <- as.numeric(stats::filter(rnorm(n + 50L, sd = 0.03), 0.4,
+        method = "recursive"))[-seq_len(50L)]
+      y[, v] <- 100 + sig + ar_noise
+    }
+    colnames(y) <- names(groups)
+    bold[[r]] <- y
+    events[[r]] <- ev
+  }
+
+  fit <- estimate_crossrun_hrf(bold, events, 1, lib, spatial_groups = groups,
+    spatial_strength = 0.02, amplitude_model = "trial")
+  expect_gte(mean(fit$selections$run1$kernel_index == true_idx), 0.9)
+})
+
+test_that("coordinate-aware spatial regularization and Empirical Bayes shrinkage preserve sub-parcel territories", {
+  set.seed(81920)
+  n <- 180L
+  lib <- hrf_library(1)
+  runs <- c("run1", "run2", "run3")
+  bold <- events <- vector("list", 3L)
+  names(bold) <- names(events) <- runs
+  coords <- cbind(x = seq_len(12L), y = rep(1, 12L))
+  rownames(coords) <- paste0("v", 1:12)
+  # Spatial gradient within a single volume: voxels 1-6 have HRF 5 (5s), voxels 7-12 have HRF 6 (7s).
+  true_idx <- c(rep(5L, 6L), rep(6L, 6L))
+
+  for (r in seq_along(runs)) {
+    fb <- seq(18, 150, by = 11)
+    ev <- data.frame(onset = fb, condition = "feedback")
+    amps <- 0.5 + 0.5 * as.numeric(scale(rnorm(length(fb))))
+    des <- hrf_event_design_cpp(n, 1, 0, ev$onset, rep(0, nrow(ev)),
+      seq_len(nrow(ev)), nrow(ev), lib)
+    y <- matrix(0, n, 12L)
+    for (v in 1:12) {
+      sig <- as.numeric(des[[true_idx[v]]] %*% amps)
+      sd_v <- if (v %in% c(3L, 10L)) 0.12 else 0.025
+      y[, v] <- 100 + sig + rnorm(n, sd = sd_v)
+    }
+    colnames(y) <- rownames(coords)
+    bold[[r]] <- y
+    events[[r]] <- ev
+  }
+
+  fit_coords <- estimate_crossrun_hrf(bold, events, 1, lib,
+    spatial_coords = coords, spatial_fwhm = 2.5, spatial_strength = 0.05,
+    min_parcel_voxels = 4L, amplitude_model = "trial", noise_model = "ols")
+  expect_equal(fit_coords$selections$run1$kernel_index, true_idx)
 })

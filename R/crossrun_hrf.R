@@ -5,6 +5,11 @@
 #' @param dispersions Positive response-dispersion parameters.
 #' @param undershoot_ratios Positive response-to-undershoot ratios.
 #' @param duration Kernel duration in seconds (at least two acquisition intervals).
+#' @param preset Optional preset grid configuration: `"custom"` (default, uses
+#'   supplied `peak_delays`, `dispersions`, `undershoot_ratios`), `"standard"`
+#'   (delays 5, 6, 7s; dispersions 0.8, 1, 1.2), `"extended"` (delays 4--8s;
+#'   dispersions 0.8, 1, 1.25), or `"dense"` (delays 4--8.5s by 0.5s; dispersions
+#'   0.8, 1, 1.2, 1.4).
 #' @return A unit-sum kernel matrix, with time rows, candidate columns, and a
 #'   parameters attribute. The canonical candidate (6, 1, 6) is first if present.
 #' @details Candidates use the SPM difference-of-gammas parameterization with
@@ -12,8 +17,20 @@
 #'   shapes, not a universally validated range for every population or protocol.
 #' @export
 hrf_library <- function(tr, peak_delays = c(5, 6, 7), dispersions = c(0.8, 1, 1.2),
-    undershoot_ratios = 6, duration = 32) {
+    undershoot_ratios = 6, duration = 32,
+    preset = c("custom", "standard", "extended", "dense")) {
   checkmate::assert_number(tr, lower = 0.01, finite = TRUE)
+  preset <- match.arg(preset)
+  if (preset == "standard") {
+    peak_delays <- c(5, 6, 7)
+    dispersions <- c(0.8, 1, 1.2)
+  } else if (preset == "extended") {
+    peak_delays <- c(4, 5, 6, 7, 8)
+    dispersions <- c(0.8, 1, 1.25)
+  } else if (preset == "dense") {
+    peak_delays <- seq(4, 8.5, by = 0.5)
+    dispersions <- c(0.8, 1, 1.2, 1.4)
+  }
   for (x in list(peak_delays, dispersions, undershoot_ratios))
     checkmate::assert_numeric(x, lower = .Machine$double.eps, min.len = 1L,
       any.missing = FALSE, finite = TRUE, unique = TRUE)
@@ -59,6 +76,85 @@ hrf_run_numeric <- function(x, bold, argument) {
   if (length(x) != length(bold) || !identical(names(x), names(bold)))
     stop(argument, " must be scalar or named in BOLD run order")
   x
+}
+
+hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
+    amplitude_model, rho_ref, batch_size, fallback_kernel) {
+  labels <- as.character(ev$condition)
+  durations <- if (is.null(ev$duration)) rep(0, nrow(ev)) else ev$duration
+  u_cond <- unique(labels)
+  n_cond <- length(u_cond)
+  if (amplitude_model == "condition") {
+    design_columns <- match(labels, u_cond)
+    return(hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
+      design_columns, max(design_columns), kernels))
+  }
+  if (n_cond <= 1L || sum(mask) < 3L) {
+    design_columns <- seq_len(nrow(ev))
+    return(hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
+      design_columns, max(design_columns), kernels))
+  }
+  # Check if multiple conditions are closely coupled within trials (forming a
+  # local derivative basis when given simultaneous free trial parameters).
+  cross_dists <- vapply(seq_len(nrow(ev)), function(e) {
+    other <- ev$onset[labels != labels[e]]
+    if (length(other)) min(abs(ev$onset[e] - other)) else Inf
+  }, numeric(1))
+  coupled <- stats::median(cross_dists) <= 8.0 || nrow(ev) > sum(mask) / 5.0
+  if (!coupled) {
+    design_columns <- seq_len(nrow(ev))
+    return(hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
+      design_columns, max(design_columns), kernels))
+  }
+  cond_cols <- match(labels, u_cond)
+  best_des <- NULL
+  best_val <- -Inf
+  for (ic in seq_len(n_cond)) {
+    idx_e <- which(cond_cols == ic)
+    cols_ic <- cond_cols
+    cols_ic[idx_e] <- n_cond + seq_along(idx_e)
+    cols_ic <- match(cols_ic, unique(cols_ic))
+    des_ic <- hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
+      cols_ic, max(cols_ic), kernels)
+    part_ic <- hrf_score_run_cpp(y, des_ic, z, which(mask), as.integer(batch_size),
+      rho = rho_ref, evidence = FALSE, fallback_index = as.integer(fallback_kernel))
+    if (isTRUE(part_ic$comparable)) {
+      voxel_max <- apply(part_ic$scores, 2L, function(col) {
+        if (any(is.finite(col))) max(col, na.rm = TRUE) else NA_real_
+      })
+      val <- if (any(is.finite(voxel_max))) mean(voxel_max, na.rm = TRUE) else -Inf
+      if (is.finite(val) && val > best_val) {
+        best_val <- val
+        best_des <- des_ic
+      }
+    }
+  }
+  if (!is.null(best_des)) return(best_des)
+  design_columns <- seq_len(nrow(ev))
+  hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
+    design_columns, max(design_columns), kernels)
+}
+
+hrf_compute_spatial_weights <- function(spatial_coords, spatial_groups, spatial_fwhm) {
+  if (is.null(spatial_coords)) return(NULL)
+  v <- nrow(spatial_coords)
+  dmat <- as.matrix(stats::dist(spatial_coords))
+  if (is.null(spatial_fwhm)) {
+    pos_d <- apply(dmat, 1L, function(row) {
+      p <- row[row > 0]
+      if (length(p)) min(p) else NA_real_
+    })
+    sigma <- if (any(is.finite(pos_d))) stats::median(pos_d, na.rm = TRUE) * 1.5 else 1.0
+    sigma <- max(sigma, 1e-6)
+  } else {
+    sigma <- max(spatial_fwhm / sqrt(8 * log(2)), 1e-6)
+  }
+  w <- exp(-(dmat^2) / (2 * sigma^2))
+  if (!is.null(spatial_groups)) {
+    same_group <- outer(spatial_groups, spatial_groups, "==")
+    w[!same_group] <- 0
+  }
+  w
 }
 
 #' Estimate HRF shapes from other runs, with optional spatial regularization
@@ -153,7 +249,8 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     batch_size = 2048L, return_scores = FALSE, amplitude_model = c("condition", "trial"),
     noise_model = c("ar1", "ols"), noise_rho = NULL,
     noise_grid = seq(-0.8, 0.9, by = 0.1), evidence = c("calibrated", "legacy"),
-    evidence_alpha = 0.05, canonical_strength = 0.01) {
+    evidence_alpha = 0.05, canonical_strength = 0.01,
+    spatial_coords = NULL, spatial_fwhm = NULL) {
   hrf_validate_bold(bold)
   pooling <- match.arg(pooling)
   amplitude_model <- match.arg(amplitude_model)
@@ -189,6 +286,20 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
   checkmate::assert_integerish(batch_size, lower = 1, len = 1L)
   checkmate::assert_flag(return_scores)
   voxel_ids <- colnames(bold[[1L]])
+  if (!is.null(spatial_coords)) {
+    if (is.data.frame(spatial_coords)) spatial_coords <- as.matrix(spatial_coords)
+    if (is.atomic(spatial_coords) && is.null(dim(spatial_coords)))
+      spatial_coords <- matrix(spatial_coords, ncol = 1L, dimnames = list(names(spatial_coords), NULL))
+    checkmate::assert_matrix(spatial_coords, mode = "numeric", nrows = length(voxel_ids),
+      min.cols = 1L, any.missing = FALSE)
+    if (any(!is.finite(spatial_coords))) stop("spatial_coords must be finite")
+    if (!is.null(rownames(spatial_coords)) && !identical(rownames(spatial_coords), voxel_ids))
+      stop("spatial_coords rownames must match voxel column order")
+    if (is.null(spatial_groups))
+      spatial_groups <- stats::setNames(rep("volume", length(voxel_ids)), voxel_ids)
+  }
+  if (!is.null(spatial_fwhm))
+    checkmate::assert_number(spatial_fwhm, lower = .Machine$double.eps, finite = TRUE)
   if (!is.null(spatial_groups)) {
     if (!is.atomic(spatial_groups) || !identical(names(spatial_groups), voxel_ids) ||
         anyNA(spatial_groups) || any(!nzchar(as.character(spatial_groups))))
@@ -199,6 +310,7 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
   }
   if (pooling == "parcel" && spatial_strength != 0)
     stop("spatial_strength applies only to voxel pooling")
+  spatial_weights <- hrf_compute_spatial_weights(spatial_coords, spatial_groups, spatial_fwhm)
   offsets <- hrf_run_numeric(time_offset, bold, "time_offset")
   events <- hrf_run_list(events, bold, "events", function(y) NULL)
   nuisance <- hrf_run_list(nuisance, bold, "nuisance", function(y) matrix(numeric(), nrow(y), 0))
@@ -219,14 +331,14 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     mask <- valid_rows[[r]]
     checkmate::assert_logical(mask, len = nrow(y))
     mask <- !is.na(mask) & mask
-    design_columns <- if (amplitude_model == "trial") seq_len(nrow(ev)) else match(labels, unique(labels))
-    design <- hrf_event_design_cpp(nrow(y), tr, offsets[r], ev$onset, durations,
-      design_columns, max(design_columns), kernels)
     z <- cbind(intercept = 1, trend = seq(-1, 1, length.out = nrow(y)), nuisance[[r]])
     if (any(!is.finite(z[mask, , drop = FALSE]))) stop("Nuisance values must be finite on usable rows")
     noise[[r]] <- hrf_estimate_noise(y, ev, tr, offsets[r], kernels, fallback_kernel,
       z, mask, spatial_groups, noise_grid, batch_size,
       if (noise_model == "ols") 0 else if (!is.null(noise_rho)) noise_rho[r] else NULL)
+    rho_ref <- if (any(is.finite(noise[[r]]$rho))) stats::median(noise[[r]]$rho, na.rm = TRUE) else 0
+    design <- hrf_build_run_design(y, ev, tr, offsets[r], kernels, z, mask,
+      amplitude_model, rho_ref, batch_size, fallback_kernel)
     result <- list(scores = matrix(NA_real_, ncol(kernels), ncol(y)),
       signal_status = rep("insufficient_observations", ncol(y)))
     if (evidence == "calibrated") for (field in c("task_p", "fallback_p", "incompatible_p"))
@@ -287,7 +399,7 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     scores[, counts < min_training_runs] <- NA_real_
     dimnames(scores) <- list(candidate_ids, voxel_ids)
     gate <- if (evidence == "calibrated") hrf_fold_evidence(run_results, train, counts,
-      scores, fallback_kernel, evidence_alpha, min_r2) else NULL
+      scores, fallback_kernel, evidence_alpha, min_r2, kernels = kernels) else NULL
     anchor <- rep(NA_integer_, length(voxel_ids))
     parcel_n <- integer(length(voxel_ids))
     parcel_rows <- list()
@@ -331,36 +443,98 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
       }
       if (pooling == "voxel") {
         objective <- scores[, eligible, drop = FALSE]
-        penalized <- which(!is.na(anchor[eligible]))
+        eff_anchor <- anchor[eligible]
+        neigh_scores <- objective
+        concordance <- rep(1.0, length(eligible))
+        use_eb_spatial <- spatial_strength > 0 && (!is.null(gate) || !is.null(spatial_weights)) &&
+          !is.null(spatial_groups)
+        if (use_eb_spatial) {
+          for (idx_e in seq_along(eligible)) {
+            v <- eligible[idx_e]
+            same_p <- which(spatial_groups[eligible] == spatial_groups[v])
+            others_e <- setdiff(same_p, idx_e)
+            if (!is.null(spatial_weights) && length(others_e) >= 1L) {
+              w_vec <- spatial_weights[v, eligible[others_e]]
+              if (sum(w_vec) > 1e-12) {
+                w_norm <- w_vec / sum(w_vec)
+                nv <- as.numeric(objective[, others_e, drop = FALSE] %*% w_norm)
+                neigh_scores[, idx_e] <- nv
+                # Local coordinate-weighted anchor within parcel
+                if (length(same_p) >= min_parcel_voxels) {
+                  loc_obj <- nv
+                  if (!is.null(gate)) {
+                    loc_sup <- as.numeric(gate$supported[, eligible[others_e], drop = FALSE] %*% w_norm) >= 0.35
+                    loc_obj <- loc_obj - canonical_strength * distance[, fallback_kernel]
+                    loc_obj[!loc_sup] <- -Inf
+                  }
+                  if (any(is.finite(loc_obj)) && max(nv, na.rm = TRUE) >= min_r2)
+                    eff_anchor[idx_e] <- which.max(loc_obj)
+                }
+              }
+            } else if (length(others_e) >= 1L) {
+              nv <- rowMeans(objective[, others_e, drop = FALSE])
+              neigh_scores[, idx_e] <- nv
+            }
+            sv <- objective[, idx_e]
+            nv <- neigh_scores[, idx_e]
+            if (ncol(kernels) > 2L) {
+              concordance[idx_e] <- if (stats::sd(sv) > 1e-8 && stats::sd(nv) > 1e-8)
+                max(0.0, stats::cor(sv, nv)) else 0.0
+            } else if (ncol(kernels) == 2L) {
+              concordance[idx_e] <- if ((sv[2L] - sv[1L]) * (nv[2L] - nv[1L]) >= 0) 1.0 else 0.0
+            }
+          }
+          eb_base <- min(0.85, spatial_strength / (spatial_strength + 0.02))
+          w_eb <- if (spatial_strength >= 1.0) rep(eb_base, length(eligible)) else eb_base * (concordance^2)
+          objective <- sweep(objective, 2L, 1.0 - w_eb, "*") + sweep(neigh_scores, 2L, w_eb, "*")
+        }
+        penalized <- which(!is.na(eff_anchor))
         admissible_voxel <- if (is.null(gate)) NULL else gate$supported[, eligible, drop = FALSE]
         if (!is.null(gate)) {
           objective <- objective - canonical_strength * distance[, fallback_kernel]
           if (spatial_strength > 0 && length(penalized)) {
-            anchor_idx <- cbind(anchor[eligible[penalized]], penalized)
-            admissible_voxel[anchor_idx] <- admissible_voxel[anchor_idx] |
-              gate$task_supported[cbind(anchor[eligible[penalized]], eligible[penalized])]
+            has_own_depart <- if (ncol(kernels) > 1L)
+              colSums(gate$supported[-fallback_kernel, eligible[penalized], drop = FALSE]) > 0L
+            else rep(FALSE, length(penalized))
+            borrow <- penalized[!has_own_depart | concordance[penalized] > 0.25 | spatial_strength >= 1.0]
+            if (length(borrow)) {
+              anchor_idx <- cbind(eff_anchor[borrow], borrow)
+              admissible_voxel[anchor_idx] <- admissible_voxel[anchor_idx] |
+                gate$task_supported[cbind(eff_anchor[borrow], eligible[borrow])]
+            }
           }
           objective[!admissible_voxel] <- -Inf
         }
-        if (spatial_strength > 0 && length(penalized))
-          objective[, penalized] <- objective[, penalized, drop = FALSE] -
-            spatial_strength * distance[, anchor[eligible[penalized]], drop = FALSE]
+        if (spatial_strength > 0 && length(penalized)) {
+          if (!is.null(gate) && spatial_strength < 1.0) {
+            for (idx_p in penalized) {
+              has_dep <- ncol(kernels) > 1L && any(gate$supported[-fallback_kernel, eligible[idx_p]])
+              pen_w <- if (has_dep) concordance[idx_p]^2 else 1.0
+              objective[, idx_p] <- objective[, idx_p] -
+                spatial_strength * pen_w * distance[, eff_anchor[idx_p]]
+            }
+          } else {
+            objective[, penalized] <- objective[, penalized, drop = FALSE] -
+              spatial_strength * distance[, eff_anchor[penalized], drop = FALSE]
+          }
+        }
         candidates <- max.col(t(objective), ties.method = "first")
         keep <- scores[cbind(candidates, eligible)] >= min_r2
         if (!is.null(gate)) {
           keep <- keep & admissible_voxel[cbind(candidates, seq_along(eligible))]
           if (spatial_strength == 0 && length(penalized)) {
             no_depart <- colSums(gate$supported[-fallback_kernel, eligible[penalized], drop = FALSE]) == 0L
-            anchor_task <- gate$task_supported[cbind(anchor[eligible[penalized]], eligible[penalized])]
-            anchor_obj <- scores[cbind(anchor[eligible[penalized]], eligible[penalized])] -
-              canonical_strength * distance[anchor[eligible[penalized]], fallback_kernel]
+            anchor_task <- gate$task_supported[cbind(eff_anchor[penalized], eligible[penalized])]
+            anchor_obj <- scores[cbind(eff_anchor[penalized], eligible[penalized])] -
+              canonical_strength * distance[eff_anchor[penalized], fallback_kernel]
             fallback_obj <- scores[fallback_kernel, eligible[penalized]]
             keep[penalized[no_depart & anchor_task & anchor_obj > fallback_obj]] <- FALSE
           }
         }
         chosen[eligible[keep]] <- candidates[keep]
-        reason[eligible[keep]] <- ifelse(spatial_strength > 0 & !is.na(anchor[eligible[keep]]),
+        reason[eligible[keep]] <- ifelse(spatial_strength > 0 & !is.na(eff_anchor[keep]),
           "voxel_spatial", "voxel")
+        anchor[eligible] <- eff_anchor
       }
       selected_score[eligible] <- scores[cbind(chosen[eligible], eligible)]
     }

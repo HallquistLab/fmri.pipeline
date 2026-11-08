@@ -261,3 +261,18 @@ test_that("free trial amplitudes identify an HRF when signed responses average a
   expect_true(all(trial$designs$task_rank == nrow(ev)))
   expect_equal(trial$settings$amplitude_model, "trial")
 })
+
+test_that("hrf_library presets cover extended and dense physiological grids", {
+  std <- hrf_library(1, preset = "standard")
+  ext <- hrf_library(1, preset = "extended")
+  den <- hrf_library(1, preset = "dense")
+  expect_equal(ncol(std), 9L)
+  expect_equal(ncol(ext), 15L)
+  expect_equal(ncol(den), 40L)
+  expect_equal(attr(ext, "parameters")[1L, ],
+    data.frame(peak_delay = 6, dispersion = 1, undershoot_ratio = 6))
+  expect_equal(attr(den, "parameters")[1L, ],
+    data.frame(peak_delay = 6, dispersion = 1, undershoot_ratio = 6))
+  expect_equal(colSums(ext), rep(1, ncol(ext)), ignore_attr = TRUE)
+  expect_equal(colSums(den), rep(1, ncol(den)), ignore_attr = TRUE)
+})
