@@ -39,6 +39,8 @@
     <li><a class="dropdown-item" href="articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
+    <li><a class="dropdown-item" href="articles/medusa-concepts.html">MEDuSA: from blurred BOLD signals to trial-level questions</a></li>
+    <li><a class="dropdown-item" href="articles/medusa-workflows.html">MEDuSA workflows: from BOLD runs to an analysis-ready trial panel</a></li>
     <li><a class="dropdown-item" href="articles/quickstart.html">fmri.pipeline quick start guide</a></li>
   </ul>
 </li>
@@ -339,6 +341,16 @@
 <li>Reference index: <a href="https://hallquistlab.github.io/fmri.pipeline/reference/index.html" class="uri">https://hallquistlab.github.io/fmri.pipeline/reference/index.html</a>
 </li>
 </ul>
+<p>MEDuSA documentation now follows a three-part learning sequence:</p>
+<ol style="list-style-type: decimal">
+<li>
+<a href="vignettes/medusa-concepts.Rmd">Conceptual foundations</a>: convolution, regularization, HRF learning, event mixing, units, and duration, with an annotated reading guide.</li>
+<li>
+<a href="vignettes/medusa-workflows.Rmd">Worked workflows</a>: executable simulation and recipes for NIfTI inputs, file alignment, and downstream multilevel models.</li>
+<li>
+<a href="medusa_deconvolution_review_prs_42_53.qmd">Technical companion (PRs #42–#54)</a>: equations, simulation demonstrations, implementation details, and validation limits.</li>
+</ol>
+<p>The first two are standard package vignettes (<code><a href="articles/medusa-concepts.html">vignette("medusa-concepts")</a></code> and <code><a href="articles/medusa-workflows.html">vignette("medusa-workflows")</a></code> after building vignettes). The technical companion is a standalone Quarto report at the repository root, excluded from package and pkgdown builds; its historical basename is retained. See <a href="vignettes/medusa-docs.html">rendering instructions</a> for producing all three HTML documents from the same checkout.</p>
 </div>
 <div class="section level2">
 <h2 id="development-status">Development status<a class="anchor" aria-label="anchor" href="#development-status"></a>

@@ -12,5 +12,9 @@
   fmri.pipeline](https://hallquistlab.github.io/fmri.pipeline/articles/interactive-model-builder.md):
 - [Considerations for Longitudinal fMRI Analysis in
   fmri.pipeline](https://hallquistlab.github.io/fmri.pipeline/articles/longitudinal.md):
+- [MEDuSA: from blurred BOLD signals to trial-level
+  questions](https://hallquistlab.github.io/fmri.pipeline/articles/medusa-concepts.md):
+- [MEDuSA workflows: from BOLD runs to an analysis-ready trial
+  panel](https://hallquistlab.github.io/fmri.pipeline/articles/medusa-workflows.md):
 - [fmri.pipeline quick start
   guide](https://hallquistlab.github.io/fmri.pipeline/articles/quickstart.md):
