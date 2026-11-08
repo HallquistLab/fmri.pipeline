@@ -19,7 +19,7 @@ Suppose a learning task contains a cue, a choice, and feedback on every trial. Y
 
 The challenge is that feedback does not arrive on an empty stage: BOLD from the cue and choice is still evolving, and the next trial may start before that response has ended. Recovering a feedback-specific effect therefore requires choices about vascular response shape, regularization, event overlap, and the duration of neural activity. PRs #42–#54 improve different parts of this problem; they do not turn deconvolution into a direct recording of neuronal firing.
 
-This primer assumes familiarity with regression, covariance, and matrix multiplication. Read it before the [worked workflow](medusa-workflows.html). The [technical review](medusa_deconvolution_review_prs_42_53.html) preserves longer derivations and simulation demonstrations. The filename of that review is retained for existing links; its scope now includes PR #54.
+This primer assumes familiarity with regression, covariance, and matrix multiplication. Read it before the [worked workflow](medusa-workflows.html). The [technical review](https://github.com/HallquistLab/fmri.pipeline/blob/master/medusa_deconvolution_review_prs_42_53.qmd) preserves longer derivations and simulation demonstrations. The standalone review lives at the repository root and is excluded from package-site builds; its scope includes PR #54. See the repository rendering instructions to generate its HTML preview.
 
 # Three quantities that should stay distinct
 

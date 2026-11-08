@@ -279,9 +279,9 @@ MEDuSA documentation now follows a three-part learning sequence:
 
 1. [Conceptual foundations](vignettes/medusa-concepts.Rmd): convolution, regularization, HRF learning, event mixing, units, and duration, with an annotated reading guide.
 2. [Worked workflows](vignettes/medusa-workflows.Rmd): executable simulation and recipes for NIfTI inputs, file alignment, and downstream multilevel models.
-3. [Technical companion (PRs #42–#54)](vignettes/medusa_deconvolution_review_prs_42_53.qmd): equations, simulation demonstrations, implementation details, and validation limits.
+3. [Technical companion (PRs #42–#54)](medusa_deconvolution_review_prs_42_53.qmd): equations, simulation demonstrations, implementation details, and validation limits.
 
-The first two are standard package vignettes (`vignette("medusa-concepts")` and `vignette("medusa-workflows")` after building vignettes). The technical companion uses Quarto; its historical filename is retained for existing links. See [rendering instructions](vignettes/medusa-docs.md) for producing all three HTML documents from the same checkout.
+The first two are standard package vignettes (`vignette("medusa-concepts")` and `vignette("medusa-workflows")` after building vignettes). The technical companion is a standalone Quarto report at the repository root, excluded from package and pkgdown builds; its historical basename is retained. See [rendering instructions](vignettes/medusa-docs.md) for producing all three HTML documents from the same checkout.
 
 ## Development status
 

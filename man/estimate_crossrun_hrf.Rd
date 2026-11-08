@@ -29,7 +29,7 @@ estimate_crossrun_hrf(
   evidence_alpha = 0.05,
   canonical_strength = 0.01,
   spatial_coords = NULL,
-  spatial_fwhm = 8
+  spatial_fwhm = NULL
 )
 }
 \arguments{

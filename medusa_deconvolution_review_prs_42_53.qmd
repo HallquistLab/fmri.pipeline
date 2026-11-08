@@ -69,7 +69,7 @@ This is the third part of a MEDuSA learning sequence:
 2. [Worked workflows](medusa-workflows.html): an executable one-participant simulation, followed by NIfTI, file-alignment, and group-model recipes.
 3. **This companion**: retain the equations and experiments for readers who want to inspect how the estimator works.
 
-The review covers **13 PRs, #42–#54**. Its historical filename is unchanged to preserve links. The PR ledger is a navigation aid; the workflow vignette is the starting point for running an analysis. Literature precedents and an annotated reading sequence appear in the [primer](medusa-concepts.html#reading).
+The review covers **13 PRs, #42–#54**. Its historical basename is retained; the standalone source now lives at the repository root, outside package and pkgdown vignette discovery. The PR ledger is a navigation aid; the workflow vignette is the starting point for running an analysis. Literature precedents and an annotated reading sequence appear in the [primer](medusa-concepts.html#reading).
 
 MEDuSA analyzes event-aligned proxies for latent population activity estimated from BOLD. The computational sequence is HRF specification/selection, continuous regularized inversion, event-level readout/source correction, and downstream trial/group modeling. None of these stages calibrates neuronal firing or establishes temporal resolution finer than the observations support.
 
@@ -1211,7 +1211,7 @@ With **trial-varying duration source models (`source_model = "duration"`)** now 
 
 ## Reproducibility and validation map
 
-Render with the Quarto CLI and a current installed package. See [rendering instructions](medusa-docs.md) for commands and an rmarkdown fallback when Quarto cannot write its theme cache. For an isolated command-line render, install the current checkout into an explicit temporary library and pass that library through `R_LIBS`. The Quarto R package is also needed when pkgdown discovers/builds this QMD article (and is listed in Suggests). Rendering itself does not install packages. The standard package vignettes are `medusa-concepts.Rmd` and `medusa-workflows.Rmd`; they use the existing knitr/rmarkdown vignette engine.
+Render with the Quarto CLI and a current installed package. See [rendering instructions](https://github.com/HallquistLab/fmri.pipeline/blob/master/vignettes/medusa-docs.md) for commands and an rmarkdown fallback when Quarto cannot write its theme cache. For an isolated command-line render, install the current checkout into an explicit temporary library and pass that library through `R_LIBS`. This standalone QMD is excluded from package and pkgdown builds, so it adds no Quarto R dependency to those workflows. Rendering itself does not install packages. The standard package vignettes are `medusa-concepts.Rmd` and `medusa-workflows.Rmd`; they use the existing knitr/rmarkdown vignette engine.
 
 | Question | Repository evidence to inspect |
 |---|---|
