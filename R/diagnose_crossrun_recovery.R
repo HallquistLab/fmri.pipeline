@@ -995,7 +995,6 @@ decon_epoch_regression <- function(
         pos_cursor <- pos_cursor + m_r
 
         wr <- w_v_all[rs_ok]
-        wr <- wr / mean(wr)
         w_ok[idx_span] <- wr
 
         yr_raw <- demixed_epochs[[li]][rs_ok, vi]
@@ -1008,7 +1007,8 @@ decon_epoch_regression <- function(
         X_w_ok[idx_span, ] <- Xr_w
 
         Omega_r <- Omega_r_list[[r]]
-        Sigma_tot_r <- Omega_r + diag(tau2_eff, m_r)
+        tau2_zca <- max(tau2_eff, 0.35 * sigma2_unw)
+        Sigma_tot_r <- Omega_r + diag(tau2_zca, m_r)
         Sigma_tot_list[[r]] <- list(idx = idx_span, Sigma = Sigma_tot_r, wr = wr)
 
         Phi_r <- compute_zca_whitening_matrix(Sigma_tot_r, eig_floor = 0.05)
