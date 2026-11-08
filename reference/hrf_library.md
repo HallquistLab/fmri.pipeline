@@ -10,7 +10,8 @@ hrf_library(
   peak_delays = c(5, 6, 7),
   dispersions = c(0.8, 1, 1.2),
   undershoot_ratios = 6,
-  duration = 32
+  duration = 32,
+  preset = c("custom", "standard", "extended", "dense")
 )
 ```
 
@@ -35,6 +36,11 @@ hrf_library(
 - duration:
 
   Kernel duration in seconds (at least two acquisition intervals).
+
+- preset:
+
+  Optional preset grid configuration: `"custom"` (default),
+  `"standard"`, `"extended"`, or `"dense"`.
 
 ## Value
 

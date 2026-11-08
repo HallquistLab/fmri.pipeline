@@ -23,7 +23,9 @@ get_medusa_interpolated_ts(
   overlap_policy = NULL,
   valid_col = NULL,
   neighbor_events = NULL,
-  max_gap = NULL
+  max_gap = NULL,
+  readout_kernel = "linear",
+  readout_width = NULL
 )
 ```
 
@@ -113,6 +115,15 @@ get_medusa_interpolated_ts(
   Maximum interpolation bracket duration in seconds, defaulting to the
   acquisition TR. Explicit invalid rows always block interpolation; this
   tolerance only permits wider brackets across deleted rows.
+
+- readout_kernel:
+
+  Readout kernel applied at each output grid time: `"linear"` (default),
+  `"boxcar"`, `"triangle"`, or `"gaussian"`.
+
+- readout_width:
+
+  Full window width (in seconds) for non-linear `readout_kernel` modes.
 
 ## Details
 

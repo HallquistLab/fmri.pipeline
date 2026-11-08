@@ -20,7 +20,7 @@ deconvolution_impulse_diagnostics(
   time_after = 3,
   output_resolution = tr,
   backend = c("cpp", "r", "wiener"),
-  penalty = c("diff2", "diff1", "ridge"),
+  penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"),
   forward_kernel = NULL,
   prewhiten_rho = 0,
   ridge_floor = 1e-08,

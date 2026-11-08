@@ -29,7 +29,9 @@ estimate_crossrun_hrf(
   noise_grid = seq(-0.8, 0.9, by = 0.1),
   evidence = c("calibrated", "legacy"),
   evidence_alpha = 0.05,
-  canonical_strength = 0.01
+  canonical_strength = 0.01,
+  spatial_coords = NULL,
+  spatial_fwhm = 8
 )
 ```
 
@@ -154,6 +156,16 @@ estimate_crossrun_hrf(
 
   Fixed shape-distance penalty toward fallback_kernel in calibrated
   mode, default 0.01. Zero removes this additional shrinkage.
+
+- spatial_coords:
+
+  Optional numeric matrix of 3D voxel coordinates (N x 3) used for local
+  Gaussian-weighted anchor pooling.
+
+- spatial_fwhm:
+
+  Optional numeric spatial Gaussian FWHM (in coordinate units) for local
+  anchor pooling.
 
 ## Value
 

@@ -8,16 +8,18 @@ Deconvolve runs using frozen HRFs learned from other runs
 deconvolve_crossrun_hrf(
   bold,
   hrf_fit,
-  lambda,
+  lambda = NULL,
   scaling = "zscore",
-  penalty = c("diff2", "diff1", "ridge"),
+  penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"),
   backend = c("cpp", "r", "wiener"),
   batch_size = 2048L,
   tail_padding = 0L,
   ridge_floor = 1e-08,
   operator_cache_mb = 128,
   nuisance_mode = NULL,
-  observation_mask = NULL
+  observation_mask = NULL,
+  lambda_grid = 10^seq(-3, 1.5, length.out = 12),
+  gcv_rule = c("min", "1se")
 )
 ```
 
@@ -35,17 +37,17 @@ deconvolve_crossrun_hrf(
 
 - lambda:
 
-  Required fixed nonnegative regularization strength. No target-run HRF
-  or lambda search is performed. Choose externally or within training
-  data.
+  Nonnegative regularization strength. If `NULL`, selected automatically
+  from `lambda_grid` by prewhitened generalized cross-validation using
+  `gcv_rule`.
 
 - scaling:
 
-  Input scaling: zscore (default), demean, none, or psc.
+  Input scaling: zscore (default), noise_sd, demean, none, or psc.
 
 - penalty:
 
-  Quadratic penalty: diff2, diff1, or ridge.
+  Quadratic penalty: diff2, diff1, ridge, matern1, or sobolev.
 
 - backend:
 
@@ -84,6 +86,14 @@ deconvolve_crossrun_hrf(
 
   Use fit's valid_rows in the inverse (fit), or all observations (all).
   Defaults to fit for AR/calibrated, all for OLS/legacy.
+
+- lambda_grid:
+
+  Candidate regularization values evaluated when `lambda = NULL`.
+
+- gcv_rule:
+
+  Selection rule (`"min"` or `"1se"`) used when `lambda = NULL`.
 
 ## Value
 

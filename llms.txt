@@ -452,6 +452,10 @@ Issues and feature requests are tracked at
   : helper function to create an FWE object that specifies the type of
   FWE correction and the model outputs to which it is applied
 
+- [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md)
+  : Operator-based epoch de-mixing and gain-corrected trial regression
+  across lags
+
 - [`deconvolution_impulse_diagnostics()`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolution_impulse_diagnostics.md)
   : Diagnose temporal spread of a fixed linear deconvolution operator
 

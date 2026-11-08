@@ -14,7 +14,9 @@ interpolate_fmri_epochs(
   output_resolution = 1,
   group_by = NULL,
   time_audit = FALSE,
-  max_gap = NULL
+  max_gap = NULL,
+  readout_kernel = "linear",
+  readout_width = NULL
 )
 ```
 
@@ -56,6 +58,14 @@ interpolate_fmri_epochs(
 - max_gap:
 
   Maximum source bracket duration (default acquisition TR).
+
+- readout_kernel:
+
+  Readout kernel applied at each output grid time.
+
+- readout_width:
+
+  Full window width in seconds for non-linear readout kernels.
 
 ## Author
 

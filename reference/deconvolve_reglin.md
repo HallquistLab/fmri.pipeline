@@ -11,7 +11,7 @@ deconvolve_reglin(
   kernel,
   lambda = NULL,
   lambda_grid = 10^seq(-4, 2, length.out = 20),
-  penalty = c("diff2", "diff1", "ridge"),
+  penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"),
   kernel_grid = NULL,
   hrf_lags = 0L,
   tune_by = c("global", "signal"),
@@ -53,8 +53,10 @@ deconvolve_reglin(
 
 - penalty:
 
-  regularization penalty: `"diff2"` for smooth curvature, `"diff1"` for
-  smooth first differences, or `"ridge"` for simple amplitude shrinkage.
+  regularization penalty: `"diff2"` for smooth second differences,
+  `"diff1"` for smooth first differences, `"ridge"` for amplitude
+  shrinkage, `"matern1"` for a damped first-order Matérn penalty, or
+  `"sobolev"` for a critically damped second-order Sobolev penalty.
 
 - kernel_grid:
 
@@ -137,10 +139,10 @@ deconvolve_reglin(
 
 - scaling:
 
-  Explicit input scaling: `"zscore"`, `"demean"`, `"none"`, or `"psc"`
-  (percent signal change). When supplied, overrides `normalize` and
-  `demean`. Otherwise those flags retain their existing behavior; the
-  default is z-scoring.
+  Explicit input scaling: `"zscore"`, `"noise_sd"`, `"demean"`,
+  `"none"`, or `"psc"` (percent signal change). When supplied, overrides
+  `normalize` and `demean`. Otherwise those flags retain their existing
+  behavior; the default is z-scoring.
 
 ## Value
 
