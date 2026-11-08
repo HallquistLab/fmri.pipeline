@@ -1,6 +1,6 @@
 ---
-title: "The fMRI Deconvolution & MEDuSA Pipeline Overhaul (PRs #42–#53)"
-subtitle: "Conceptual Foundations, Mathematical Formulation, Live R Demonstrations, and Critical Analysis"
+title: "MEDuSA technical companion: deconvolution and epoch models (PRs #42–#54)"
+subtitle: "Derivations, simulation experiments, implementation notes, and limitations"
 author: "fmri.pipeline Methods & Architecture Review"
 date: today
 format:
@@ -10,8 +10,8 @@ format:
     toc-location: left
     number-sections: true
     theme: default
-    html-math-method: mathml
-    code-fold: show
+    html-math-method: mathjax
+    code-fold: true
     code-tools: true
     embed-resources: true
     fig-width: 10.5
@@ -29,70 +29,22 @@ knitr::opts_chunk$set(
   fig.align = "center",
   out.width = "100%"
 )
-art_dir <- "/Users/hallquist/.gemini/antigravity/brain/801517e8-946f-482a-96a0-a34d545fa569"
-save_art_fig <- function(plot_obj, filename, width = 10, height = 5.2) {
-  if (dir.exists(art_dir)) {
-    ggplot2::ggsave(file.path(art_dir, filename), plot = plot_obj, width = width, height = height, dpi = 180, bg = "white")
-  }
-  plot_obj
-}
-
+# This companion uses a current installed package or an already loaded source
+# checkout (pkgload::load_all). Rendering never installs or compiles code itself.
+library(fmri.pipeline)
 library(ggplot2)
 library(patchwork)
 library(data.table)
 library(knitr)
-
-# Locate repository root whether rendered from vignettes/ or package root
-repo_root <- if (file.exists("DESCRIPTION")) {
-  normalizePath(".")
-} else if (file.exists("../DESCRIPTION")) {
-  normalizePath("..")
-} else {
-  stop("Cannot locate fmri.pipeline repository root.")
+stopifnot(exists("decon_epoch_regression", envir = asNamespace("fmri.pipeline"),
+                 inherits = FALSE))
+# Low-level helpers are used only to construct/audit simulations. Study workflows
+# should use the public interfaces in medusa-workflows.Rmd.
+for (fn in c("scale_decon_input", "hrf_event_design_cpp", "decon_convolution_matrix")) {
+  assign(fn, get(fn, envir = asNamespace("fmri.pipeline")))
 }
-
-# Load fmri.pipeline (with headless fallback if X11/imager is unavailable)
-loaded_ok <- tryCatch({
-  suppressPackageStartupMessages(library(fmri.pipeline))
-  exists("decon_epoch_regression", mode = "function")
-}, error = function(e) FALSE)
-
-if (!loaded_ok) {
-  suppressPackageStartupMessages({
-    library(Rcpp)
-    library(dplyr)
-    library(checkmate)
-    library(R6)
-    library(glue)
-  })
-  so_candidates <- c(
-    file.path(repo_root, "src", "fmri.pipeline.so"),
-    "/tmp/fmri.pipeline/libs/fmri.pipeline.so"
-  )
-  so_path <- so_candidates[file.exists(so_candidates)][1L]
-  if (is.na(so_path)) {
-    Makevars_tmp <- tempfile("Makevars")
-    writeLines("FLIBS =", Makevars_tmp)
-    Sys.setenv(R_MAKEVARS_USER = Makevars_tmp)
-    system2("R", c("CMD", "INSTALL", "--libs-only", "--no-test-load", "-l", "/tmp", repo_root))
-    so_path <- "/tmp/fmri.pipeline/libs/fmri.pipeline.so"
-  }
-  dyn.load(so_path)
-  rcpp_lines <- readLines(file.path(repo_root, "R", "RcppExports.R"))
-  rcpp_lines <- gsub("`(_fmri_pipeline_[^`]+)`", "'\\1', PACKAGE = 'fmri.pipeline'", rcpp_lines)
-  eval(parse(text = rcpp_lines), envir = .GlobalEnv)
-  r_files <- c(
-    "helper_functions.R", "spm_design.R", "fmri_ts.R",
-    "deconvolve_reglin.R", "deconvolve_wiener.R", "deconvolve_nlreg.R",
-    "deconvolution_bad_timepoints.R", "deconvolution_impulse_diagnostics.R",
-    "hrf_noise_evidence.R", "crossrun_hrf.R", "diagnose_crossrun_recovery.R",
-    "epoch_support.R", "event_lock_timeseries.R", "voxelwise_deconvolution.R"
-  )
-  for (f in r_files) {
-    fp <- file.path(repo_root, "R", f)
-    if (file.exists(fp)) source(fp, local = .GlobalEnv)
-  }
-}
+# Retain the original plotting calls without writing to an agent-specific folder.
+save_art_fig <- function(plot_obj, filename, width = 10, height = 5.2) plot_obj
 
 theme_medusa <- function(base_size = 11) {
   theme_minimal(base_size = base_size) +
@@ -109,31 +61,45 @@ theme_medusa <- function(base_size = 11) {
 }
 ```
 
-## Abstract & Executive Summary {.unnumbered}
+## How to use this companion {.unnumbered}
 
-Multi-level Event-locked Deconvolved Signal Analysis (**MEDuSA**) infers fast, within-trial population neural dynamics from slow, noisy Blood-Oxygen-Level-Dependent (BOLD) fMRI time series. Rather than collapsing an entire trial into a single general linear model (GLM) beta weight, MEDuSA operates across four sequential stages:
+This is the third part of a MEDuSA learning sequence:
 
-1. **Hemodynamic Identification:** Select or estimate a voxel/parcel-specific Hemodynamic Response Function (HRF) $\mathbf{h}_v$.
-2. **Regularized Deconvolution:** Invert the discrete convolution $\mathbf{y}_v \approx H(\mathbf{h}_v)\mathbf{s}_v + \mathbf{X}_0\boldsymbol{\gamma}_v + \mathbf{e}_v$ to recover a continuous latent neural activity time series $\hat{\mathbf{s}}_v$.
-3. **Event-Locked Readout & Alignment:** Interpolate and aggregate $\hat{\mathbf{s}}_v(t)$ on a time grid ($t_{r,i} + \tau$, e.g., $-2\text{ s}$ to $+8\text{ s}$) locked to specific within-trial events (`cue`, `response`, `feedback`).
-4. **Trial-Level Mixed-Effects Regression:** Regress the event-locked trajectory $\hat{y}_{r,i,v}(\tau)$ onto trial-by-trial behavioral or computational predictors (e.g., reward prediction error $\text{RPE}_{r,i}$, value, entropy) across runs, subjects, and lags.
+1. [Conceptual foundations](medusa-concepts.html): start with a cue–decision–feedback question, then connect convolution, regularization, HRF learning, units, overlap, and duration to familiar regression ideas.
+2. [Worked workflows](medusa-workflows.html): an executable one-participant simulation, followed by NIfTI, file-alignment, and group-model recipes.
+3. **This companion**: retain the equations and experiments for readers who want to inspect how the estimator works.
 
-Across **12 sequential Pull Requests (PRs #42–#53)**, the `fmri.pipeline` deconvolution and MEDuSA subsystem underwent a ground-up mathematical and algorithmic overhaul. This report provides a unified conceptual account, presents the governing equations, executes live R demonstrations of every core improvement, and concludes with a critical analysis of where real-world fMRI gains will be more modest than simulation benchmarks and what technical weaknesses remain to be addressed.
+The review covers **13 PRs, #42–#54**. Its historical basename is retained; the standalone source now lives at the repository root, outside package and pkgdown vignette discovery. The PR ledger is a navigation aid; the workflow vignette is the starting point for running an analysis. Literature precedents and an annotated reading sequence appear in the [primer](medusa-concepts.html#reading).
 
-::: {.callout-important}
-### Headline Performance Gains Across PRs #42–#53
-- **Computational Throughput (PRs #50–#51):** Replacing dense $O(T^3)$ Cholesky solvers, dense $T \times T$ trace inversions, and dense $m \times m$ AR(1) whitening matrices with $O(T b^2)$ lower-banded Cholesky factorizations, exact Takahashi banded-inverse recursions, and $O(m)$ tridiagonal stencils accelerated regularized linear deconvolution by **18.2×–48.4×** and cross-run HRF estimation/inversion by **4.0×–19.9×**, while cutting solver heap memory by **95%–99%**.
-- **Out-of-Sample HRF Identification (PRs #45, #46, #52):** Leave-one-run-out HRF selection with pooled grid-REML AR(1) whitening, condition-structured 2-DOF Taylor (`h` + `dh/dt`) reference tests, ridge-stabilized trial projections, and concordance-weighted spatial regularization raised non-canonical HRF recovery on signed zero-mean RPE designs from **6.9% to 100.0%** and on fast-ITI designs from **1.4% to 100.0%**, while holding false-positive adaptation on canonical and pure-noise data at **0.0%**.
-- **Epoch Correlation & Amplitude Recovery (PRs #43, #44, #47–#49, #53):** Replacing per-run $z$-score scaling (`zscore`) with AR(1)-adjusted second-difference noise scaling (`noise_sd`), adding composite Sobolev/Matérn penalties (`sobolev`, `matern1`), matched-filter readout kernels (`triangle`, `gaussian`), and resolution-matrix cross-talk de-mixing (`decon_epoch_regression()`) increased cross-epoch trial correlation in rapid jittered designs by **+80% to +90%**, improved spatial profile fidelity from **$r = 0.920 \to 0.992$**, and eliminated regularization amplitude shrinkage (**$\hat{\beta}/\beta_{\text{true}}$ restored from $0.072 \to 0.996$**).
-:::
+MEDuSA analyzes event-aligned proxies for latent population activity estimated from BOLD. The computational sequence is HRF specification/selection, continuous regularized inversion, event-level readout/source correction, and downstream trial/group modeling. None of these stages calibrates neuronal firing or establishes temporal resolution finer than the observations support.
+
+### What to take from the demonstrations
+
+A simulation is useful because its truth is known. It is also conditional on its event schedule, noise process, HRF, and neural source. The experiments below illustrate mechanisms, not universal performance guarantees. Read the tables generated by the current run rather than treating numerical values in an older rendered report as reference results. Correlation, amplitude recovery, waveform recovery, null calibration, and runtime are separate outcomes.
+
+The speed figure is a **legacy table of hard-coded values**, not a benchmark executed by this document. It is labeled separately below; reproducible benchmark drivers live in `inst/benchmarks/`. No numerical forecast of gains in human MEDuSA data is established here.
+
+### Notation in one place
+
+| Symbol | Meaning | Familiar interpretation |
+|---|---|---|
+| $H$ | Forward HRF convolution operator | Design matrix mapping candidate activity to BOLD |
+| $A$ | Fixed regularized inverse operator | Linear estimator mapping observations to activity |
+| $R=AH$ | Resolution operator | Expected recovered response to each source |
+| $W$ in whitening equations | Noise-whitening transform | GLS covariance adjustment |
+| $W(\tau)$ in epoch equations | Lag-specific readout weights | Weighted interpolation/aggregation; distinct from whitening |
+| $E$ or $G$ | Trial source or forward trial design | Impulses/boxcars placed at event times |
+| $P$, $\lambda$ | Penalty matrix and strength | Bias–variance tradeoff |
+
+The repeated letter $W$ reflects the original notation; its role is stated in each section. A derivation that conditions on a fixed HRF/noise/operator does not propagate the uncertainty of having estimated them.
 
 ---
 
-## Architecture Map & Chronological Ledger of PRs #42–#53
+## Architecture Map & Chronological Ledger of PRs #42–#54
 
 ```{r pr-ledger-table, echo=FALSE}
 pr_ledger <- data.frame(
-  PR = paste0("#", 42:53),
+  PR = paste0("#", 42:54),
   Stage = c(
     "Stage 0 & 3: Extraction & Alignment",
     "Stage 0 & 2: Scaling & Wiener GCV",
@@ -146,48 +112,55 @@ pr_ledger <- data.frame(
     "Stage 2: Banded Cholesky & Takahashi Trace",
     "Stage 1 & 2: Sparse AR(1) Whitening",
     "Stage 1: Subspace Calibration & Spatial Pooling",
-    "Stage 0, 2, 3, 4: Epoch Correlation & De-Mixing"
+    "Stage 0, 2, 3, 4: Epoch Correlation & De-Mixing",
+    "Stage 3 & 4: Trial-Varying Source Duration"
   ),
   Key_Functions = c(
     "voxelwise_deconvolution(), interpolate_fmri_epochs()",
-    "deconvolve_reglin(), deconvolve_wiener(), deconvolve_nlreg()",
+    "deconvolve_reglin(backend = wiener), deconvolve_nlreg()",
     "interpolate_epoch_unit(), deconvolution_impulse_diagnostics()",
     "hrf_library(), estimate_crossrun_hrf(), deconvolve_crossrun_hrf()",
-    "compute_calibrated_hrf_evidence(), diagnose_crossrun_recovery()",
+    "hrf_fold_evidence(), hrf_score_run_cpp(), diagnose_crossrun_recovery()",
     "inst/validation/parametric_recovery.R",
     "inst/validation/coefficient_recovery.R",
     "inst/validation/waveform_recovery.R, deconvolve_reglin()",
-    "deconvolve_reglin_cpp(), cholesky_band_lower(), takahashi_trace_sym_band()",
+    "deconvolve_reglin_cpp(), chol_band_lower_inplace(), trace_band_takahashi()",
     "hrf_inverse_operator_cpp(), hrf_score_run_cpp(), hrf_noise_profile_cpp()",
-    "build_taylor_reference_design(), compute_spatial_anchor_scores()",
-    "estimate_decon_noise_sd(), epoch_kernel_quadrature(), decon_epoch_regression()"
+    "hrf_build_run_design(), hrf_score_run_cpp(), estimate_crossrun_hrf()",
+    "estimate_decon_noise_sd(), epoch_kernel_quadrature(), decon_epoch_regression()",
+    "decon_epoch_regression(source_model = duration)"
   ),
   Core_Achievement = c(
     "Internal RNifti/Rcpp extraction; sform geometry checks; explicit decon_status & epoch_status.",
     "Explicit scaling modes (.scaling.csv); exact finite-sample Wiener GCV trace; consistent Bush normalization.",
     "Unit-before-group segment interpolation; auditable overlap_policy (allow/truncate/exclude); impulse diagnostics.",
     "Leave-one-run-out HRF selection with parcel anchors; 480-dataset validation revealing colored-noise false positives.",
-    "Pooled grid-REML AR(1) whitening + GLS F-tests + Meff correction; reduced null false positives from 89% to <2.5%.",
+    "Pooled grid-REML AR(1) whitening and library-adjusted evidence/fallback gates; null behavior requires validation.",
     "Audited trial-level RPE beta bias, coverage, and power under true neural variability and active nulls.",
-    "Quantified 75%-93% amplitude attenuation in raw deconvolved readouts vs. resolution-transformed designs.",
+    "Audited attenuation in raw readouts versus resolution-transformed designs under specified simulations.",
     "Fixed reglin tail padding, PCA variance weighting, and calibrated spatial parcel borrowing.",
-    "O(T b^2) banded Cholesky & Takahashi trace: 18.2x-48.4x faster deconvolution, 52x-159x less memory.",
-    "O(m) bidiagonal whitening & tridiagonal W'W stencils: 4.0x-19.9x faster HRF scoring/inversion, 96% fewer allocs.",
-    "Condition 2-DOF Taylor reference, trial_ridge, concordance spatial weights: 98.8%-100% HRF recovery.",
-    "noise_sd scaling, matern1/sobolev penalties, kernel readouts, and decon_epoch_regression() cross-talk de-mixing."
+    "Banded Cholesky and selected-inverse trace reduce core solver work/storage; benchmark separately.",
+    "Bidiagonal whitening and tridiagonal precision calculations replace dense whitening operations.",
+    "Coupled-condition training designs, subspace evidence comparison, and concordance-weighted spatial borrowing.",
+    "noise_sd scaling, matern1/sobolev penalties, kernel readouts, and decon_epoch_regression() cross-talk de-mixing.",
+    "Trial-varying boxcars with rate/integral conventions and duration-aware baseline correction."
   ),
   stringsAsFactors = FALSE
 )
 kable(
   pr_ledger,
   col.names = c("PR", "Pipeline Stage", "Primary Functions / Files", "Core Technical Achievement"),
-  caption = "Table 1: Complete ledger of deconvolution and MEDuSA improvements across PRs #42–#53."
+  caption = "Table 1: Complete ledger of deconvolution and MEDuSA improvements across PRs #42–#54."
 )
 ```
 
 ---
 
 ## Stage 0: Signal Extraction & Noise-Standardized Scaling (PRs #42, #43, #53)
+
+### Concept before equations: do not divide away the effect you want
+
+Two runs can differ in total temporal variance because their neural modulation differs, even when their measurement noise is identical. Z-scoring divides by both sources of variation. Noise scaling instead tries to standardize the noise floor. This changes cross-run amplitude comparisons; it does not change a within-run Pearson correlation under a fixed linear operator. The equation below assumes independent task signal and noise. Motion or task-correlated noise breaks that simple variance decomposition.
 
 ### Mathematical Problem: Why Per-Run $z$-Scoring (`zscore`) Distorts Multi-Run & Multi-Voxel Inference
 
@@ -225,12 +198,14 @@ $$
  yielding the robust measurement noise divisor:
 
 $$
-\hat{\sigma}_{e,r,v} = \frac{\operatorname{sd}_{\text{IQR}}(\Delta^2 \mathbf{y}_{r,v})}{\sqrt{2(1 - \hat{\rho}_r)(3 - \hat{\rho}_r)}}
+\hat{\sigma}_{e,r,v} = \frac{\operatorname{sd}_{\text{rob}}(\Delta^2 \mathbf{y}_{r,v})}{\sqrt{2(1 - \hat{\rho}_r)(3 - \hat{\rho}_r)}}
 $$
+
+The current robust scale numerator averages the sample SD and the zero-centered, normal-consistent MAD of second differences when both are usable. It is not an IQR estimator. Estimated autocorrelation is bounded by the implementation, so the formula is a working approximation under the AR(1)/smooth-signal assumptions.
 
 ### Live Demonstration 1: `scaling = "zscore"` vs. `scaling = "noise_sd"`
 
-```{r demo1-noise-sd, fig.cap="Figure 1: Comparison of per-run z-score standardization ('zscore') vs. AR(1)-adjusted second-difference noise standardization ('noise_sd') across 3 runs with differing behavioral RPE modulation variance (sd = 0.5, 1.0, 1.8) and 16 voxels spanning an 8x gradient of neural reactivity (true noise sigma_e = 0.25, AR(1) rho = 0.45). (A) 'zscore' divisors inflate strongly with both voxel reactivity and run modulation variance, whereas 'noise_sd' recovers the exact horizontal measurement noise floor (0.25). (B) Consequently, 'zscore' compresses recovered neural slopes in high-reactivity voxels and across runs, whereas 'noise_sd' preserves strict linearity."}
+```{r demo1-noise-sd, fig.cap="Scaling demonstration with three runs and a voxel-reactivity gradient. The dotted reference marks the simulated noise SD. Noise SD is estimated, not exactly known; the effective-slope panel isolates the effect of the divisor rather than fitting a complete deconvolution pipeline."}
 set.seed(202601)
 tr <- 1.0
 n_time <- 180L
@@ -289,7 +264,7 @@ p1a <- ggplot(df_div, aes(x = true_beta, y = divisor, color = run, linetype = me
   scale_color_manual(values = c("#2563eb", "#059669", "#dc2626")) +
   labs(
     title = "A. Scaling Divisor vs. Voxel Reactivity",
-    subtitle = "zscore inflates with task signal;\nnoise_sd isolates the 0.25 noise floor",
+    subtitle = "zscore inflates with task signal;\nnoise_sd estimates the noise floor",
     x = "True Voxel Neural Reactivity (beta_v)",
     y = "Applied Scaling Divisor",
     color = "Run Regime", linetype = "Scaling Mode", shape = "Scaling Mode"
@@ -304,7 +279,7 @@ p1b <- ggplot(df_div, aes(x = true_beta, y = effective_slope, color = run, linet
   scale_color_manual(values = c("#2563eb", "#059669", "#dc2626")) +
   labs(
     title = "B. Standardized Slope Recovery",
-    subtitle = "zscore compresses high-SNR voxels;\nnoise_sd preserves strict linearity",
+    subtitle = "zscore compresses high-SNR voxels;\nnoise_sd preserves amplitude comparability",
     x = "True Voxel Neural Reactivity (beta_v)",
     y = "Recovered Slope (Noise-Floor Units)",
     color = "Run Regime", linetype = "Scaling Mode", shape = "Scaling Mode"
@@ -322,35 +297,30 @@ save_art_fig(fig1, "fig1_noise_sd.png", width = 10.5, height = 5.6)
 
 ### Mathematical Formulation of Out-of-Sample HRF Selection
 
-When a brain region's true hemodynamic peak occurs at 4 s (e.g., striatum, visual cortex) or 8 s (e.g., anterior prefrontal cortex), deconvolving with a fixed canonical 6 s HRF shifts the recovered neural peak by 1–2 TRs and introduces biphasic ringing that bleeds across adjacent within-trial epochs. To identify $\mathbf{h}_v$ without circular in-sample overfitting, `estimate_crossrun_hrf()` selects each target run $r^*$'s kernel strictly from out-of-sample training runs $\mathcal{T}_{r^*} = \{r \neq r^*\}$.
+An HRF that peaks earlier or later than the assumed shape can move recovered activity toward a neighboring within-trial event. Peak-delay values in this simulation are illustrative, not fixed properties of named regions. [Handwerker et al. (2004)](https://pubmed.ncbi.nlm.nih.gov/15050587/) motivates sensitivity to HRF variation. Target-run shape selection uses only the other runs, but its own noise covariance can be estimated from its observations.
 
-1. **Pooled Grid-REML AR(1) Whitening (PRs #46 & #51):**
-   Within each training run $r$ and parcel $g$, `hrf_noise_profile_cpp()` profiles the Gaussian REML log-likelihood over $\rho \in [-0.8, 0.9]$ using a broad reference design $\mathbf{X}_{\text{ref}}$:
+1. **Pooled grid-REML noise estimation (PRs #46, #51).** For each candidate AR(1) coefficient, nuisance/task effects are accounted for and a restricted-likelihood profile is computed. Profiles, rather than BOLD signals, are pooled across voxels in a supplied group. This avoids canceling positive and negative task responses merely to estimate covariance. Schematically, with $m$ retained observations and mean-design rank $p$,
    $$
-   \ell_{\text{REML}}(\rho) = -\frac{1}{2}\left[(m - p)\log\hat{\sigma}^2(\rho) + \log|\boldsymbol{\Sigma}(\rho)| + \log|\mathbf{X}_{\text{ref}}^\top \boldsymbol{\Sigma}(\rho)^{-1} \mathbf{X}_{\text{ref}}|\right]
+   \ell_{\mathrm{REML}}(\rho)=-\frac12\left[(m-p)\log\hat\sigma^2(\rho)+\log|\Sigma(\rho)|+\log|X^\top\Sigma(\rho)^{-1}X|\right]+\mathrm{constant}.
    $$
+   Masked observations retain their original acquisition spacing. The current implementation includes derivative-augmented mean designs for covariance estimation when residual degrees of freedom permit; this is distinct from the HRF candidate evidence comparison.
 
-2. **Condition-Structured 2-DOF Taylor Reference Test & Ridge-Stabilized Trial Projections (PR #52):**
-   To guard against adapting HRF shapes to colored noise, PR #46 introduced conditional GLS $F$-tests for task presence ($p_{\text{task}}$) and non-canonical shape superiority ($p_{\text{shape}}$). However, PR #46 initially embedded the canonical fallback $\mathbf{h}_0$ in a 3-basis Taylor expansion ($h_0, \partial_t h_0, \partial_{\text{disp}} h_0$) applied to *every regressor column*. In `amplitude_model = "event"` with $N_{\text{events}}$ trial columns, this consumed $3 N_{\text{events}}$ degrees of freedom and allowed canonical derivatives at `cue` to absorb shifted `feedback` signals (causing HRF recovery on signed zero-mean RPE modulations to fall to **6.9%**).
-   
-   PR #52 resolved this in `build_taylor_reference_design()` by testing the candidate trial design $\mathbf{X}_{\text{event}}(\mathbf{h}_{\hat{c}})$ against a **condition-level 2-DOF canonical Taylor baseline**:
-   $$
-   \mathcal{S}_{\text{ref}}(\mathbf{h}_0) = \operatorname{span}\!\left(\mathbf{X}_{\text{event}}(\mathbf{h}_0) \;\cup\; \mathbf{X}_{\text{cond}}\!\left(\frac{\partial \mathbf{h}_0}{\partial t}\right)\right)
-   $$
-   consuming at most $2Q$ additional columns (where $Q$ is the number of conditions) and stabilizing collinear rapid-event designs via ridge projection (`trial_ridge`):
-   $$
-   \hat{\boldsymbol{\beta}}_c = \left(\tilde{\mathbf{X}}_c^\top \tilde{\mathbf{X}}_c + \gamma_{\text{trial}}\mathbf{I}\right)^{-1} \tilde{\mathbf{X}}_c^\top \tilde{\mathbf{y}}, \qquad p_{\text{eff},c} = \operatorname{tr}\!\left[\left(\tilde{\mathbf{X}}_c^\top \tilde{\mathbf{X}}_c + \gamma_{\text{trial}}\mathbf{I}\right)^{-1} \tilde{\mathbf{X}}_c^\top \tilde{\mathbf{X}}_c\right]
-   $$
+2. **Coupled-event designs and subspace evidence (PR #52).** Free amplitudes for every closely spaced event can make different HRFs generate nearly indistinguishable design spaces: a shifted cue can be explained by a neighboring feedback regressor. The current `hrf_build_run_design()` detects closely coupled/dense multi-condition schedules and compares training designs that free one condition's event amplitudes while representing the other conditions by shared amplitudes. The most informative training design is retained. Outside this case it uses free event amplitudes. This stabilization is not a public `trial_ridge` tuning argument.
 
-3. **Concordance-Weighted & Coordinate-Kernel Spatial Regularization (PR #52):**
-   To prevent noisy voxels or misregistered parcel boundaries from corrupting spatial anchors, each voxel's pooling weight combines its positive training score $R^2_{\text{pos},v}$ with its profile concordance against its spatial neighborhood $N(v)$:
+   `hrf_score_run_cpp()` removes nuisance effects, obtains SVD task subspaces, and calculates task support and candidate/fallback comparisons. In higher-rank designs it also uses principal-angle directions between the fallback and candidate subspaces to focus the departure comparison. Principal angles describe how far two collections of possible fitted timecourses point in different directions. This is not the `build_taylor_reference_design()`/two-DOF Taylor implementation named in the earlier report; that function is absent from this checkout. Library corrections and training-run compatibility gates then enter fold selection. Nominal evidence tests condition on the working noise/mean model; adaptive subspace comparisons, estimated covariance, and design selection warrant empirical null validation.
+
+3. **Concordance-weighted borrowing (PR #52).** Let $\mathbf q_v$ be the vector of a voxel's candidate scores and $\bar{\mathbf q}_{N(v)}$ its neighbors' profile. For more than two candidates the implementation forms
    $$
-   w_v = R^2_{\text{pos},v} \cdot \max\!\left(0,\; \operatorname{corr}(\mathbf{r}_v, \bar{\mathbf{r}}_{N(v)})\right)
+   c_v=\max\{0,\operatorname{corr}(\mathbf q_v,\bar{\mathbf q}_{N(v)})\},\qquad
+   w_v=\min\!\left(0.85,\frac{\eta}{\eta+0.02}\right)c_v^2,
    $$
+   with special handling of two-candidate grids and strong penalties. Here $\eta$ is `spatial_strength`. The score objective can blend individual and neighbor profiles and penalize distance to a supported anchor. Coordinates optionally localize neighbors within parcels. This is a discrete score-based regularizer, not a posterior probability or spatial smoothing of activity. Inspect source/selection tables for gating details; a single schematic weight does not describe every branch.
+
+**MEDuSA consequence:** a better-supported vascular shape can reduce event misattribution, especially when signed trial responses average away. Cross-fitting cannot distinguish a stable neural delay shared across runs from a vascular delay, and fallback remains appropriate when the design cannot distinguish shapes.
 
 ### Live Demonstration 2: Out-of-Sample HRF Recovery on Signed Zero-Mean RPE Designs
 
-```{r demo2-crossrun-hrf, fig.cap="Figure 2: Live execution of estimate_crossrun_hrf() and deconvolve_crossrun_hrf() across 3 parcels with distinct true vascular peak delays (Parcel 1: 4 s fast peak; Parcel 2: 6 s canonical peak; Parcel 3: 8 s slow peak with 25% boundary contamination) in a rapid cue-to-feedback task where feedback responses are zero-mean signed RPEs. (A) True vs. Canonical (6 s) vs. Learned cross-run HRF kernels. (B) Average deconvolved neural epoch around feedback onset in Parcel 1 (4 s true HRF): deconvolving with the canonical 6 s HRF shifts the recovered neural peak backward by ~2 s (bleeding into the preceding cue epoch), whereas the learned cross-run HRF aligns the peak exactly at feedback onset (0 s)."}
+```{r demo2-crossrun-hrf, fig.cap="Illustrative cross-run HRF selection with fast, canonical, and slow simulated shapes, signed feedback responses, and one boundary contaminant among six voxels in the last parcel. Compare selected kernels and event-locked slopes; exact selection or timing recovery is not guaranteed."}
 set.seed(202602)
 lib <- hrf_library(1.0, peak_delays = c(4, 5, 6, 7, 8), dispersions = c(0.9, 1.0, 1.1), undershoot_ratios = 6)
 idx_4s <- which(lib_meta <- attr(lib, "parameters")$peak_delay == 4 & attr(lib, "parameters")$dispersion == 1.0)[1L]
@@ -440,7 +410,7 @@ p2a <- ggplot(df_kernels, aes(x = time, y = h, color = type, linetype = type)) +
   scale_linetype_manual(values = c("Canonical 6s Assumption" = "dashed", "Learned Cross-Run HRF" = "solid", "True HRF" = "dotted")) +
   guides(color = guide_legend(nrow = 2), linetype = guide_legend(nrow = 2)) +
   labs(
-    title = "A. Out-of-Sample HRF Identification",
+    title = "A. Cross-Run HRF Selection",
     subtitle = "Recovery of 4 s and 8 s kernels under signed RPE",
     x = "Time from Impulse (s)", y = "Unit-Sum HRF Amplitude",
     color = "Kernel", linetype = "Kernel"
@@ -460,7 +430,7 @@ p2b <- ggplot(df_lag_p1, aes(x = lag, y = beta_raw, color = model)) +
   guides(color = guide_legend(nrow = 2)) +
   labs(
     title = "B. Epoch Timing Shift (Parcel 1, True 4s HRF)",
-    subtitle = "Canonical 6s HRF shifts feedback peak 2s early into cue",
+    subtitle = "Compare timing under fixed and learned HRFs",
     x = "Time Relative to Feedback Onset (s)", y = "Raw Deconvolved RPE Slope",
     color = "Deconvolution HRF"
   ) +
@@ -474,6 +444,10 @@ save_art_fig(fig2, "fig2_crossrun_hrf.png", width = 10.5, height = 5.5)
 
 ## Stage 2: Fast Banded Prewhitened Deconvolution & Composite Penalties (PRs #50, #51, #53)
 
+### Concept before equations: a stable inverse is deliberately biased
+
+The HRF suppresses fast variation, so naive inversion amplifies noise. A quadratic penalty trades amplitude and temporal detail for stability; the choice of penalty determines what kinds of activity are expensive. GCV chooses an observation-domain fit/flexibility tradeoff, not the setting that must recover a behavioral effect best. [Golub et al. (1979)](https://doi.org/10.1080/00401706.1979.10489751) supplies the statistical precedent.
+
 ### Mathematical Formulation of Banded Prewhitened Deconvolution
 
 Given the prewhitened observation vector $\tilde{\mathbf{y}}_{r,v}$ and Toeplitz convolution matrix $H_r(\hat{\mathbf{h}}_{r,v}) \in \mathbb{R}^{T \times n_{\text{latent}}}$, regularized linear deconvolution solves:
@@ -483,7 +457,7 @@ $$
 $$
 
 #### Composite Matérn-1 and Sobolev Penalties (PR #53)
-Single-order difference penalties suffer from structural null spaces: `diff1` ($\mathbf{D}_1^\top \mathbf{D}_1$) leaves constant offsets unpenalized, while `diff2` ($\mathbf{D}_2^\top \mathbf{D}_2$) leaves both constants and linear ramps ($\operatorname{span}\{\mathbf{1}, \mathbf{t}\}$) unpenalized—allowing low-frequency baseline wander to contaminate deconvolved time series across a run. Conversely, pure ridge (`identity`) shrinks sharp impulse peaks toward zero. PR #53 introduced two strictly positive-definite composite banded penalties:
+Single-order difference penalties suffer from structural null spaces: `diff1` ($\mathbf{D}_1^\top \mathbf{D}_1$) leaves constant offsets unpenalized, while `diff2` ($\mathbf{D}_2^\top \mathbf{D}_2$) leaves both constants and linear ramps ($\operatorname{span}\{\mathbf{1}, \mathbf{t}\}$) unpenalized—allowing low-frequency baseline wander to contaminate deconvolved time series across a run. Conversely, pure ridge (`ridge`) shrinks sharp impulse peaks toward zero. PR #53 introduced two strictly positive-definite composite banded penalties:
 
 $$
 \mathbf{P}_{\text{matern1}} = 0.10\,\mathbf{I} + 0.90\,\mathbf{D}_1^\top \mathbf{D}_1 \quad (b_P = 1), \qquad \mathbf{P}_{\text{sobolev}} = 0.05\,\mathbf{I} + 0.45\,\mathbf{D}_1^\top \mathbf{D}_1 + 0.50\,\mathbf{D}_2^\top \mathbf{D}_2 \quad (b_P = 2)
@@ -492,8 +466,8 @@ $$
 #### $O(n_{\text{latent}} b^2)$ Banded Cholesky & Exact Takahashi Trace Recursion (PRs #50 & #51)
 Because $H_r$ has finite kernel length $K$ and $\mathbf{W}_r^\top \mathbf{W}_r$ is tridiagonal, the normal matrix $\mathbf{M}(\lambda)$ is strictly banded with half-bandwidth $b = \max(K - 1 + \mathbb{I}(\text{prewhiten}), b_P) \ll n_{\text{latent}}$.
 
-- **In-Place Banded Cholesky (`cholesky_band_lower`, PR #50):** Factorizes $\mathbf{M}(\lambda) = \mathbf{L}\mathbf{L}^\top$ in $O(n_{\text{latent}} b^2)$ flops inside a compact $(b+1) \times n_{\text{latent}}$ buffer instead of $O(n_{\text{latent}}^3)$.
-- **Takahashi Banded-Inverse Trace (`takahashi_trace_sym_band`, PR #50):** To evaluate $\operatorname{df}(\lambda) = \operatorname{tr}(\mathbf{M}(\lambda)^{-1} H_r^\top H_r)$ for GCV tuning, we only need entries of $\mathbf{Z} = \mathbf{M}(\lambda)^{-1}$ within the band $|i - j| \le b$ where $(H_r^\top H_r)_{ij} \neq 0$. The backward recursion:
+- **In-Place Banded Cholesky (`chol_band_lower_inplace`, PR #50):** Factorizes $\mathbf{M}(\lambda) = \mathbf{L}\mathbf{L}^\top$ in $O(n_{\text{latent}} b^2)$ flops inside a compact $(b+1) \times n_{\text{latent}}$ buffer instead of $O(n_{\text{latent}}^3)$.
+- **Takahashi Banded-Inverse Trace (`trace_band_takahashi`, PR #50):** To evaluate $\operatorname{df}(\lambda) = \operatorname{tr}(\mathbf{M}(\lambda)^{-1} H_r^\top \mathbf W_r^\top\mathbf W_r H_r)$ for GCV tuning, we only need entries of $\mathbf{Z} = \mathbf{M}(\lambda)^{-1}$ within the band $|i - j| \le b$ where the whitened normal-product entries can be nonzero. The backward recursion:
   $$
   Z_{i,j} = -\frac{1}{L_{0,i}}\sum_{k=1}^{\min(b, n-1-i)} L_{k,i}\,Z_{i+k,j} \quad (j > i), \qquad Z_{i,i} = \frac{1}{L_{0,i}}\left(\frac{1}{L_{0,i}} - \sum_{k=1}^{\min(b, n-1-i)} L_{k,i}\,Z_{i+k,i}\right)
   $$
@@ -501,7 +475,7 @@ Because $H_r$ has finite kernel length $K$ and $\mathbf{W}_r^\top \mathbf{W}_r$ 
 
 ### Live Demonstration 3: Penalty Resolution Kernels & Drift Suppression (`diff2` vs. `sobolev` vs. `matern1`)
 
-```{r demo3-penalties, fig.cap="Figure 3: Comparison of regularization penalties in deconvolve_reglin(). (A) Effective impulse resolution kernel R = A(lambda) H centered at t = 40 s: 'identity' produces narrow but heavily attenuated peaks with negative sidelobes, whereas 'sobolev' and 'matern1' yield smooth, well-localized positive resolution bumps. (B) Under slow unmodeled baseline drift + phasic neural events, 'diff2' permits linear ramp drift in its null space (corrupting trial baselines across the run), whereas 'sobolev' anchors the baseline to zero while preserving phasic event peaks."}
+```{r demo3-penalties, fig.cap="Impulse responses and drift sensitivity for five penalties at a fixed lambda. Differences reflect the complete regularized inverse, not only the isolated penalty. Compare localization, attenuation, ringing, and baseline sensitivity separately."}
 set.seed(202603)
 T_pen <- 100L
 y_imp <- stats::filter(c(rep(0, 39L), 1.0, rep(0, T_pen - 40L)), hrf_can, sides = 1L)
@@ -574,9 +548,11 @@ fig3 <- p3a + p3b
 save_art_fig(fig3, "fig3_penalties.png", width = 10.5, height = 5.5)
 ```
 
-### Live Demonstration 4: Computational Scaling of PR #50 & PR #51 C++ Kernels
+### Historical illustration: computational scaling
 
-```{r demo4-speed-benchmarks, fig.cap="Figure 4: Empirical wall-clock execution time (A) and solver working memory footprint (B) across run lengths T = 200 to 1,200 volumes (V = 200 voxels, 10-lambda GCV grid, K = 25). Replacing the O(T^3) dense Cholesky solver and matrix-RHS trace with the O(T b^2) lower-banded Cholesky solver and Takahashi banded-inverse recursion in PR #50 yields a 48.4x speedup at T = 1,200 and reduces solver working memory by 159x."}
+The following values were hard-coded in the original report. This document does not regenerate them, and the table does not record a complete machine/revision/repetition provenance. Retain the plot only as a historical illustration of the proposed scaling advantage, not as a new measured result. Run `inst/benchmarks/deconvolution.R` for a revision comparison and `inst/benchmarks/hrf_noise.R` or `inst/benchmarks/crossrun_hrf.R` for the corresponding cross-run paths. Capture revision, hardware, thread count, repetitions, and numerical agreement with benchmark output. Core banded buffers are not the total memory footprint of the matrix API.
+
+```{r demo4-speed-benchmarks, fig.cap="Historical hard-coded runtime and buffer-size values from the original report. This chunk plots supplied numbers; it does not execute or validate a benchmark. See the benchmark scripts for reproducible measurements."}
 df_bench <- data.frame(
   T_vols = rep(c(200, 400, 600, 800, 1200), 2L),
   Solver = rep(c("Pre-PR #50: Dense Cholesky + Dense Trace O(T^3)",
@@ -593,8 +569,8 @@ p4a <- ggplot(df_bench, aes(x = T_vols, y = Time_ms, color = Solver, shape = Sol
   scale_y_log10() +
   scale_color_manual(values = c("#dc2626", "#2563eb")) +
   labs(
-    title = "A. 10-Lambda GCV Deconvolution Runtime (Log Scale)",
-    subtitle = "V = 200 voxels, K = 25; up to 48.4x faster at T = 1,200",
+    title = "A. Historical runtime illustration",
+    subtitle = "Hard-coded legacy values; not a live benchmark",
     x = "Run Length T (Volumes)", y = "Wall-Clock Time (ms, log10 scale)",
     color = "Solver Architecture", shape = "Solver Architecture"
   ) +
@@ -605,8 +581,8 @@ p4b <- ggplot(df_bench, aes(x = T_vols, y = Memory_MB, color = Solver, shape = S
   geom_point(size = 2.8) +
   scale_color_manual(values = c("#dc2626", "#2563eb")) +
   labs(
-    title = "B. Solver Working Memory Footprint (Linear Scale)",
-    subtitle = "O(T b) band buffer (0.28 MB) vs. O(T^2) dense inverse buffers (44.5 MB)",
+    title = "B. Historical solver-buffer illustration",
+    subtitle = "Core buffers only; not total process memory",
     x = "Run Length T (Volumes)", y = "Peak Solver Buffer Memory (MB)",
     color = "Solver Architecture", shape = "Solver Architecture"
   ) +
@@ -618,7 +594,11 @@ save_art_fig(fig4, "fig4_speed_benchmarks.png")
 
 ---
 
-## Stage 3 & Stage 4: Matched-Filter Readouts & Resolution-Matrix Epoch De-Mixing (PRs #44, #47–#49, #53)
+## Stage 3 & Stage 4: Kernel Readouts & Resolution-Matrix Epoch De-Mixing (PRs #44, #47–#49, #53)
+
+### Read the resolution matrix as a measurement model
+
+Imagine feeding the pipeline a unit input at feedback. If its recovered peak is small and spreads into the next trial, a small behavioral slope may reflect this measurement process rather than weak coding. The resolution matrix records that expected spread for each possible source. Applying the same inverse and readout to a forward trial design predicts gain and cross-talk under the assumed source shape. This is the link from the algebra below to MEDuSA's trial-level estimand; compare [Mumford et al. (2012)](https://pmc.ncbi.nlm.nih.gov/articles/PMC3251697/) for the related problem of unstable trial estimates in overlapping BOLD designs.
 
 ### Mathematical Formulation of Epoch Cross-Talk & `decon_epoch_regression()`
 
@@ -630,10 +610,10 @@ $$
 
 where $\mathbf{R}_r = \mathbf{A}_r(\lambda)H_r(\hat{\mathbf{h}}_{r,v})$ is the $n_{\text{latent}} \times n_{\text{latent}}$ resolution matrix. Two fundamental distortions occur if $\hat{\mathbf{z}}_{r,v}(\tau)$ is regressed directly onto behavioral predictors:
 
-1. **Regularization Amplitude Shrinkage:** Because $\lambda \mathbf{P}$ shrinks the inverse operator $\mathbf{A}_r(\lambda)$, the diagonal impulse gain $g_{r,i} = (\mathbf{W}_r(0)\mathbf{R}_r \mathbf{E}_{\text{target}})_{i,i}$ is typically **$0.07\text{--}0.25$**, biasing raw parametric regression slopes $\hat{\beta}_{\text{raw}}$ downward by **75%–93%**.
+1. **Regularization Amplitude Shrinkage:** Because $\lambda \mathbf{P}$ shrinks the inverse operator $\mathbf{A}_r(\lambda)$, the diagonal impulse gain $g_{r,i} = (\mathbf{W}_r(0)\mathbf{R}_r \mathbf{E}_{\text{target}})_{i,i}$ can be substantially below one. Its value depends on HRF, lambda, penalty, schedule, and readout; there is no universal attenuation range.
 2. **Non-Target Event & Adjacent-Trial Leakage:** Preceding `cue` and `response` events ($1\text{--}2\text{ s}$ before `feedback`) leak through the main lobe of $\mathbf{R}_r$ into the `feedback` readout, while jittered inter-trial intervals cause adjacent target trials to cross-contaminate one another.
 
-`decon_epoch_regression()` resolves both distortions in two exact linear stages:
+`decon_epoch_regression()` addresses both distortions with stabilized linear corrections conditional on the fitted operator and source model:
 
 1. **Orthogonalized Non-Target Event De-Mixing (`demix_other_events = TRUE`):**
    Jointly fits condition-level means across *all* conditions ($\mathbf{M}_{\text{cond}} = [\mathbf{R}_r \mathbf{e}_{\text{cond},1}, \dots, \mathbf{R}_r \mathbf{e}_{\text{cond},Q}]$), subtracts only the non-target condition means $\sum_{c \neq \text{target}} \mathbf{M}_{\text{cond},c}\hat{\alpha}_{c,v}$, and projects centered non-target trial fluctuations $\mathbf{U}_{\text{other}} = \mathbf{R}_r \tilde{\mathbf{E}}_{\text{other}}$ onto the orthogonal complement of the target trial space:
@@ -642,15 +622,17 @@ where $\mathbf{R}_r = \mathbf{A}_r(\lambda)H_r(\hat{\mathbf{h}}_{r,v})$ is the $
    $$
    This removes `cue`/`response` jitter and trial variance without subtracting any signal in the span of the target `feedback` events.
 
-2. **Unit-Diagonal Target Cross-Talk Inversion & Gain Restoration (`demix_target_trials = TRUE`, `restore_scale = TRUE`):**
-   Defining the target cross-talk matrix $\mathbf{K}_r(0) = \mathbf{W}_r(0)\mathbf{R}_r \mathbf{E}_{\text{target}}$ with diagonal gain vector $\mathbf{g}_r = \operatorname{diag}(\mathbf{K}_r(0))$ and unit-diagonal cross-talk matrix $\mathbf{C}_r = \mathbf{K}_r(0)\operatorname{diag}(\mathbf{g}_r)^{-1}$, the de-mixed, gain-restored trial estimates are:
+2. **Gain-normalized target cross-talk correction.** Define $K=W(\tau)AE_{\mathrm{BOLD}}$, where $E_{\mathrm{BOLD}}$ is the forward BOLD design for the source at the tested lag, and let $g_i=K_{ii}$. The implementation normalizes **rows**, $C=\operatorname{diag}(g_{\mathrm{safe}})^{-1}K$, and uses $Q=I-\mathbf1\mathbf1^\top/m$ to penalize centered trial fluctuations:
    $$
-   \hat{\mathbf{a}}_{\text{demixed},r,v}(\tau) = \tilde{\sigma}_{r,v}\,\operatorname{diag}(\mathbf{g}_r)^{-1}\left(\mathbf{C}_r^\top \mathbf{C}_r + \gamma_{\text{demix}}\mathbf{I}\right)^{-1}\mathbf{C}_r^\top\,\hat{\mathbf{z}}_{r,v}^{\perp}(\tau)
+   B=(C^\top C+\gamma Q+\delta I)^{-1}C^\top\operatorname{diag}(g_{\mathrm{safe}})^{-1}.
    $$
+   `gain_floor` bounds small diagonal divisors. Additional temporal-centering and average fluctuation-gain adjustments enter the returned trial estimates. `restore_scale = TRUE` reverses the saved input divisor; it does **not** activate de-mixing (the two `demix_*` arguments control that). The simplified formula is conditional on this operator; nuisance projection, masks, source duration, and boundaries must match the actual fit. Weakly identified source combinations remain uncertain despite stabilization.
 
-### Live Demonstration 5: End-to-End MEDuSA Epoch Correlation & Amplitude Recovery
+### Live Demonstration 5: MEDuSA epoch correlation and amplitude recovery
 
-```{r demo5-epoch-demixing, fig.height=8.5, fig.cap="Figure 5: End-to-end demonstration of PR #53 epoch recovery improvements on a 3-run rapid event-related cue -> response -> feedback task (1.2-2.2 s jitter, 3.0-5.2 s ITI, AR(1) rho = 0.45, true feedback RPE slope beta_true = 0.85). (A) Event-locked RPE slope profile beta(tau) across lags [-3, +6] s: raw deconvolution ('zscore + diff2 + linear') is severely attenuated (peak 0.06) and contaminated by preceding cue/response leakage, whereas 'decon_epoch_regression()' recovers the exact true peak (0.85) centered at lag = 0 s. (B) Trial-by-trial scatter of recovered vs. true feedback responses across all 84 pooled trials: correlation jumps from r = 0.37 to r = 0.69 and slope aligns with the y = x identity line. (C) Progressive ablation across the 5 pipeline stages."}
+These configurations use a shared cross-run HRF fit and current linear inverses. They are an ablation of settings, not a direct comparison with the historical Bush encoding workflow. The first configuration also retains standardized units while later configurations restore input units; slope differences across those configurations therefore mix a unit change with other changes. Compare raw and corrected output from the same configuration to isolate correction, as in the workflow vignette.
+
+```{r demo5-epoch-demixing, fig.height=8.5, fig.cap="One synthetic rapid-event experiment comparing successive scaling, penalty, readout, and de-mixing choices. Ground truth is known here. The generated table reports the current-run slopes and correlations; this single realization does not establish inferential calibration."}
 set.seed(202605)
 n_runs_m <- 2L
 n_trials_m <- 36L
@@ -729,9 +711,9 @@ reg_s5 <- decon_epoch_regression(dec_s3, rpe_m, events = events_m, target_condit
                                  demix_other_events = TRUE, demix_target_trials = TRUE, restore_scale = TRUE, return_panel = TRUE)
 
 df_profile <- rbind(
-  data.frame(lag = reg_s1$summary$lag, method = "1. Legacy Raw (zscore + diff2)", beta = reg_s1$summary$mean_beta_raw),
+  data.frame(lag = reg_s1$summary$lag, method = "1. Uncorrected linear (zscore + diff2)", beta = reg_s1$summary$mean_beta_raw),
   data.frame(lag = reg_s4$summary$lag, method = "4. Pre-Demix (noise_sd + sobolev)", beta = reg_s4$summary$mean_beta_raw),
-  data.frame(lag = reg_s5$summary$lag, method = "5. Full PR #53 (De-Mixed + Gain Restored)", beta = reg_s5$summary$mean_beta_corrected)
+  data.frame(lag = reg_s5$summary$lag, method = "5. Corrected linear (de-mixed + rescaled)", beta = reg_s5$summary$mean_beta_corrected)
 )
 
 # Extract trial-by-trial averages across voxels at lag = 0 for scatter plot (sorted by run then trial!)
@@ -745,7 +727,7 @@ agg_s5$rpe <- rpe_vec
 
 df_scatter <- rbind(
   data.frame(rpe = agg_s1$rpe, est = agg_s1$decon_raw - mean(agg_s1$decon_raw),
-             stage = sprintf("1. Legacy Raw (r = %.2f, slope = %.2f)",
+             stage = sprintf("1. Uncorrected linear (r = %.2f, slope = %.2f)",
                              cor(agg_s1$rpe, agg_s1$decon_raw), coef(lm(decon_raw ~ rpe, data = agg_s1))[2L])),
   data.frame(rpe = agg_s5$rpe, est = agg_s5$decon_demixed - mean(agg_s5$decon_demixed),
              stage = sprintf("5. Full PR #53 De-Mixed (r = %.2f, slope = %.2f)",
@@ -795,7 +777,7 @@ p5a <- ggplot(df_profile, aes(x = lag, y = beta, color = method, linetype = meth
   guides(color = guide_legend(nrow = 3), linetype = guide_legend(nrow = 3)) +
   labs(
     title = "A. Event-Locked RPE Slope Profile",
-    subtitle = "De-mixing removes cue leakage & restores peak at 0s",
+    subtitle = "Compare readout bias under successive model choices",
     x = "Lag Relative to Feedback Onset (s)", y = "Estimated RPE Slope (beta)",
     color = NULL, linetype = NULL
   ) +
@@ -823,7 +805,7 @@ p5c <- ggplot(df_ablation, aes(x = Stage, y = Correlation_r, fill = Stage)) +
   scale_fill_manual(values = c("#ef4444", "#f59e0b", "#10b981", "#06b6d4", "#2563eb")) +
   labs(
     title = "C. Step-by-Step Ablation at Feedback Onset (Lag = 0s)",
-    subtitle = "Progressive gains in cross-epoch trial correlation (r) and amplitude recovery ratio (hat_beta / beta_true)",
+    subtitle = "Correlation and amplitude recovery are different outcomes",
     x = NULL, y = "Mean Cross-Epoch Trial Correlation (r)"
   ) +
   theme_medusa() +
@@ -854,22 +836,20 @@ A rigorous methodological review requires examining both **why real-world human 
 
 ### Why Real-World fMRI Gains Will Be More Modest Than Simulation Benchmarks
 
-While the computational speedups (**9×–48×**) and numerical bug fixes hold unconditionally on real fMRI data, empirical gains in statistical recovery on real human datasets will naturally be more moderate than the simulated upper bounds (e.g., real-world trial-correlation improvements of **+15% to +35%** rather than +85%, and out-of-sample HRF agreement of **65%–85%** rather than 99%–100%). Four concrete physiological factors drive this difference:
+The algebraic optimizations reduce work for suitable matrices, but wall-clock speedups depend on run length, HRF support, hardware, backend, caching, and I/O. There is no unconditional numerical speedup factor. More importantly, this report provides no empirical basis for forecasting a percentage improvement in trial correlation or HRF agreement in human datasets.
 
-1. **Vascular Latency vs. Neural Latency Indistinguishability:**
-   In simulation, neural events occur at exact onset times $t_{r,i}$, so any persistent shift in the BOLD peak is purely vascular. In real cortex, **a region with sustained or delayed neural firing (e.g., working-memory maintenance in dlPFC or slow integrative ramping in dACC) produces a delayed BOLD peak even when its vasculature is canonical**. If all training-run conditions share that slow cognitive dynamic, `estimate_crossrun_hrf()` cannot distinguish a 2 s slower vasculature from a 2 s delayed neural response—it will select a slower HRF kernel $\mathbf{h}_c$, shifting deconvolved neural peaks earlier toward event onset.
-2. **Neurovascular Refractory Nonlinearity & Trial-to-Trial Vascular Jitter:**
-   The forward model $H_r(\mathbf{h}_v)\mathbf{s}_{r,v}$ and the de-mixing cross-talk matrix $\mathbf{K}_r(\tau) = \mathbf{W}_r(\tau)\mathbf{R}_r \mathbf{E}_{\text{target}}$ assume **Linear Time-Invariant (LTI)** superposition. In real fMRI, neurovascular coupling exhibits sub-additive refractory compression (~15%–30% amplitude reduction at ISIs $< 2.5\text{ s}$; Buxton et al., 2004) and $\pm 0.4\text{ s}$ trial-to-trial latency jitter from blood-flow fluctuations. Under refractory nonlinearity, linear subtraction of preceding `cue` responses slightly over-subtracts at very short delays.
-3. **Variable Neural Epoch Duration (`impulse` vs. RT-Varying Boxcars):**
-   When true neural activity is a variable-duration boxcar (e.g., scaling with reaction time from $0.4\text{ s}$ to $3.5\text{ s}$) rather than an instantaneous impulse, a fixed impulse cross-talk matrix underestimates the width of the neural source.
-4. **Non-AR(1) Physiological Noise & Task-Correlated Motion at Multiband TRs:**
-   At sub-second multiband TRs ($\text{TR} \le 0.8\text{ s}$), aliased cardiac/respiratory cycles and head micromovements time-locked to salient `feedback` trials violate stationary AR(1) noise assumptions.
+Four model violations deserve design-matched checks:
+
+1. **Neural versus vascular latency.** A sustained or delayed neural source can produce a late BOLD peak even with a canonical vascular response. If that pattern recurs across training runs, a learned HRF may absorb it and shift estimated activity earlier. Cross-fitting does not resolve this identification problem.
+2. **Nonlinear or changing neurovascular coupling.** A single linear time-invariant convolution cannot represent every interaction between closely spaced events or trial-to-trial vascular changes. [Glover (1999)](https://pubmed.ncbi.nlm.nih.gov/10191170/) discusses nonlinear responses as well as deconvolution. The compression levels below are simulation stress parameters, not prevalence estimates or universal physiological constants.
+3. **Neural duration mismatch.** An impulse is a poor description of a sustained decision interval. PR #54 provides a duration-aware alternative, conditional on specifying that interval plausibly; see [Grinband et al. (2008)](https://pmc.ncbi.nlm.nih.gov/articles/PMC2654219/).
+4. **Noise and motion mismatch.** AR(1) is a working covariance model, not a guarantee of adequate whitening at any particular TR. More complex physiology, nonstationarity, or task-correlated motion can invalidate recovery and nominal uncertainty.
 
 ### Live Demonstration 6: Stress-Testing Real-World Violation Regimes (Refractory Nonlinearity & Variable Neural Duration)
 
 To make these real-world limitations concrete, we simulate two realistic model-violation regimes below and measure how the PR #53 pipeline behaves when its LTI or impulse-source assumptions are violated:
 
-```{r demo6-violation-stress-test, fig.cap="Figure 6: Stress-testing real-world model violations. (A) Neurovascular Refractory Nonlinearity: when a second neural event within 1.5-2.5 s experiences 0% to 40% sub-additive refractory compression, linear resolution de-mixing retains a large correlation advantage over raw deconvolution but exhibits modest amplitude under-recovery proportional to the refractory compression. (B) Neural Duration Misspecification: when true neural activity is a sustained boxcar of duration D in [0.1, 3.0] s rather than an instantaneous impulse, using 'source_model = \"window\"' in decon_epoch_regression() substantially reduces amplitude bias compared to 'source_model = \"impulse\"'."}
+```{r demo6-violation-stress-test, fig.cap="Model-violation experiments using synthetic refractory compression and sustained source durations. These are chosen stress conditions, not measured physiological rates. Assess amplitude bias and correlation separately."}
 set.seed(202606)
 
 # Panel A: Sub-additive neurovascular refractory nonlinearity at short cue-feedback ISI
@@ -918,7 +898,7 @@ df_refrac <- do.call(rbind, lapply(refrac_levels, function(alpha_nl) {
 }))
 
 df_refrac_long <- rbind(
-  data.frame(refractory_pct = df_refrac$refractory_pct, Method = "Legacy Raw (zscore + diff2)", r = df_refrac$r_raw),
+  data.frame(refractory_pct = df_refrac$refractory_pct, Method = "Uncorrected linear (zscore + diff2)", r = df_refrac$r_raw),
   data.frame(refractory_pct = df_refrac$refractory_pct, Method = "PR #53 De-Mixed (LTI Model)", r = df_refrac$r_demixed)
 )
 
@@ -1007,7 +987,12 @@ save_art_fig(fig6, "fig6_violation_stress_test.png", width = 10.5, height = 5.5)
 
 ---
 
-### Trial-Varying Duration Source Models (`source_model = "duration"`): Eliminating Reaction-Time Time-on-Task Confounding
+## PR #54: Trial-varying duration source models
+
+### Concept before equations: height and area answer different questions
+
+A two-second decision can generate twice the integrated source activity of a one-second decision at the same height. If easier choices are faster, an impulse readout can confuse duration with coding strength. The duration model asks about a boxcar on each actual interval: `rate` estimates height per TR bin, while `integral` normalizes each source to unit summed mass. Neither coefficient is calibrated neuronal firing. Lag zero means an interval starting at the event; each other lag shifts the assumed interval. This is not a set of unconstrained samples of one neural waveform. The [worked example](medusa-workflows.html) shows the exact API and onset/duration conventions.
+
 
 In cognitive and decision neuroscience paradigms, the neural process of interest during a choice or deliberation phase spans a **trial-varying duration** $d_{r,i} = \text{RT}_{r,i} \in [0.4, 3.0]\text{ s}$ rather than an instantaneous impulse or a constant-width window. Suppose that during trial $i$'s active interval $[t_{r,i}, t_{r,i} + d_{r,i}]$, population neural firing rate is:
 
@@ -1026,20 +1011,20 @@ where $\alpha_{0,v}$ is the baseline task-positive firing rate while deliberatin
 
 #### Mathematical Formulation of `source_model = "duration"`
 
-To solve all three problems simultaneously, `decon_epoch_regression()` now supports `source_model = "duration"`, `trial_durations`, and `duration_scale = c("rate", "integral")`:
+To address these problems under a sustained-boxcar hypothesis, `decon_epoch_regression()` now supports `source_model = "duration"`, `trial_durations`, and `duration_scale = c("rate", "integral")`:
 
 1. **Duration-Matched Midpoint Readout $\mathbf{S}_\tau(\mathbf{d}_r)$:**
    At lag $\tau$, trial $i$'s readout kernel is centered at the boxcar midpoint $t_{r,i} + \tau + 0.5\,d_{r,i}$ with trial-specific width $w_{r,i} = \max(w_{\text{src}}, d_{r,i})$, aligning the peak response at $\tau = 0$ across all trial durations.
 2. **Gain-Normalized Centered-Subspace Ridge Operator $\mathbf{W}_{\text{unc}}(\tau)$:**
    Let $\mathbf{G}_{\tau,\text{unc}}(\mathbf{d}_r)$ be the uncentered forward BOLD design for trial boxcars $[t_{r,i} + \tau,\, t_{r,i} + \tau + d_{r,i}]$ (scaled by $1/(d_{r,i}/\text{TR})$ when `duration_scale = "integral"`), and let $\mathbf{K}_{\text{unc}}(\tau) = \mathbf{S}_\tau(\mathbf{d}_r)\mathbf{D}_r\mathbf{G}_{\tau,\text{unc}}(\mathbf{d}_r)$ with diagonal $\mathbf{g}_{\text{unc}} = \operatorname{diag}(\mathbf{K}_{\text{unc}}(\tau))$ and row-normalized resolution matrix $\mathbf{R}_{\text{unc}} = \operatorname{diag}(\mathbf{g}_{\text{unc}})^{-1}\mathbf{K}_{\text{unc}}(\tau)$. Penalizing only centered trial fluctuations via $\mathbf{Q} = \mathbf{I}_{m_r} - \frac{1}{m_r}\mathbf{1}\mathbf{1}^\top$:
    $$\mathbf{W}_{\text{unc}}(\tau) = \left(\mathbf{R}_{\text{unc}}^\top \mathbf{R}_{\text{unc}} + \gamma_{\text{demix}}\mathbf{Q}\right)^{-1}\mathbf{R}_{\text{unc}}^\top \operatorname{diag}(\mathbf{g}_{\text{unc}})^{-1}$$
-   Because $\mathbf{Q}\mathbf{1}_{m_r} = \mathbf{0}$, $\mathbf{W}_{\text{unc}}(\tau)\mathbf{K}_{\text{unc}}(\tau)\mathbf{1}_{m_r} = \mathbf{1}_{m_r}$ **identically**.
+   Because $\mathbf{Q}\mathbf{1}_{m_r} = \mathbf{0}$, $\mathbf{W}_{\text{unc}}(\tau)\mathbf{K}_{\text{unc}}(\tau)\mathbf{1}_{m_r} = \mathbf{1}_{m_r}$ in the idealized full-rank expression without numerical floors.
 3. **Exact Sherman-Morrison Update for Temporal Demeaning & Cross-Lag Baseline Removal:**
    Accounting for the rank-1 temporal-demeaning subtraction $\mathbf{K}_{\text{norm}}(\tau) = \mathbf{K}_{\text{unc}}(\tau) - \mathbf{c}_0\boldsymbol{\mu}_G^\top$ (where $\mathbf{c}_0 = \mathbf{S}_\tau\mathbf{D}_r\mathbf{1}_n$ and $\boldsymbol{\mu}_G = \operatorname{colMeans}(\mathbf{G}_{\tau,\text{unc}})$) via the Sherman-Morrison formula:
    $$\mathbf{W}_{\text{full}}(\tau) = \mathbf{W}_{\text{unc}}(\tau) + \frac{\mathbf{u}_0\left(\boldsymbol{\mu}_G^\top \mathbf{W}_{\text{unc}}(\tau)\right)}{1 - \boldsymbol{\mu}_G^\top \mathbf{u}_0}, \qquad \mathbf{u}_0 = \mathbf{W}_{\text{unc}}(\tau)\mathbf{c}_0$$
-   guarantees $\mathbf{W}_{\text{full}}(\tau)\mathbf{K}_{\text{norm}}(\tau)\mathbf{1}_{m_r} = \mathbf{1}_{m_r}$ **to machine precision ($10^{-16}$)** for any vector of trial durations $\mathbf{d}_r$! Consequently, a constant baseline firing rate $\alpha_{0,v}\mathbf{1}_{m_r}$ maps to a pure constant across trials and vanishes completely upon run-centering, without ever referencing the covariate $\mathbf{x}_{r,i}$.
+   accounts for the rank-one centering term. The implementation adds a diagonal stabilizer, floors small gains, and bounds the Sherman–Morrison denominator; it does not guarantee an identity to machine precision for every duration vector or near-singular design. Consequently, a constant baseline firing rate $\alpha_{0,v}\mathbf{1}_{m_r}$ maps to a pure constant across trials and is intended to disappear upon run-centering when the working model is well identified, without ever referencing the covariate $\mathbf{x}_{r,i}$.
 
-### Live Demonstration 7: Eliminating Reaction-Time Confounding Across Three Decision-Making Regimes
+### Live Demonstration 7: Duration-related confounding in three simulated regimes
 
 We now benchmark four epoch regression models (`Raw Readout`, `source_model = "impulse"`, `source_model = "window"`, and `source_model = "duration"`) on a 2-run decision-making fMRI paradigm ($T = 220\text{ s}$, $\text{TR} = 1.0\text{ s}$, 24 trials/run, 12 voxels) where each trial consists of a `cue` followed $1.4\text{--}2.1\text{ s}$ later by a `choice` epoch whose duration equals the trial's reaction time $\text{RT}_{r,i} \in [0.4, 2.8]\text{ s}$ with baseline choice firing rate $\alpha_0 = 1.8$:
 
@@ -1047,7 +1032,7 @@ We now benchmark four epoch regression models (`Raw Readout`, `source_model = "i
 2. **Regime 2 — Value vs. RT Tradeoff ($\operatorname{cor}(x, \text{RT}) = -0.60$, $\beta_{\text{true}} = 0.65$):** Higher-value trials have faster RTs ($\operatorname{cor}(x, \text{RT}) = -0.60$) while coding value positively ($\beta_{\text{true}} = +0.65$).
 3. **Regime 3 — Null Predictor Confounded with RT ($\operatorname{cor}(x, \text{RT}) = +0.65$, $\beta_{\text{true}} = 0.00$):** The predictor $x$ has **zero true neural effect** ($\beta_{\text{true}} = 0$) but correlates with reaction time ($\operatorname{cor}(x, \text{RT}) = +0.65$).
 
-```{r demo7-trial-varying-duration, fig.height=8.8, fig.cap="Figure 7: Trial-varying duration source modeling ('source_model = \"duration\"') vs. fixed-impulse and fixed-window models across three decision-making RT regimes. (A) Cross-epoch trial correlation r(x, a_hat) at choice onset (lag = 0 s): in Regime 2 (faster RT for higher value), baseline time-on-task confounding cancels the true signal under impulse/window models (r = 0.30), whereas 'source_model = \"duration\"' restores r = 0.82; in Regime 3 (null beta = 0 with RT confound), impulse/window suffer severe false-positive correlations (r = 0.58) while 'source_model = \"duration\"' is unbiased (r = -0.05 ~ 0). (B) Recovered regression slope hat_beta vs. ground truth beta_true. (C) Event-locked slope trajectories across lags tau in [-2, +4] s for Regime 2 (solid) and Regime 3 (dashed)."}
+```{r demo7-trial-varying-duration, fig.height=8.8, fig.cap="Impulse, fixed-window, and duration source models under independent RT, value-related RT, and an RT-correlated predictor with zero true effect. Tables show realized results. A duration source is appropriate only when its interval and shape are justified."}
 set.seed(2026)
 tr_rt <- 1.0
 n_time_rt <- 220L
@@ -1141,7 +1126,7 @@ p7a <- ggplot(df_rt_lag0, aes(x = Regime, y = r, fill = Model)) +
   guides(fill = guide_legend(nrow = 2)) +
   labs(
     title = "A. Trial Correlation r(x, a_hat) at Lag = 0s",
-    subtitle = "Boosts r in Regimes 1-2 & removes false positives in Regime 3",
+    subtitle = "Compare association under three RT regimes",
     x = NULL, y = "Mean Trial Correlation (r)", fill = NULL
   ) +
   theme_medusa()
@@ -1179,7 +1164,7 @@ p7c <- ggplot(df_rt_traj, aes(x = lag, y = beta, color = Model, shape = Model)) 
   scale_color_manual(values = c("#dc2626", "#d97706", "#2563eb")) +
   labs(
     title = "C. Event-Locked Regression Slope Trajectories Across Lags (-2s to +4s)",
-    subtitle = "Duration source model recovers true slope across the epoch while suppressing spurious RT baseline leakage at all lags",
+    subtitle = "Each lag shifts the assumed source interval; dotted lines mark simulated slopes",
     x = "Lag Relative to Choice Onset (s)", y = "Estimated Slope (hat_beta)",
     color = NULL, shape = NULL
   ) +
@@ -1208,17 +1193,37 @@ kable(
 
 ### Remaining Technical Weaknesses & Recommended Next Steps
 
-With **Trial-Varying Duration Source Models (`source_model = "duration"`)** now implemented and verified above, four concrete architectural and statistical extensions remain for future work:
+With **trial-varying duration source models (`source_model = "duration"`)** now illustrated above, four concrete architectural and statistical extensions remain for future work:
 
 1. **Unifying the In-Memory Cross-Run API with the File-Based NIfTI MEDuSA Pipeline:**
-   - *Weakness:* `voxelwise_deconvolution()` and `evt_align_decon_files()` now support `scaling = "noise_sd"`, `matern1`/`sobolev` penalties, and `readout_kernel`, but they still deconvolve each run with a fixed canonical HRF and do not invoke `estimate_crossrun_hrf()` or `decon_epoch_regression()`'s resolution-matrix de-mixing.
+   - *Weakness:* `voxelwise_deconvolution()` and `evt_align_decon_files()` now support `scaling = "noise_sd"`, `matern1`/`sobolev` penalties, and `readout_kernel`, but they do not invoke `estimate_crossrun_hrf()` or `decon_epoch_regression()`'s resolution-matrix de-mixing. A fixed canonical HRF is the default; optional within-run candidate tuning is a different workflow from cross-fitting.
    - *Fix:* Add optional cross-run HRF estimation and resolution-matrix epoch de-mixing directly into the subject-level NIfTI deconvolution/alignment workflow.
 2. **Propagating Inverse-Operator Precision Weights to Downstream Mixed Models (`lme4` / `mixed_by`):**
-   - *Weakness:* `decon_epoch_regression(..., return_panel = TRUE)` exports de-mixed trial estimates $\hat{a}_{r,i,v}(\tau)$ as if all trials had equal error variance. In reality, trials preceded by short jitter delays or very short durations have higher inverse variance.
-   - *Fix:* Export per-trial precision weights $w_{r,i,v}(\tau)$ in `$panel` so `lmer(..., weights = precision_weight)` automatically downweights high-collinearity or ultra-brief trials.
+   - *Weakness:* `decon_epoch_regression(..., return_panel = TRUE)` exports de-mixed trial estimates $\hat{a}_{r,i,v}(\tau)$ as if all trials had equal error variance. In reality, trials preceded by short jitter delays or very short durations can have greater estimation variance.
+   - *Fix:* Export per-trial precision weights $w_{r,i,v}(\tau)$ in `$panel` and validate a covariance-aware downstream analysis. Marginal precision weights alone would not account for correlated trial errors.
 3. **Extending Prewhitening from AR(1) to Banded AR($p$) for Sub-Second Multiband TRs:**
-   - *Weakness:* A 1-parameter AR(1) filter under-whitens multiband fMRI ($\text{TR} \le 0.8\text{ s}$).
+   - *Weakness:* A one-parameter AR(1) filter can leave residual temporal structure; adequacy must be checked for the acquisition and preprocessing, rather than inferred from a TR threshold.
    - *Fix:* Generalizing $\mathbf{W}_r^\top \mathbf{W}_r$ from AR(1) (bandwidth 1) to AR($p$) ($p \in \{3, 4\}$, bandwidth $p$) increases the normal-matrix half-bandwidth from $K$ to $K - 1 + p$, preserving our exact $O(T b^2)$ banded Cholesky solver while capturing higher-order physiological autocorrelation.
 4. **Time-Varying / Iteratively Reweighted Sparse Penalties for Continuous Rest/Movie Deconvolution:**
    - *Weakness:* When event onsets are unknown (e.g., resting state or naturalistic viewing), `decon_epoch_regression()` cannot be applied, and a global scalar $\lambda$ either over-smooths phasic spikes or passes inter-event baseline noise.
    - *Fix:* Implement 3–5 iterations of Iteratively Reweighted Least Squares (IRLS) with a Huber/$\ell_1$ penalty on $\mathbf{D}_1 \mathbf{s}$ using the fast $O(T b^2)$ banded Cholesky solver.
+
+
+## Reproducibility and validation map
+
+Render with the Quarto CLI and a current installed package. See [rendering instructions](https://github.com/HallquistLab/fmri.pipeline/blob/master/vignettes/medusa-docs.md) for commands and an rmarkdown fallback when Quarto cannot write its theme cache. For an isolated command-line render, install the current checkout into an explicit temporary library and pass that library through `R_LIBS`. This standalone QMD is excluded from package and pkgdown builds, so it adds no Quarto R dependency to those workflows. Rendering itself does not install packages. The standard package vignettes are `medusa-concepts.Rmd` and `medusa-workflows.Rmd`; they use the existing knitr/rmarkdown vignette engine.
+
+| Question | Repository evidence to inspect |
+|---|---|
+| HRF recovery and noise-aware fallback | `HRF_ESTIMATION_VALIDATION.md`, `NOISE_AWARE_HRF_RECOVERY.md`, `inst/validation/hrf_recovery.R`, `inst/validation/hrf_noise_recovery.R` |
+| Parametric slopes, nulls, and intervals | `PARAMETRIC_RECOVERY_VALIDATION.md`, `inst/validation/parametric_recovery.R` |
+| Coefficient attenuation | `COEFFICIENT_RECOVERY_VALIDATION.md`, `inst/validation/coefficient_recovery.R` |
+| Continuous waveform and preceding-event leakage | `WAVEFORM_RECOVERY_VALIDATION.md`, `inst/validation/waveform_recovery.R` |
+| Current API and duration implementation | `R/crossrun_hrf.R`, `R/diagnose_crossrun_recovery.R`, `R/event_lock_timeseries.R` |
+| Runtime comparisons | `inst/benchmarks/deconvolution.R`, `inst/benchmarks/hrf_noise.R`, `inst/benchmarks/crossrun_hrf.R` |
+
+Archived validation results describe their own revisions and designs; they do not automatically validate every later combination of options. Record `sessionInfo()` and the source revision alongside newly generated results. The epoch-regression `t_stat`/`p_value` fields use working residual calculations and do not propagate the full inverse-induced covariance or HRF-selection uncertainty. Use the panel or participant-level slopes in a justified group analysis, with design-matched interval/null checks and a prespecified multiplicity family.
+
+```{r reproducibility, echo=FALSE}
+sessionInfo()
+```

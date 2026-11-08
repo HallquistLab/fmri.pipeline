@@ -1,5 +1,14 @@
 # fmri.pipeline 0.4-1
 
+## MEDuSA learning sequence and workflow documentation
+
+* Add conceptual and executable workflow vignettes covering cross-run HRF
+  learning, noise scaling, operator-based epoch de-mixing, duration models,
+  NIfTI inputs, and the handoff to multilevel analysis.
+* Revise the technical companion through PR #54, align descriptions with the
+  current implementation, distinguish legacy benchmark tables from live
+  experiments, and remove unsupported forecasts of human-data gains.
+
 ## Banded linear deconvolution solver and exact Takahashi trace
 
 * `deconvolve_reglin_cpp()` now exploits the strict banded structure of

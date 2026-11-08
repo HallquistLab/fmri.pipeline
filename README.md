@@ -275,6 +275,14 @@ The pkgdown site is the primary documentation entry point:
 - Pipeline diagnosis: <https://hallquistlab.github.io/fmri.pipeline/articles/diagnosis.html>
 - Reference index: <https://hallquistlab.github.io/fmri.pipeline/reference/index.html>
 
+MEDuSA documentation now follows a three-part learning sequence:
+
+1. [Conceptual foundations](vignettes/medusa-concepts.Rmd): convolution, regularization, HRF learning, event mixing, units, and duration, with an annotated reading guide.
+2. [Worked workflows](vignettes/medusa-workflows.Rmd): executable simulation and recipes for NIfTI inputs, file alignment, and downstream multilevel models.
+3. [Technical companion (PRs #42–#54)](medusa_deconvolution_review_prs_42_53.qmd): equations, simulation demonstrations, implementation details, and validation limits.
+
+The first two are standard package vignettes (`vignette("medusa-concepts")` and `vignette("medusa-workflows")` after building vignettes). The technical companion is a standalone Quarto report at the repository root, excluded from package and pkgdown builds; its historical basename is retained. See [rendering instructions](vignettes/medusa-docs.md) for producing all three HTML documents from the same checkout.
+
 ## Development status
 
 `fmri.pipeline` is under active development. FSL-centered analyses are the most established path. Backend resolution, SPM support, AFNI Level 3 workflows, longitudinal model specification, and diagnostic tooling are current areas of active work. For new projects, prefer YAML model specifications, explicit `subject_data`/`run_data`/`trial_data` tables, and small test runs before launching the full model grid.
