@@ -14,3 +14,4 @@
 ^NOISE_AWARE_HRF_RECOVERY\.md$
 ^PARAMETRIC_RECOVERY_VALIDATION\.md$
 ^WAVEFORM_RECOVERY_VALIDATION\.md$
+^medusa_deconvolution_review_prs_42_53\.(qmd|html)$
