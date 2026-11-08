@@ -21,7 +21,9 @@ decon_epoch_regression(
   demix_ridge = 0.05,
   gain_floor = 0.05,
   restore_scale = FALSE,
-  source_model = c("impulse", "window"),
+  source_model = c("impulse", "window", "duration"),
+  trial_durations = NULL,
+  duration_scale = c("rate", "integral"),
   return_epochs = FALSE,
   return_panel = FALSE
 )
@@ -94,8 +96,30 @@ decon_epoch_regression(
 
 - source_model:
 
-  Forward neural source model at each target lag: `"impulse"` (default)
-  or `"window"`.
+  Forward neural source model at each target lag: `"impulse"` (default
+  unit impulse at `onset + lag`), `"window"` (local sustained boxcar of
+  width `readout_width` centered at `onset + lag`), or `"duration"`
+  (trial-varying sustained boxcar over
+  `[onset + lag, onset + lag + d_i]` using each target trial's duration
+  `d_i` from `trial_durations` or `events[[r]]$duration`, with
+  duration-matched readout and unpenalized baseline-rate
+  de-confounding).
+
+- trial_durations:
+
+  Optional numeric vector (concatenated across runs) or run-named list
+  of non-negative target trial durations (in seconds), such as per-trial
+  reaction times. Overrides `events[[r]]$duration` for target trials and
+  defaults `source_model` to `"duration"` when `source_model` is not
+  explicitly specified.
+
+- duration_scale:
+
+  Scaling convention for positive-duration target trials when
+  `source_model = "duration"`: `"rate"` (default; trial amplitude
+  represents neural firing rate / boxcar height per TR bin) or
+  `"integral"` (each trial boxcar is normalized to unit time-integrated
+  neural mass across its duration).
 
 - return_epochs:
 

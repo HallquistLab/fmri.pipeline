@@ -67,7 +67,9 @@ and correcting regularization-induced amplitude attenuation.</p>
 <span>  demix_ridge <span class="op">=</span> <span class="fl">0.05</span>,</span>
 <span>  gain_floor <span class="op">=</span> <span class="fl">0.05</span>,</span>
 <span>  restore_scale <span class="op">=</span> <span class="cn">FALSE</span>,</span>
-<span>  source_model <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"impulse"</span>, <span class="st">"window"</span><span class="op">)</span>,</span>
+<span>  source_model <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"impulse"</span>, <span class="st">"window"</span>, <span class="st">"duration"</span><span class="op">)</span>,</span>
+<span>  trial_durations <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  duration_scale <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"rate"</span>, <span class="st">"integral"</span><span class="op">)</span>,</span>
 <span>  return_epochs <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  return_panel <span class="op">=</span> <span class="cn">FALSE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
@@ -143,7 +145,29 @@ its recorded <code>deconvolution$scaling[[r]]$scale</code> divisor. Default:
 
 <dt id="arg-source-model">source_model<a class="anchor" aria-label="anchor" href="#arg-source-model"></a></dt>
 <dd><p>Forward neural source model at each target lag:
-<code>"impulse"</code> (default) or <code>"window"</code>.</p></dd>
+<code>"impulse"</code> (default unit impulse at <code>onset + lag</code>),
+<code>"window"</code> (local sustained boxcar of width <code>readout_width</code>
+centered at <code>onset + lag</code>), or <code>"duration"</code> (trial-varying
+sustained boxcar over <code>[onset + lag, onset + lag + d_i]</code> using each
+target trial's duration <code>d_i</code> from <code>trial_durations</code> or
+<code>events[[r]]$duration</code>, with duration-matched readout and unpenalized
+baseline-rate de-confounding).</p></dd>
+
+
+<dt id="arg-trial-durations">trial_durations<a class="anchor" aria-label="anchor" href="#arg-trial-durations"></a></dt>
+<dd><p>Optional numeric vector (concatenated across runs) or
+run-named list of non-negative target trial durations (in seconds), such as
+per-trial reaction times. Overrides <code>events[[r]]$duration</code> for target
+trials and defaults <code>source_model</code> to <code>"duration"</code> when
+<code>source_model</code> is not explicitly specified.</p></dd>
+
+
+<dt id="arg-duration-scale">duration_scale<a class="anchor" aria-label="anchor" href="#arg-duration-scale"></a></dt>
+<dd><p>Scaling convention for positive-duration target trials
+when <code>source_model = "duration"</code>: <code>"rate"</code> (default; trial
+amplitude represents neural firing rate / boxcar height per TR bin) or
+<code>"integral"</code> (each trial boxcar is normalized to unit time-integrated
+neural mass across its duration).</p></dd>
 
 
 <dt id="arg-return-epochs">return_epochs<a class="anchor" aria-label="anchor" href="#arg-return-epochs"></a></dt>
