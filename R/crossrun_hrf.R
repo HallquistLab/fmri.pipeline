@@ -205,6 +205,10 @@ hrf_compute_spatial_weights <- function(spatial_coords, spatial_groups, spatial_
 #'   multiple testing across the brain. Not a posterior probability.
 #' @param canonical_strength Fixed shape-distance penalty toward fallback_kernel
 #'   in calibrated mode, default 0.01. Zero removes this additional shrinkage.
+#' @param spatial_coords Optional numeric matrix of 3D voxel coordinates (N x 3)
+#'   used for local Gaussian-weighted anchor pooling.
+#' @param spatial_fwhm Optional numeric spatial Gaussian FWHM (in coordinate
+#'   units) for local anchor pooling.
 #' @return An object of class crossrun_hrf with normalized kernels, per-target-run
 #'   selections and training manifests, parcel anchors, run status/design summaries,
 #'   optional candidate scores, voxel/run IDs, and frozen settings.
