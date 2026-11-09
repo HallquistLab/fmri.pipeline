@@ -6,7 +6,7 @@
 \usage{
 decon_epoch_regression(
   deconvolution,
-  covariates,
+  covariates = NULL,
   events = NULL,
   target_condition = NULL,
   lags = seq(-2, 4, by = 1),
@@ -23,6 +23,9 @@ decon_epoch_regression(
   trial_durations = NULL,
   duration_scale = c("rate", "integral"),
   weighting = c("precision", "gls", "none"),
+  tau2_mode = c("auto", "residual", "marginal"),
+  aggregate_by_parcel = FALSE,
+  parcel_groups = NULL,
   whiten_panel = FALSE,
   return_epochs = FALSE,
   return_panel = FALSE
@@ -31,9 +34,16 @@ decon_epoch_regression(
 \arguments{
 \item{deconvolution}{Result of \code{deconvolve_crossrun_hrf()}.}
 
-\item{covariates}{Numeric vector, matrix, or data.frame of trial-level
-predictors for target trials (concatenated across runs or supplied as a
-run-named list matching \code{deconvolution$hrf_fit$run_ids}).}
+\item{covariates}{Optional numeric vector, matrix, or data.frame of
+trial-level predictors for target trials (concatenated across runs or
+supplied as a run-named list matching \code{deconvolution$hrf_fit$run_ids}).
+When \code{NULL} (default), performs covariate-agnostic epoch readout,
+de-mixing, biological variance estimation (\code{tau2_mode = "marginal"}),
+Empirical-Bayes precision weighting, and optional within-run ZCA whitening
+(\code{whiten_panel = TRUE}), returning the trial panel (\code{return_panel}
+defaults to \code{TRUE} when \code{covariates = NULL}) for downstream
+two-stage \code{\link{mixed_by}} behavioral modeling or inter-region
+connectivity (\code{R2 ~ R1_seed * x}).}
 
 \item{events}{Optional run-named list of event data.frames with \code{onset}
 and optional \code{condition} and \code{duration}. Defaults to the HRF fit's
@@ -128,6 +138,33 @@ or \code{"none"} (unweighted OLS). All three slope estimates
 (\code{beta_unweighted}, \code{beta_weighted}, \code{beta_gls}) and their
 standard errors are always included in \code{coefficients}.}
 
+\item{tau2_mode}{Estimator for biological trial-to-trial variance
+\eqn{\hat{\tau}^2_{\mathrm{bio}}} used in Empirical-Bayes trial precision
+weights and within-run ZCA whitening: \code{"auto"} (default; uses
+\code{"marginal"} when \code{covariates = NULL} and an Empirical-Bayes
+blend of residual and marginal estimators when covariates are supplied),
+\code{"residual"} (method-of-moments estimator from OLS covariate regression
+residuals minus projected operator variance \eqn{\mathrm{tr}((\mathbf{I}-\mathbf{P}_X)\boldsymbol{\Omega})}),
+or \code{"marginal"} (covariate-agnostic estimator combining run-centered
+marginal variance, lag-1 trial difference variance, and robust MAD scale
+minus analytical operator variance expectations).}
+
+\item{aggregate_by_parcel}{Logical; if \code{TRUE}, aggregates deconvolved
+signals across voxels within each spatial parcel (using inverse-variance
+voxel precision weights and empirical spatial noise correlation propagation)
+prior to Stage-2 epoch de-mixing and Stage-3 regression/ZCA whitening.
+Replaces voxel-by-voxel Stage-3/4 fitting with parcel-level inference while
+calibrating \code{se_demixed}, \code{tau2_bio}, \code{precision_weight},
+and ZCA whitening directly on the high-SNR parcel series. Default:
+\code{FALSE}.}
+
+\item{parcel_groups}{Optional character or factor vector of parcel/region
+labels for each voxel (either unnamed of length \code{n_voxels} or named by
+\code{voxel_ids}). Defaults to
+\code{deconvolution$hrf_fit$specification$spatial_groups} when
+\code{aggregate_by_parcel = TRUE}. Supplying a non-\code{NULL}
+\code{parcel_groups} automatically enables \code{aggregate_by_parcel = TRUE}.}
+
 \item{whiten_panel}{Logical; if \code{TRUE} and \code{return_panel = TRUE},
 adds within-run null-mode-damped, Bartlett-adaptive ZCA-whitened outcome
 (\code{decon_demixed_whitened}) and covariate (\code{<var>_whitened})
@@ -138,19 +175,21 @@ correlations. Recommended (\code{TRUE}) for group mixed-effects inference.
 Default: \code{FALSE}.}
 
 \item{return_epochs}{Logical; whether to include raw and de-mixed trial-by-voxel
-epoch matrices per lag. Default: \code{FALSE}.}
+(or trial-by-parcel) epoch matrices per lag. Default: \code{FALSE}.}
 
 \item{return_panel}{Logical; whether to return a tidy MEDUSA-compatible
 \code{data.table} (\code{panel}) with columns \code{run}, \code{trial},
-\code{event_index}, \code{onset}, \code{evt_time}, \code{voxel},
+\code{event_index}, \code{onset}, \code{evt_time}, \code{voxel} (and
+\code{parcel} when \code{aggregate_by_parcel = TRUE}),
 \code{decon_raw}, \code{decon_demixed}, \code{se_raw}, \code{se_demixed},
 \code{precision_weight}, \code{precision_weight_op},
-\code{precision_weight_raw}, \code{error_ac1}, and the covariate columns for
-downstream \code{mixed_by()} modeling. Default: \code{FALSE}.}
+\code{precision_weight_raw}, \code{error_ac1}, \code{tau2_bio}, and the
+covariate columns for downstream \code{mixed_by()} modeling. Defaults to
+\code{TRUE} when \code{covariates = NULL} and \code{return_epochs = FALSE}.}
 }
 \value{
-A list with \code{coefficients} (per voxel, lag, and predictor term),
-  \code{summary} (averaged across usable voxels per lag and term), optional
+A list with \code{coefficients} (per voxel/parcel, lag, and predictor term),
+  \code{summary} (averaged across usable units per lag and term), optional
   \code{epochs}, optional \code{panel}, and \code{settings}.
 }
 \description{
@@ -203,10 +242,13 @@ per-trial operator precision weights and within-run error covariance.
   biophysical Windkessel-Balloon + \code{fmrisim} scanner realism), the
   recommended end-to-end configuration is:
   \enumerate{
-    \item \strong{Stage 0--1 (HRF Estimation):} Use \code{\link{estimate_crossrun_hrf}}
-      with \code{noise_model = "ar1"}, \code{evidence = "calibrated"}, and
-      parcel labels in \code{spatial_groups} (which pools parcel evidence via
-      the Cauchy combination test \code{hrf_cauchy_p()}).
+    \item \strong{Stage 0--1 (HRF Estimation):} Use
+      \code{hrf_library(tr, preset = "medusa")} (0.5s peak-delay grid over
+      4--8s with dispersions 0.9, 1.0, 1.1; 27 candidates) and
+      \code{\link{estimate_crossrun_hrf}} with \code{noise_model = "ar1"},
+      \code{evidence = "calibrated"}, \code{selection_mode = "soft_average"}
+      (evidence-weighted HRF kernel averaging across locally supported
+      shapes), and parcel labels in \code{spatial_groups}.
     \item \strong{Stage 2 (Deconvolution):} Use \code{\link{deconvolve_crossrun_hrf}}
       with \code{scaling = "noise_sd"} (AR(1) innovation noise SD rather than
       total \code{"zscore"} variance) and \code{penalty = "sobolev"}.
@@ -214,8 +256,11 @@ per-trial operator precision weights and within-run error covariance.
       \code{decon_epoch_regression(..., demix_other_events = TRUE,
       demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls",
       whiten_panel = TRUE, return_panel = TRUE)}. Enable
-      \code{demix_within_trial = TRUE} when estimating multi-lag waveforms
-      \eqn{\beta(\tau)}, and set \code{source_model = "duration"}
+      \code{demix_within_trial = TRUE} with \code{lags} spaced at \eqn{1\times\mathrm{TR}}
+      when estimating multi-lag waveforms \eqn{\beta(\tau)} (if \code{lags} is
+      sampled finer than \eqn{1\times\mathrm{TR}}, \code{within_trial_ridge} is
+      automatically scaled by \eqn{(\mathrm{TR}/\Delta\tau)^2} to prevent sub-TR
+      collinearity amplification), and set \code{source_model = "duration"}
       (\code{duration_scale = "rate"}) when modeling variable-duration (RT)
       epochs.
     \item \strong{Stage 4 (Group Mixed-Effects Inference):} Pass both the

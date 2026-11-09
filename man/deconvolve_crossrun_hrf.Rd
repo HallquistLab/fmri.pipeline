@@ -17,7 +17,7 @@ deconvolve_crossrun_hrf(
   operator_cache_mb = 128,
   nuisance_mode = NULL,
   observation_mask = NULL,
-  lambda_grid = 10^seq(-3, 1.5, length.out = 12),
+  lambda_grid = 10^seq(-2, 1, length.out = 16),
   gcv_rule = c("min", "1se")
 )
 }
@@ -27,9 +27,10 @@ the HRF fit. These should be the same preprocessed BOLD used for estimation.}
 
 \item{hrf_fit}{Object returned by estimate_crossrun_hrf().}
 
-\item{lambda}{Nonnegative regularization strength. If \code{NULL}, selected
-automatically from \code{lambda_grid} by prewhitened generalized
-cross-validation using \code{gcv_rule}.}
+\item{lambda}{Nonnegative regularization strength. If \code{NULL} (the
+default for modern \code{ar1}/\code{calibrated} fits), selected
+automatically from \code{lambda_grid} by gain-calibrated, task-weighted
+adaptive prewhitened generalized cross-validation using \code{gcv_rule}.}
 
 \item{scaling}{Input scaling: zscore (default), noise_sd, demean, none, or psc.}
 

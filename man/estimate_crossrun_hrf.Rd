@@ -29,7 +29,8 @@ estimate_crossrun_hrf(
   evidence_alpha = 0.05,
   canonical_strength = 0.01,
   spatial_coords = NULL,
-  spatial_fwhm = NULL
+  spatial_fwhm = NULL,
+  selection_mode = c("hard", "soft_average")
 )
 }
 \arguments{
@@ -107,18 +108,33 @@ used for local Gaussian-weighted anchor pooling.}
 
 \item{spatial_fwhm}{Optional numeric spatial Gaussian FWHM (in coordinate
 units) for local anchor pooling.}
+
+\item{selection_mode}{Selection rule for HRF shapes per fold: \code{"hard"}
+(default; discrete selection of a single best library candidate) or
+\code{"soft_average"} (spread-normalized local Boltzmann evidence-weighted
+averaging over the top locally compatible candidates, shrunk toward
+\code{fallback_kernel} by Empirical-Bayes departure confidence).}
 }
 \value{
 An object of class crossrun_hrf with normalized kernels, per-target-run
-  selections and training manifests, parcel anchors, run status/design summaries,
-  optional candidate scores, voxel/run IDs, and frozen settings.
+  selections, candidate weight matrices (\code{kernel_weights}), unit-sum
+  composite HRF kernels (\code{selected_kernels}), training manifests, parcel
+  anchors, run status/design summaries, optional candidate scores, voxel/run
+  IDs, and frozen settings.
 }
 \description{
 Estimate HRF shapes from other runs, with optional spatial regularization
 }
 \details{
-Each target run is excluded from its own HRF selection, including
-  parcel anchors and fallback decisions. Training fits have run-specific
+When multiple runs are supplied, each target run is excluded from
+  its own HRF selection, including parcel anchors and fallback decisions.
+  When only a single run is supplied (\code{length(bold) == 1L}), usable
+  observations are partitioned into contiguous temporal sub-blocks (3 blocks
+  for longer runs, 2 halves for shorter runs) that are scored against the
+  full causal event design using full-run AR(1) covariance estimates and
+  pooled across sub-blocks with cross-block compatibility testing, while
+  returning a single-run \code{crossrun_hrf} object for full-run deconvolution.
+  Training fits have run-specific
   condition or event amplitudes and nuisance coefficients, with one shared
   candidate HRF across conditions. They do not fit unrestricted trial
   timecourses or use RPE.
