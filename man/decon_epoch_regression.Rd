@@ -203,10 +203,13 @@ per-trial operator precision weights and within-run error covariance.
   biophysical Windkessel-Balloon + \code{fmrisim} scanner realism), the
   recommended end-to-end configuration is:
   \enumerate{
-    \item \strong{Stage 0--1 (HRF Estimation):} Use \code{\link{estimate_crossrun_hrf}}
-      with \code{noise_model = "ar1"}, \code{evidence = "calibrated"}, and
-      parcel labels in \code{spatial_groups} (which pools parcel evidence via
-      the Cauchy combination test \code{hrf_cauchy_p()}).
+    \item \strong{Stage 0--1 (HRF Estimation):} Use
+      \code{hrf_library(tr, preset = "medusa")} (0.5s peak-delay grid over
+      4--8s with dispersions 0.9, 1.0, 1.1; 27 candidates) and
+      \code{\link{estimate_crossrun_hrf}} with \code{noise_model = "ar1"},
+      \code{evidence = "calibrated"}, \code{selection_mode = "soft_average"}
+      (evidence-weighted HRF kernel averaging across locally supported
+      shapes), and parcel labels in \code{spatial_groups}.
     \item \strong{Stage 2 (Deconvolution):} Use \code{\link{deconvolve_crossrun_hrf}}
       with \code{scaling = "noise_sd"} (AR(1) innovation noise SD rather than
       total \code{"zscore"} variance) and \code{penalty = "sobolev"}.
@@ -214,8 +217,11 @@ per-trial operator precision weights and within-run error covariance.
       \code{decon_epoch_regression(..., demix_other_events = TRUE,
       demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls",
       whiten_panel = TRUE, return_panel = TRUE)}. Enable
-      \code{demix_within_trial = TRUE} when estimating multi-lag waveforms
-      \eqn{\beta(\tau)}, and set \code{source_model = "duration"}
+      \code{demix_within_trial = TRUE} with \code{lags} spaced at \eqn{1\times\mathrm{TR}}
+      when estimating multi-lag waveforms \eqn{\beta(\tau)} (if \code{lags} is
+      sampled finer than \eqn{1\times\mathrm{TR}}, \code{within_trial_ridge} is
+      automatically scaled by \eqn{(\mathrm{TR}/\Delta\tau)^2} to prevent sub-TR
+      collinearity amplification), and set \code{source_model = "duration"}
       (\code{duration_scale = "rate"}) when modeling variable-duration (RT)
       epochs.
     \item \strong{Stage 4 (Group Mixed-Effects Inference):} Pass both the

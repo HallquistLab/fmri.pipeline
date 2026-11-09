@@ -94,19 +94,21 @@ diagnose_crossrun_recovery <- function(deconvolution, events = NULL, lags = 0,
     if (length(rows) < 3L) next
     z <- if (settings$nuisance_mode == "joint") cbind(1, seq(-1, 1, length.out = n),
       fit$specification$nuisance[[r]]) else matrix(numeric(), n, 0L)
+    strat <- hrf_stratum_kernels(fit, r)
     selected <- fit$selections[[r]]$kernel_index
-    rho <- if (is.null(fit$noise)) rep(0, length(selected)) else fit$noise[[r]]$rho
-    # Group voxels by their (selected_hrf_kernel, ar1_rho) stratum so the
+    rho <- strat$rho
+    # Group voxels by their (selected_hrf_kernel / weight_vector, ar1_rho) stratum so the
     # inverse operator D is constructed and multiplied only once per unique stratum.
-    keys <- paste(selected, sprintf("%.17g", rho), sep = ":")
+    keys <- strat$keys
     valid <- deconvolution$scaling[[r]]$status == "ok"
     mappings[[r]] <- data.frame(run = fit$run_ids[r], voxel = fit$voxel_ids,
       stratum = keys, usable = valid)
     for (key in unique(keys[valid])) {
       voxels <- which(keys == key & valid); k <- selected[voxels[1L]]; ar <- rho[voxels[1L]]
-      operator <- hrf_inverse_operator(n, fit$kernels[, k], rows, ar, z, settings)
+      hrf_k <- strat$get_kernel(voxels[1L])
+      operator <- hrf_inverse_operator(n, as.numeric(hrf_k), rows, ar, z, settings)
       readout_operator <- readout %*% operator
-      source <- if (is.null(sources)) fit$kernels[, k, drop = FALSE] else sources
+      source <- if (is.null(sources)) hrf_k else sources
       designs <- hrf_event_design_cpp(n, tr, offset, ev$onset, duration, seq_len(m), m, source)
       for (s in seq_len(ncol(source))) {
         y <- designs[[s]][rows, , drop = FALSE]
@@ -524,10 +526,13 @@ compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.05, offdiag_sc
 #'   biophysical Windkessel-Balloon + \code{fmrisim} scanner realism), the
 #'   recommended end-to-end configuration is:
 #'   \enumerate{
-#'     \item \strong{Stage 0--1 (HRF Estimation):} Use \code{\link{estimate_crossrun_hrf}}
-#'       with \code{noise_model = "ar1"}, \code{evidence = "calibrated"}, and
-#'       parcel labels in \code{spatial_groups} (which pools parcel evidence via
-#'       the Cauchy combination test \code{hrf_cauchy_p()}).
+#'     \item \strong{Stage 0--1 (HRF Estimation):} Use
+#'       \code{hrf_library(tr, preset = "medusa")} (0.5s peak-delay grid over
+#'       4--8s with dispersions 0.9, 1.0, 1.1; 27 candidates) and
+#'       \code{\link{estimate_crossrun_hrf}} with \code{noise_model = "ar1"},
+#'       \code{evidence = "calibrated"}, \code{selection_mode = "soft_average"}
+#'       (evidence-weighted HRF kernel averaging across locally supported
+#'       shapes), and parcel labels in \code{spatial_groups}.
 #'     \item \strong{Stage 2 (Deconvolution):} Use \code{\link{deconvolve_crossrun_hrf}}
 #'       with \code{scaling = "noise_sd"} (AR(1) innovation noise SD rather than
 #'       total \code{"zscore"} variance) and \code{penalty = "sobolev"}.
@@ -535,8 +540,11 @@ compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.05, offdiag_sc
 #'       \code{decon_epoch_regression(..., demix_other_events = TRUE,
 #'       demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls",
 #'       whiten_panel = TRUE, return_panel = TRUE)}. Enable
-#'       \code{demix_within_trial = TRUE} when estimating multi-lag waveforms
-#'       \eqn{\beta(\tau)}, and set \code{source_model = "duration"}
+#'       \code{demix_within_trial = TRUE} with \code{lags} spaced at \eqn{1\times\mathrm{TR}}
+#'       when estimating multi-lag waveforms \eqn{\beta(\tau)} (if \code{lags} is
+#'       sampled finer than \eqn{1\times\mathrm{TR}}, \code{within_trial_ridge} is
+#'       automatically scaled by \eqn{(\mathrm{TR}/\Delta\tau)^2} to prevent sub-TR
+#'       collinearity amplification), and set \code{source_model = "duration"}
 #'       (\code{duration_scale = "rate"}) when modeling variable-duration (RT)
 #'       epochs.
 #'     \item \strong{Stage 4 (Group Mixed-Effects Inference):} Pass both the
@@ -578,6 +586,7 @@ decon_epoch_regression <- function(
     stop("decon_epoch_regression requires the cpp or r GLS inverse")
   }
   source_model_supplied <- !missing(source_model)
+  within_ridge_supplied <- !missing(within_trial_ridge)
   readout_kernel <- match.arg(readout_kernel)
   source_model <- match.arg(source_model)
   duration_scale <- match.arg(duration_scale)
@@ -754,9 +763,9 @@ decon_epoch_regression <- function(
       cbind(1, seq(-1, 1, length.out = n), fit$specification$nuisance[[r]])
     } else matrix(numeric(), n, 0L)
 
-    selected <- fit$selections[[r]]$kernel_index
-    rho <- if (is.null(fit$noise)) rep(0, length(selected)) else fit$noise[[r]]$rho
-    keys <- paste(selected, sprintf("%.17g", rho), sep = ":")
+    strat <- hrf_stratum_kernels(fit, r)
+    rho <- strat$rho
+    keys <- strat$keys
     stratum_map[[r]] <- keys
     sc_df <- deconvolution$scaling[[r]]
     valid <- sc_df$status == "ok"
@@ -819,9 +828,8 @@ decon_epoch_regression <- function(
 
     for (key in unique(keys[valid])) {
       voxels <- which(keys == key & valid)
-      k <- selected[voxels[1L]]
       ar <- rho[voxels[1L]]
-      hrf_k <- fit$kernels[, k, drop = FALSE]
+      hrf_k <- strat$get_kernel(voxels[1L])
       operator <- hrf_inverse_operator(n, hrf_k[, 1L], rows, ar, z, settings)
 
       # Forward design for all events at their own onsets (for non-target leakage removal)
@@ -1023,8 +1031,21 @@ decon_epoch_regression <- function(
             D_inv_sqrt <- diag(1 / sqrt(d_lag), n_lags)
             C_lag <- D_inv_sqrt %*% K_lag %*% D_inv_sqrt
             C_sym <- 0.5 * (C_lag + t(C_lag))
-            W_1 <- solve(crossprod(C_sym) + within_trial_ridge * diag(n_lags), t(C_sym))
-            W_sym <- W_1 + 0.6 * W_1 %*% (diag(n_lags) - C_sym %*% W_1)
+            dt_lag <- if (n_lags > 1L) min(diff(sort(unique(lags)))) else tr
+            dt_ref <- max(tr, 1.0)
+            sub_tr_ratio <- if (is.finite(dt_lag) && dt_lag > 0 && dt_lag < 0.85 * dt_ref) {
+              (dt_ref / max(dt_lag, 0.1 * dt_ref))^2
+            } else {
+              1.0
+            }
+            eff_wt_ridge <- if (!within_ridge_supplied && sub_tr_ratio > 1.0) {
+              within_trial_ridge * sub_tr_ratio
+            } else {
+              within_trial_ridge
+            }
+            neumann_wt <- 0.6 / sub_tr_ratio
+            W_1 <- solve(crossprod(C_sym) + eff_wt_ridge * diag(n_lags), t(C_sym))
+            W_sym <- W_1 + neumann_wt * W_1 %*% (diag(n_lags) - C_sym %*% W_1)
             diag_gain <- pmax(diag(W_sym %*% C_sym), gain_floor)
             W_lag <- sweep(W_sym, 1L, diag_gain, "/")
 

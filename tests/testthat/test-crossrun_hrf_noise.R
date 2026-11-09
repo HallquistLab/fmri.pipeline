@@ -750,3 +750,250 @@ test_that("decon_epoch_regression removes trial-level non-target cue confounding
   expect_gt(ratio_wt, ratio_no)
   expect_true(reg_with_other$settings$demix_within_trial)
 })
+
+test_that("soft_average selection_mode interpolates sub-grid HRFs and propagates composite kernels through deconvolution", {
+  set.seed(202624)
+  tr <- 1.0
+  n_time <- 180L
+  n_trials <- 24L
+  lib <- hrf_library(tr, peak_delays = c(4.0, 5.0, 6.0, 7.0, 8.0), dispersions = c(0.9, 1.0, 1.1), undershoot_ratios = 6)
+  pars <- attr(lib, "parameters")
+  idx_can <- which(abs(pars$peak_delay - 6.0) < 1e-6 & abs(pars$dispersion - 1.0) < 1e-6)[1L]
+
+  # True HRF is an off-grid intermediate shape (peak_delay = 5.35s, dispersion = 0.96)
+  true_hrf <- hrf_library(tr, peak_delays = 5.35, dispersions = 0.96, undershoot_ratios = 6)[, 1L, drop = FALSE]
+  groups <- stats::setNames(rep("R_subgrid", 6L), paste0("v", 1:6))
+
+  bold <- events <- x_list <- list()
+  for (r in 1:2) {
+    t_cue <- seq(8, by = 6.5, length.out = n_trials)
+    t_fb <- t_cue + runif(n_trials, 1.8, 2.5)
+    x <- as.numeric(scale(rnorm(n_trials)))
+    des_cue <- hrf_event_design_cpp(n_time, tr, 0, t_cue, rep(0, n_trials),
+      seq_len(n_trials), n_trials, true_hrf)[[1L]]
+    des_fb <- hrf_event_design_cpp(n_time, tr, 0, t_fb, rep(0, n_trials),
+      seq_len(n_trials), n_trials, true_hrf)[[1L]]
+    sig <- as.numeric(des_cue %*% rep(0.5, n_trials) + des_fb %*% (0.8 + 0.70 * x))
+    ymat <- vapply(1:6, function(v) 100 + sig + rnorm(n_time, sd = 0.14), numeric(n_time))
+    colnames(ymat) <- names(groups)
+    bold[[paste0("run", r)]] <- ymat
+    events[[paste0("run", r)]] <- rbind(
+      data.frame(onset = t_cue, duration = 0, condition = "cue"),
+      data.frame(onset = t_fb, duration = 0, condition = "feedback")
+    )
+    x_list[[paste0("run", r)]] <- data.frame(x = x)
+  }
+
+  fit_hard <- estimate_crossrun_hrf(bold, events, tr, lib,
+    spatial_groups = groups, pooling = "parcel", fallback_kernel = idx_can,
+    amplitude_model = "trial", noise_model = "ols", selection_mode = "hard")
+  fit_soft <- estimate_crossrun_hrf(bold, events, tr, lib,
+    spatial_groups = groups, pooling = "parcel", fallback_kernel = idx_can,
+    amplitude_model = "trial", noise_model = "ols", selection_mode = "soft_average")
+
+  expect_equal(fit_soft$settings$selection_mode, "soft_average")
+  expect_true(is.matrix(fit_soft$kernel_weights$run1))
+  expect_true(is.matrix(fit_soft$selected_kernels$run1))
+  expect_equal(unname(colSums(fit_soft$kernel_weights$run1)), rep(1, 6L), tolerance = 1e-10)
+  expect_equal(unname(colSums(fit_soft$selected_kernels$run1)), rep(1, 6L), tolerance = 1e-10)
+
+  rmse_hard <- sqrt(mean((fit_hard$selected_kernels$run1[, 1L] - true_hrf[, 1L])^2))
+  rmse_soft <- sqrt(mean((fit_soft$selected_kernels$run1[, 1L] - true_hrf[, 1L])^2))
+  expect_lt(rmse_soft, rmse_hard)
+
+  dec_soft <- deconvolve_crossrun_hrf(bold, fit_soft, lambda = 0.8, scaling = "noise_sd", penalty = "sobolev")
+  diag_soft <- diagnose_crossrun_recovery(dec_soft, events = events, lags = 0)
+  reg_soft <- decon_epoch_regression(dec_soft, x_list, events = events,
+    target_condition = "feedback", lags = -1:2, restore_scale = TRUE)
+  expect_true(nrow(diag_soft$summary) >= 1L)
+  expect_true(all(is.finite(reg_soft$summary$mean_beta_corrected)))
+})
+
+test_that("default adaptive prewhitened GCV lambda adapts to fSNR, TR, and null background voxels", {
+  set.seed(202630)
+  sim_biphasic <- function(tr = 1.0, noise_sd = 0.15, n_null = 24L) {
+    n_time <- as.integer(round(180 / tr))
+    n_trials <- 22L
+    lib <- hrf_library(tr, peak_delays = c(5.0, 6.0), dispersions = 1.0, undershoot_ratios = 6)
+    hrf <- lib[, 1L, drop = FALSE]
+    n_act <- 8L
+    n_vox <- n_act + n_null
+    groups <- stats::setNames(
+      c(rep("R_biphasic", n_act), rep("R_null", n_null)),
+      paste0("v", seq_len(n_vox))
+    )
+    bold <- events <- x_list <- list()
+    for (r in 1:2) {
+      t_ev <- seq(8, by = 7.0, length.out = n_trials)
+      x <- as.numeric(scale(rnorm(n_trials)))
+      # Biphasic neural response: positive impulse at t_ev and negative impulse at t_ev + 1.0s
+      des_pos <- hrf_event_design_cpp(n_time, tr, 0, t_ev, rep(0, n_trials),
+        seq_len(n_trials), n_trials, hrf)[[1L]]
+      des_neg <- hrf_event_design_cpp(n_time, tr, 0, t_ev + 1.0, rep(0, n_trials),
+        seq_len(n_trials), n_trials, hrf)[[1L]]
+      sig <- as.numeric(des_pos %*% (0.6 + 0.85 * x) + des_neg %*% (-0.3 - 0.65 * x))
+      W_r <- hrf_whitening_matrix(seq_len(n_time), 0.35)
+      ymat <- matrix(0.0, nrow = n_time, ncol = n_vox)
+      for (v in seq_len(n_vox)) {
+        eps <- noise_sd * sqrt(1 - 0.35^2) * as.numeric(solve(W_r, rnorm(n_time)))
+        ymat[, v] <- 100 + (if (v <= n_act) sig else 0.0) + eps
+      }
+      colnames(ymat) <- names(groups)
+      bold[[paste0("run", r)]] <- ymat
+      events[[paste0("run", r)]] <- data.frame(onset = t_ev, duration = 0, condition = "feedback")
+      x_list[[paste0("run", r)]] <- data.frame(x = x)
+    }
+    fit <- estimate_crossrun_hrf(bold, events, tr, lib,
+      spatial_groups = groups, pooling = "parcel", amplitude_model = "trial")
+    list(bold = bold, events = events, x = x_list, fit = fit, act_ids = paste0("v", seq_len(n_act)))
+  }
+
+  # 1. Omitting lambda uses adaptive prewhitened GCV by default on modern fits
+  d_hi <- sim_biphasic(tr = 1.0, noise_sd = 0.08, n_null = 24L)
+  d_lo <- sim_biphasic(tr = 1.0, noise_sd = 0.45, n_null = 24L)
+  dec_hi <- deconvolve_crossrun_hrf(d_hi$bold, d_hi$fit, scaling = "noise_sd", penalty = "sobolev")
+  dec_lo <- deconvolve_crossrun_hrf(d_lo$bold, d_lo$fit, scaling = "noise_sd", penalty = "sobolev")
+
+  expect_true(is.finite(dec_hi$settings$lambda) && dec_hi$settings$lambda > 0)
+  expect_true(is.data.frame(dec_hi$settings$lambda_tuning))
+  expect_true(all(c("var_level", "var_contrast", "mtf_rel", "gcv_adaptive", "snr_task") %in%
+    names(dec_hi$settings$lambda_tuning)))
+
+  # High fSNR estimates higher snr_task and selects smaller lambda than low fSNR,
+  # while low fSNR remains bounded below the Pareto-dominated over-smoothing regime
+  expect_gt(dec_hi$settings$lambda_tuning$snr_task[1L], dec_lo$settings$lambda_tuning$snr_task[1L])
+  expect_lt(dec_hi$settings$lambda, dec_lo$settings$lambda)
+  expect_lte(dec_lo$settings$lambda, 2.0)
+
+  # 2. Naive observation-space GCV across all voxels (including R_null) over-smooths
+  # to the upper grid boundary and degrades biphasic lag contrast recovery
+  sc_naive <- scale_decon_input(d_lo$bold$run1, scaling = "noise_sd", noise_rho = 0.35)$y
+  naive_tune <- deconvolve_reglin(
+    BOLDobs = sc_naive, kernel = d_lo$fit$kernels[, 1L], lambda = NULL,
+    lambda_grid = 10^seq(-2, 1.0, length.out = 16), penalty = "sobolev",
+    tune_by = "global", normalize = FALSE, demean = FALSE,
+    return_diagnostics = TRUE, prewhiten_gcv = TRUE, prewhiten_rho = 0.35, scaling = "none"
+  )
+  lam_naive <- as.numeric(naive_tune$lambda[1L])
+  expect_gt(lam_naive, 2.5 * dec_lo$settings$lambda)
+
+  dec_naive <- deconvolve_crossrun_hrf(d_lo$bold, d_lo$fit, lambda = lam_naive,
+    scaling = "noise_sd", penalty = "sobolev")
+  reg_adapt <- decon_epoch_regression(dec_lo, d_lo$x, events = d_lo$events,
+    target_condition = "feedback", lags = c(0, 1), demix_within_trial = TRUE)
+  reg_naive <- decon_epoch_regression(dec_naive, d_lo$x, events = d_lo$events,
+    target_condition = "feedback", lags = c(0, 1), demix_within_trial = TRUE)
+
+  cf_adapt <- reg_adapt$coefficients[reg_adapt$coefficients$voxel %in% d_lo$act_ids, ]
+  cf_naive <- reg_naive$coefficients[reg_naive$coefficients$voxel %in% d_lo$act_ids, ]
+  contrast_adapt <- mean(cf_adapt$beta_corrected[cf_adapt$lag == 0]) -
+    mean(cf_adapt$beta_corrected[cf_adapt$lag == 1])
+  contrast_naive <- mean(cf_naive$beta_corrected[cf_naive$lag == 0]) -
+    mean(cf_naive$beta_corrected[cf_naive$lag == 1])
+  expect_gt(contrast_adapt, contrast_naive)
+
+  # 3. Discrete derivative scaling across acquisition TRs: fast TR (0.5s) selects
+  # larger lambda than standard TR (1.0s), which selects larger lambda than slow TR (2.0s)
+  d_tr05 <- sim_biphasic(tr = 0.5, noise_sd = 0.20, n_null = 8L)
+  d_tr20 <- sim_biphasic(tr = 2.0, noise_sd = 0.20, n_null = 8L)
+  dec_tr05 <- deconvolve_crossrun_hrf(d_tr05$bold, d_tr05$fit, scaling = "noise_sd", penalty = "sobolev")
+  dec_tr20 <- deconvolve_crossrun_hrf(d_tr20$bold, d_tr20$fit, scaling = "noise_sd", penalty = "sobolev")
+  expect_gt(dec_tr05$settings$lambda, dec_tr20$settings$lambda)
+})
+
+test_that("single-run HRF estimation pools contiguous temporal sub-blocks and preserves full-run deconvolution", {
+  set.seed(202635)
+  tr <- 1.0
+  n_time <- 180L
+  n_trials <- 24L
+  lib <- hrf_library(tr, peak_delays = c(4.5, 6.0, 7.5), dispersions = 1.0, undershoot_ratios = 6)
+  pars <- attr(lib, "parameters")
+  idx_can <- which(abs(pars$peak_delay - 6.0) < 1e-6)[1L]
+  idx_early <- which(abs(pars$peak_delay - 4.5) < 1e-6)[1L]
+  idx_late <- which(abs(pars$peak_delay - 7.5) < 1e-6)[1L]
+
+  t_ev <- cumsum(c(6, runif(n_trials - 1L, 4.5, 8.5)))
+  x <- as.numeric(scale(rnorm(n_trials)))
+  amps <- 1.0 + 0.55 * x
+
+  des_early <- hrf_event_design_cpp(n_time, tr, 0, t_ev, rep(0, n_trials),
+    seq_len(n_trials), n_trials, lib[, idx_early, drop = FALSE])[[1L]]
+  des_can <- hrf_event_design_cpp(n_time, tr, 0, t_ev, rep(0, n_trials),
+    seq_len(n_trials), n_trials, lib[, idx_can, drop = FALSE])[[1L]]
+  des_late <- hrf_event_design_cpp(n_time, tr, 0, t_ev, rep(0, n_trials),
+    seq_len(n_trials), n_trials, lib[, idx_late, drop = FALSE])[[1L]]
+
+  groups <- stats::setNames(rep(c("R_early", "R_can", "R_late", "R_null"), each = 4L), paste0("v", 1:16))
+  W_ar <- hrf_whitening_matrix(seq_len(n_time), 0.30)
+  ar_err <- function(sd) sd * sqrt(1 - 0.30^2) * as.numeric(solve(W_ar, rnorm(n_time)))
+
+  y1 <- cbind(
+    vapply(1:4, function(i) 100 + as.numeric(des_early %*% amps) + ar_err(0.10), numeric(n_time)),
+    vapply(1:4, function(i) 100 + as.numeric(des_can %*% amps) + ar_err(0.10), numeric(n_time)),
+    vapply(1:4, function(i) 100 + as.numeric(des_late %*% amps) + ar_err(0.10), numeric(n_time)),
+    vapply(1:4, function(i) 100 + ar_err(0.15), numeric(n_time))
+  )
+  colnames(y1) <- names(groups)
+  bold_1 <- list(run1 = y1)
+  events_1 <- list(run1 = data.frame(onset = t_ev, duration = 0, condition = "feedback"))
+  x_1 <- list(run1 = data.frame(x = x))
+
+  fit_1 <- estimate_crossrun_hrf(bold_1, events_1, tr, lib,
+    spatial_groups = groups, pooling = "parcel", min_parcel_voxels = 3L,
+    fallback_kernel = idx_can, return_scores = TRUE)
+
+  expect_equal(fit_1$settings$selection, "within_run_subblock_pooled")
+  expect_equal(fit_1$run_ids, "run1")
+  expect_equal(fit_1$training_runs$run1, c("run1_block1", "run1_block2", "run1_block3"))
+  expect_true(all(fit_1$selections$run1$n_training_runs == 3L))
+  expect_equal(fit_1$selections$run1$kernel_index[1:4], rep(idx_early, 4L))
+  expect_equal(fit_1$selections$run1$kernel_index[5:8], rep(idx_can, 4L))
+  expect_equal(fit_1$selections$run1$kernel_index[9:12], rep(idx_late, 4L))
+  expect_equal(fit_1$selections$run1$kernel_index[13:16], rep(idx_can, 4L))
+  expect_equal(fit_1$selections$run1$status[13:16], rep("fallback_prespecified", 4L))
+
+  # Soft-average mode and trial amplitude mode also work on a single run
+  fit_soft <- estimate_crossrun_hrf(bold_1, events_1, tr, lib,
+    spatial_groups = groups, pooling = "parcel", min_parcel_voxels = 3L,
+    fallback_kernel = idx_can, amplitude_model = "trial", selection_mode = "soft_average")
+  expect_equal(fit_soft$training_runs$run1, c("run1_block1", "run1_block2"))
+  expect_equal(unname(colSums(fit_soft$selected_kernels$run1)), rep(1, 16L), tolerance = 1e-10)
+
+  # Full-run deconvolution, recovery diagnostics, and Stage 3 epoch regression work on 1 run
+  dec_1 <- deconvolve_crossrun_hrf(bold_1, fit_1, scaling = "demean", penalty = "sobolev")
+  expect_equal(names(dec_1$activity), "run1")
+  expect_equal(dim(dec_1$activity$run1), c(n_time, 16L))
+
+  diag_1 <- diagnose_crossrun_recovery(dec_1, events = events_1, lags = 0)
+  expect_true(nrow(diag_1$summary) >= 1L)
+
+  reg_1 <- decon_epoch_regression(dec_1, x_1, events = events_1,
+    target_condition = "feedback", lags = -1:2, demix_target_trials = TRUE)
+  cf_1 <- reg_1$coefficients
+  b_early_0 <- mean(cf_1$beta_corrected[cf_1$voxel %in% paste0("v", 1:4) & cf_1$lag == 0])
+  b_late_0 <- mean(cf_1$beta_corrected[cf_1$voxel %in% paste0("v", 9:12) & cf_1$lag == 0])
+  b_null_0 <- mean(abs(cf_1$beta_corrected[cf_1$voxel %in% paste0("v", 13:16) & cf_1$lag == 0]))
+  expect_gt(b_early_0, 0.40)
+  expect_gt(b_late_0, 0.40)
+  expect_lt(b_null_0, 0.15)
+
+  # Incompatible sub-blocks (early HRF in block 1, late HRF in blocks 2-3) trigger compatibility fallback
+  y_incompat <- y1[, 1:2, drop = FALSE]
+  y_incompat[1:60, ] <- 100 + as.numeric(des_early[1:60, ] %*% amps) + rnorm(60, sd = 0.02)
+  y_incompat[61:180, ] <- 100 + as.numeric(des_late[61:180, ] %*% amps) + rnorm(120, sd = 0.02)
+  fit_inc <- estimate_crossrun_hrf(list(run1 = y_incompat), events_1, tr, lib,
+    fallback_kernel = idx_can, noise_model = "ols")
+  expect_equal(fit_inc$selections$run1$kernel_index, rep(idx_can, 2L))
+  expect_equal(fit_inc$selections$run1$status, rep("fallback_prespecified", 2L))
+  expect_equal(fit_inc$selections$run1$stability, rep("no_common_library_shape", 2L))
+
+  # Very short single run (< 24 usable observations) gracefully falls back to fallback_kernel
+  fit_short <- estimate_crossrun_hrf(
+    list(run1 = y1[1:18, 1:4, drop = FALSE]),
+    list(run1 = data.frame(onset = c(2, 8, 14), duration = 0, condition = "feedback")),
+    tr, lib, fallback_kernel = idx_can, noise_model = "ols"
+  )
+  expect_equal(fit_short$training_runs$run1, character(0))
+  expect_equal(fit_short$selections$run1$kernel_index, rep(idx_can, 4L))
+  expect_equal(fit_short$selections$run1$voxel_evidence, rep("insufficient_training", 4L))
+})

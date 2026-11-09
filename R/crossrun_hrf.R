@@ -8,8 +8,9 @@
 #' @param preset Optional preset grid configuration: `"custom"` (default, uses
 #'   supplied `peak_delays`, `dispersions`, `undershoot_ratios`), `"standard"`
 #'   (delays 5, 6, 7s; dispersions 0.8, 1, 1.2), `"extended"` (delays 4--8s;
-#'   dispersions 0.8, 1, 1.25), or `"dense"` (delays 4--8.5s by 0.5s; dispersions
-#'   0.8, 1, 1.2, 1.4).
+#'   dispersions 0.8, 1, 1.25), `"medusa"` (recommended 0.5s medium grid:
+#'   delays 4--8s by 0.5s; dispersions 0.9, 1.0, 1.1; 27 candidates), or
+#'   `"dense"` (delays 4--8.5s by 0.5s; dispersions 0.8, 1, 1.2, 1.4).
 #' @return A unit-sum kernel matrix, with time rows, candidate columns, and a
 #'   parameters attribute. The canonical candidate (6, 1, 6) is first if present.
 #' @details Candidates use the SPM difference-of-gammas parameterization with
@@ -18,7 +19,7 @@
 #' @export
 hrf_library <- function(tr, peak_delays = c(5, 6, 7), dispersions = c(0.8, 1, 1.2),
     undershoot_ratios = 6, duration = 32,
-    preset = c("custom", "standard", "extended", "dense")) {
+    preset = c("custom", "standard", "extended", "medusa", "dense")) {
   checkmate::assert_number(tr, lower = 0.01, finite = TRUE)
   preset <- match.arg(preset)
   if (preset == "standard") {
@@ -27,6 +28,9 @@ hrf_library <- function(tr, peak_delays = c(5, 6, 7), dispersions = c(0.8, 1, 1.
   } else if (preset == "extended") {
     peak_delays <- c(4, 5, 6, 7, 8)
     dispersions <- c(0.8, 1, 1.25)
+  } else if (preset == "medusa") {
+    peak_delays <- seq(4.0, 8.0, by = 0.5)
+    dispersions <- c(0.9, 1.0, 1.1)
   } else if (preset == "dense") {
     peak_delays <- seq(4, 8.5, by = 0.5)
     dispersions <- c(0.8, 1, 1.2, 1.4)
@@ -51,7 +55,7 @@ hrf_library <- function(tr, peak_delays = c(5, 6, 7), dispersions = c(0.8, 1, 1.
 }
 
 hrf_validate_bold <- function(bold) {
-  checkmate::assert_list(bold, min.len = 2L, names = "unique")
+  checkmate::assert_list(bold, min.len = 1L, names = "unique")
   if (any(!nzchar(names(bold)))) stop("BOLD runs must have nonempty unique names")
   for (y in bold) {
     checkmate::assert_matrix(y, mode = "numeric", min.rows = 3L, min.cols = 1L)
@@ -132,10 +136,10 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
     part_ic <- hrf_score_run_cpp(y, des_ic, z, which(mask), as.integer(batch_size),
       rho = rho_ref, evidence = FALSE, fallback_index = as.integer(fallback_kernel))
     if (isTRUE(part_ic$comparable)) {
-      voxel_max <- apply(part_ic$scores, 2L, function(col) {
-        if (any(is.finite(col))) max(col, na.rm = TRUE) else NA_real_
-      })
-      val <- if (any(is.finite(voxel_max))) mean(voxel_max, na.rm = TRUE) else -Inf
+      fb_scores <- part_ic$scores[fallback_kernel, ]
+      mean_scores <- colMeans(part_ic$scores, na.rm = TRUE)
+      voxel_val <- 0.5 * fb_scores + 0.5 * mean_scores
+      val <- if (any(is.finite(voxel_val))) mean(voxel_val, na.rm = TRUE) else -Inf
       if (is.finite(val) && val > best_val) {
         best_val <- val
         best_des <- des_ic
@@ -146,6 +150,122 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
   design_columns <- seq_len(nrow(ev))
   hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
     design_columns, max(design_columns), kernels)
+}
+
+# Partition a single run's usable observations into contiguous temporal sub-blocks
+# and score candidate HRFs on each sub-block using the full causal event design
+# and full-run AR(1) noise estimates. This provides within-run cross-block
+# compatibility testing and score pooling when length(bold) == 1L without
+# physically slicing the BOLD matrix or breaking causal HRF carryover across
+# sub-block boundaries.
+hrf_single_run_subblocks <- function(run_name, y, ev, tr, offset, kernels,
+    candidate_ids, z, mask, noise_r, amplitude_model, batch_size,
+    fallback_kernel, evidence, noise_model) {
+  usable_rows <- which(mask)
+  n_obs <- length(usable_rows)
+  n_kernels <- ncol(kernels)
+  n_vox <- ncol(y)
+  empty_out <- list(results = list(), scores = list(), names = character(0))
+  if (n_obs < 24L) return(empty_out)
+
+  labels <- as.character(ev$condition)
+  durations <- if (is.null(ev$duration)) rep(0, nrow(ev)) else ev$duration
+  u_cond <- unique(labels)
+  cond_cols <- match(labels, u_cond)
+  des_cond_full <- hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
+    cond_cols, max(cond_cols), kernels)
+  des_trial_full <- if (amplitude_model == "trial") {
+    hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
+      seq_len(nrow(ev)), nrow(ev), kernels)
+  } else NULL
+
+  rho_ref <- if (any(is.finite(noise_r$rho))) stats::median(noise_r$rho, na.rm = TRUE) else 0
+  block_candidates <- if (amplitude_model == "condition") {
+    if (n_obs >= 150L) c(3L, 2L) else 2L
+  } else {
+    if (n_obs >= 240L && nrow(ev) >= 18L) c(3L, 2L) else 2L
+  }
+
+  best_out <- empty_out
+  for (n_blocks in block_candidates) {
+    block_id <- ceiling(seq_along(usable_rows) * n_blocks / n_obs)
+    sub_results <- sub_scores <- vector("list", n_blocks)
+    sub_names <- paste0(run_name, "_block", seq_len(n_blocks))
+    names(sub_results) <- names(sub_scores) <- sub_names
+    n_comparable_blocks <- 0L
+
+    for (b in seq_len(n_blocks)) {
+      rows_b <- usable_rows[block_id == b]
+      mask_b <- rep(FALSE, nrow(y))
+      mask_b[rows_b] <- TRUE
+
+      design_b <- NULL
+      if (amplitude_model == "condition") {
+        col_ok <- vapply(seq_len(ncol(des_cond_full[[1L]])), function(c_idx) {
+          norms_b <- vapply(des_cond_full, function(x) sqrt(sum(x[rows_b, c_idx]^2)), numeric(1))
+          norms_all <- vapply(des_cond_full, function(x) sqrt(sum(x[, c_idx]^2)), numeric(1))
+          min(norms_b) > 1e-3 * max(norms_all, 1e-8)
+        }, logical(1))
+        if (any(col_ok)) {
+          design_b <- if (all(col_ok)) des_cond_full else
+            lapply(des_cond_full, function(x) x[, col_ok, drop = FALSE])
+        }
+      } else {
+        ev_ok <- vapply(seq_len(nrow(ev)), function(e_idx) {
+          norms_b <- vapply(des_trial_full, function(x) sqrt(sum(x[rows_b, e_idx]^2)), numeric(1))
+          norms_all <- vapply(des_trial_full, function(x) sqrt(sum(x[, e_idx]^2)), numeric(1))
+          min(norms_b) >= 0.10 * max(norms_all, 1e-8)
+        }, logical(1))
+        if (any(ev_ok)) {
+          design_b <- hrf_build_run_design(y, ev[ev_ok, , drop = FALSE], tr, offset,
+            kernels, z, mask_b, amplitude_model, rho_ref, batch_size, fallback_kernel)
+        }
+      }
+
+      res_b <- list(
+        scores = matrix(NA_real_, n_kernels, n_vox),
+        signal_status = rep("insufficient_observations", n_vox)
+      )
+      if (evidence == "calibrated") {
+        for (field in c("task_p", "fallback_p", "incompatible_p")) {
+          res_b[[field]] <- matrix(NA_real_, n_kernels, n_vox)
+        }
+      }
+
+      block_comp <- FALSE
+      if (!is.null(design_b) && length(rows_b) >= 6L) {
+        for (rho in unique(noise_r$rho)) {
+          indices <- which(noise_r$rho == rho)
+          part <- hrf_score_run_cpp(y[, indices, drop = FALSE], design_b, z, rows_b,
+            as.integer(batch_size), rho = rho, evidence = evidence == "calibrated",
+            fallback_index = as.integer(fallback_kernel))
+          res_b$scores[, indices] <- part$scores
+          res_b$signal_status[indices] <- part$signal_status
+          if (evidence == "calibrated") {
+            for (field in c("task_p", "fallback_p", "incompatible_p")) {
+              res_b[[field]][, indices] <- part[[field]]
+            }
+          }
+          if (isTRUE(part$comparable)) block_comp <- TRUE
+        }
+        if (noise_model == "ar1" && evidence == "calibrated") {
+          unknown_noise <- grepl("^insufficient_noise", noise_r$method) &
+            !res_b$signal_status %in% c("nonfinite", "constant", "nuisance_only")
+          res_b$signal_status[unknown_noise] <- "noise_unidentified"
+          for (field in c("scores", "task_p", "fallback_p", "incompatible_p")) {
+            res_b[[field]][, unknown_noise] <- NA_real_
+          }
+        }
+      }
+      if (block_comp) n_comparable_blocks <- n_comparable_blocks + 1L
+      sub_results[[b]] <- res_b
+      sub_scores[[b]] <- res_b$scores
+    }
+
+    best_out <- list(results = sub_results, scores = sub_scores, names = sub_names)
+    if (n_comparable_blocks >= 2L) break
+  }
+  best_out
 }
 
 # Compute a parcel-masked Gaussian spatial affinity matrix W_ij = exp(-d_ij^2 / (2 * sigma^2))
@@ -226,11 +346,26 @@ hrf_compute_spatial_weights <- function(spatial_coords, spatial_groups, spatial_
 #'   used for local Gaussian-weighted anchor pooling.
 #' @param spatial_fwhm Optional numeric spatial Gaussian FWHM (in coordinate
 #'   units) for local anchor pooling.
+#' @param selection_mode Candidate selection rule: `"hard"` (default) selects a
+#'   single discrete winning HRF column index per voxel/parcel; `"soft_average"`
+#'   constructs a continuous Empirical-Bayes / Boltzmann evidence-weighted
+#'   composite HRF kernel across compatible neighborhood candidates blended with
+#'   the prespecified fallback kernel.
 #' @return An object of class crossrun_hrf with normalized kernels, per-target-run
 #'   selections and training manifests, parcel anchors, run status/design summaries,
-#'   optional candidate scores, voxel/run IDs, and frozen settings.
-#' @details Each target run is excluded from its own HRF selection, including
-#'   parcel anchors and fallback decisions. Training fits have run-specific
+#'   optional candidate scores, voxel/run IDs, and frozen settings. When
+#'   `selection_mode = "soft_average"`, also includes per-target-run candidate
+#'   weight matrices (`kernel_weights`) and unit-sum composite HRF kernel
+#'   matrices (`selected_kernels`).
+#' @details When multiple runs are supplied, each target run is excluded from
+#'   its own HRF selection, including parcel anchors and fallback decisions.
+#'   When only a single run is supplied (`length(bold) == 1L`), usable
+#'   observations are partitioned into contiguous temporal sub-blocks (3 blocks
+#'   for longer runs, 2 halves for shorter runs) that are scored against the
+#'   full causal event design using full-run AR(1) covariance estimates and
+#'   pooled across sub-blocks with cross-block compatibility testing, while
+#'   returning a single-run `crossrun_hrf` object for full-run deconvolution.
+#'   Training fits have run-specific
 #'   condition or event amplitudes and nuisance coefficients, with one shared
 #'   candidate HRF across conditions. They do not fit unrestricted trial
 #'   timecourses or use RPE.
@@ -273,12 +408,14 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     noise_model = c("ar1", "ols"), noise_rho = NULL,
     noise_grid = seq(-0.8, 0.9, by = 0.1), evidence = c("calibrated", "legacy"),
     evidence_alpha = 0.05, canonical_strength = 0.01,
-    spatial_coords = NULL, spatial_fwhm = NULL) {
+    spatial_coords = NULL, spatial_fwhm = NULL,
+    selection_mode = c("hard", "soft_average")) {
   hrf_validate_bold(bold)
   pooling <- match.arg(pooling)
   amplitude_model <- match.arg(amplitude_model)
   noise_model <- match.arg(noise_model)
   evidence <- match.arg(evidence)
+  selection_mode <- match.arg(selection_mode)
   checkmate::assert_number(evidence_alpha, lower = .Machine$double.eps, upper = 0.5, finite = TRUE)
   checkmate::assert_number(canonical_strength, lower = 0, finite = TRUE)
   checkmate::assert_numeric(noise_grid, lower = -0.95, upper = 0.95, min.len = 2L,
@@ -301,10 +438,12 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
   if (anyNA(candidate_ids) || any(!nzchar(candidate_ids)) || anyDuplicated(candidate_ids))
     stop("Candidate names must be unique and nonempty")
   colnames(kernels) <- candidate_ids
+  is_single_run <- length(bold) == 1L
   checkmate::assert_integerish(fallback_kernel, lower = 1, upper = ncol(kernels), len = 1L)
   checkmate::assert_number(spatial_strength, lower = 0, finite = TRUE)
   checkmate::assert_number(min_r2, lower = 0, upper = 1, finite = TRUE)
-  checkmate::assert_integerish(min_training_runs, lower = 1, upper = length(bold) - 1L, len = 1L)
+  checkmate::assert_integerish(min_training_runs, lower = 1,
+    upper = if (is_single_run) 3L else length(bold) - 1L, len = 1L)
   checkmate::assert_integerish(min_parcel_voxels, lower = 1, len = 1L)
   checkmate::assert_integerish(batch_size, lower = 1, len = 1L)
   checkmate::assert_flag(return_scores)
@@ -398,72 +537,97 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     event_manifest[[r]] <- data.frame(run = names(bold)[r], voxel = voxel_ids,
       status = result$signal_status)
   }
+  subblock_fit <- NULL
+  if (is_single_run) {
+    mask_1 <- !is.na(valid_rows[[1L]]) & valid_rows[[1L]]
+    z_1 <- cbind(intercept = 1, trend = seq(-1, 1, length.out = nrow(bold[[1L]])), nuisance[[1L]])
+    subblock_fit <- hrf_single_run_subblocks(names(bold)[1L], bold[[1L]], events[[1L]],
+      tr, offsets[1L], kernels, candidate_ids, z_1, mask_1, noise[[1L]],
+      amplitude_model, batch_size, fallback_kernel, evidence, noise_model)
+    if (return_scores && evidence == "calibrated") {
+      attr(run_results[[1L]], "subblocks") <- subblock_fit$results
+    }
+  }
   # Relative squared shape distance is bounded by two; candidate indices have
   # no metric meaning. Penalizing an index difference would be arbitrary.
   distance <- outer(seq_len(ncol(kernels)), seq_len(ncol(kernels)), Vectorize(function(i, j) {
     sum((kernels[, i] - kernels[, j])^2) / sum(kernels[, i]^2 + kernels[, j]^2)
   }))
+  k_norms <- sqrt(colSums(kernels^2))
+  k_norms[k_norms <= 0] <- 1
+  h_norm <- sweep(kernels, 2L, k_norms, "/")
+  kernel_cos <- crossprod(h_norm)
   selections <- anchors <- candidate_scores <- vector("list", length(bold))
+  kernel_weights <- selected_kernels <- vector("list", length(bold))
   training_runs <- vector("list", length(bold))
   names(selections) <- names(anchors) <- names(candidate_scores) <- names(training_runs) <- names(bold)
+  names(kernel_weights) <- names(selected_kernels) <- names(bold)
   for (target in seq_along(bold)) {
-    train <- setdiff(seq_along(bold), target)
-    training_runs[[target]] <- names(bold)[train]
+    if (is_single_run) {
+      fold_results <- subblock_fit$results
+      fold_scores <- subblock_fit$scores
+      train <- seq_along(fold_scores)
+      training_runs[[target]] <- subblock_fit$names
+    } else {
+      fold_results <- run_results
+      fold_scores <- per_run
+      train <- setdiff(seq_along(bold), target)
+      training_runs[[target]] <- names(bold)[train]
+    }
     # Sum only training matrices, not total-minus-target: even extreme target
     # values cannot enter a fold through cancellation or missingness decisions.
     total <- matrix(0, ncol(kernels), length(voxel_ids))
     counts <- integer(length(voxel_ids))
     for (r in train) {
-      usable <- is.finite(per_run[[r]][1L, ])
-      total[, usable] <- total[, usable, drop = FALSE] + per_run[[r]][, usable, drop = FALSE]
+      usable <- is.finite(fold_scores[[r]][1L, ])
+      total[, usable] <- total[, usable, drop = FALSE] + fold_scores[[r]][, usable, drop = FALSE]
       counts <- counts + usable
     }
     scores <- sweep(total, 2L, pmax(counts, 1L), "/")
     scores[, counts < min_training_runs] <- NA_real_
     dimnames(scores) <- list(candidate_ids, voxel_ids)
-    gate <- if (evidence == "calibrated") hrf_fold_evidence(run_results, train, counts,
+    gate <- if (evidence == "calibrated") hrf_fold_evidence(fold_results, train, counts,
       scores, fallback_kernel, evidence_alpha, min_r2, kernels = kernels) else NULL
     anchor <- rep(NA_integer_, length(voxel_ids))
     parcel_n <- integer(length(voxel_ids))
     parcel_rows <- list()
+    w_fold <- matrix(0, ncol(kernels), length(voxel_ids), dimnames = list(candidate_ids, voxel_ids))
+    w_fold[fallback_kernel, ] <- 1.0
+    w_parcel_map <- list()
     if (!is.null(spatial_groups)) for (g in unique(spatial_groups)) {
       voxels <- which(spatial_groups == g)
       eligible <- voxels[counts[voxels] >= min_training_runs]
       pooled <- if (length(eligible)) rowMeans(scores[, eligible, drop = FALSE]) else rep(NA_real_, ncol(kernels))
-      admissible <- if (is.null(gate)) {
-        rep(TRUE, ncol(kernels))
-      } else {
-        # Strict parcel admissibility requires >= min_parcel_voxels individually
-        # passing all three calibrated gates (task support, shape departure, and
-        # cross-run compatibility). When at least one voxel in the parcel shows
-        # a supported non-canonical departure, we also allow pooled parcel
-        # admissibility via the Cauchy combination test (hrf_cauchy_p), which is
-        # valid under arbitrary spatial correlation across voxels inside a parcel.
-        adm_strict <- rowSums(gate$supported[, eligible, drop = FALSE]) >= min_parcel_voxels
-        if (length(eligible) >= min_parcel_voxels && ncol(kernels) > 1L &&
-            any(gate$supported[-fallback_kernel, eligible, drop = FALSE])) {
-          comp_cnt <- rowSums(gate$compatible[, eligible, drop = FALSE])
-          task_cnt <- rowSums(gate$task_supported[, eligible, drop = FALSE])
-          beat_fb <- rowSums(sweep(scores[, eligible, drop = FALSE], 2L,
-            scores[fallback_kernel, eligible], ">="), na.rm = TRUE)
-          p_task_pool <- apply(gate$task_p[, eligible, drop = FALSE], 1L, hrf_cauchy_p)
-          p_shape_pool <- apply(gate$shape_p[, eligible, drop = FALSE], 1L, hrf_cauchy_p)
-          adm_pooled <- (comp_cnt >= min_parcel_voxels) &
-            (task_cnt >= ceiling(0.5 * min_parcel_voxels)) &
-            (beat_fb >= min_parcel_voxels) &
-            !is.na(p_task_pool) & (p_task_pool <= evidence_alpha) &
-            !is.na(p_shape_pool) & (p_shape_pool <= evidence_alpha)
-          adm_strict | adm_pooled
-        } else {
-          adm_strict
-        }
-      }
+      p_ev <- hrf_parcel_pooled_evidence(gate, scores, eligible, fallback_kernel,
+        evidence_alpha, min_r2, min_parcel_voxels, h_norm, kernel_cos,
+        distance[, fallback_kernel], canonical_strength)
+      admissible <- p_ev$admissible
       pooled_objective <- pooled
       if (!is.null(gate)) pooled_objective <- pooled_objective - canonical_strength * distance[, fallback_kernel]
       pooled_objective[!admissible] <- -Inf
       best <- if (any(is.finite(pooled_objective))) which.max(pooled_objective) else NA_integer_
       reliable <- length(eligible) >= min_parcel_voxels && !is.na(best) && pooled[best] >= min_r2
       if (reliable) anchor[voxels] <- best
+      w_p <- rep(0, ncol(kernels))
+      w_p[if (reliable) best else fallback_kernel] <- 1.0
+      if (selection_mode == "soft_average" && length(eligible) >= min_parcel_voxels &&
+          any(is.finite(pooled)) && max(pooled, na.rm = TRUE) >= min_r2) {
+        omega_p <- if (is.null(gate)) 1.0 else if (reliable && best != fallback_kernel)
+          max(0.85, p_ev$omega) else p_ev$omega
+        w_p <- hrf_soft_boltzmann_weights(
+          scores_vec = pooled,
+          kernel_cos = kernel_cos,
+          dist_fb = distance[, fallback_kernel],
+          fallback_kernel = fallback_kernel,
+          comp_ok = p_ev$comp_ok,
+          omega = omega_p,
+          canonical_strength = canonical_strength
+        )
+      }
+      w_parcel_map[[g]] <- w_p
+      if (pooling == "parcel") {
+        w_fold[, voxels] <- w_p
+      }
       parcel_n[voxels] <- length(eligible)
       parcel_rows[[length(parcel_rows) + 1L]] <- data.frame(target_run = names(bold)[target],
         parcel = g, n_voxels = length(eligible), kernel_index = if (reliable) best else fallback_kernel,
@@ -593,9 +757,111 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
         reason[eligible[keep]] <- ifelse(spatial_strength > 0 & !is.na(eff_anchor[keep]),
           "voxel_spatial", "voxel")
         anchor[eligible] <- eff_anchor
+        if (selection_mode == "soft_average") {
+          if (!is.null(spatial_groups)) {
+            for (g in names(w_parcel_map)) {
+              w_fold[, which(spatial_groups == g)] <- w_parcel_map[[g]]
+            }
+          }
+          for (idx_e in seq_along(eligible)) {
+            v <- eligible[idx_e]
+            sv <- scores[, v]
+            if (!any(is.finite(sv)) || max(sv, na.rm = TRUE) < min_r2) {
+              w_fold[, v] <- 0
+              w_fold[fallback_kernel, v] <- 1.0
+              next
+            }
+            compat_v <- if (is.null(gate)) rep(TRUE, ncol(kernels)) else gate$compatible[, v]
+            if (!any(compat_v)) {
+              w_fold[, v] <- 0
+              w_fold[fallback_kernel, v] <- 1.0
+              next
+            }
+            omega_v <- if (is.null(gate)) {
+              1.0
+            } else if (keep[idx_e] && candidates[idx_e] != fallback_kernel) {
+              1.0
+            } else {
+              obj_v <- sv - canonical_strength * distance[, fallback_kernel]
+              obj_v[!compat_v] <- -Inf
+              k_v <- which.max(obj_v)
+              if (length(k_v) == 1L && is.finite(obj_v[k_v]) && k_v != fallback_kernel &&
+                  sv[k_v] >= sv[fallback_kernel]) {
+                p_sh_v <- gate$shape_p_raw[k_v, v]
+                p_tk_v <- gate$task_p_raw[k_v, v]
+                if (is.finite(p_sh_v) && is.finite(p_tk_v) && p_tk_v <= 0.25) {
+                  max(0.0, min(1.0, (-log10(max(p_sh_v, 1e-12)) - 0.5) / 1.5))
+                } else 0.0
+              } else 0.0
+            }
+            w_v_own <- hrf_soft_boltzmann_weights(
+              scores_vec = sv,
+              kernel_cos = kernel_cos,
+              dist_fb = distance[, fallback_kernel],
+              fallback_kernel = fallback_kernel,
+              comp_ok = compat_v,
+              omega = omega_v,
+              canonical_strength = canonical_strength
+            )
+            if (!is.null(spatial_groups)) {
+              w_p <- w_parcel_map[[spatial_groups[v]]]
+              alpha_sp <- if (spatial_strength > 0) {
+                min(0.85, spatial_strength / (spatial_strength + 0.02)) *
+                  (if (spatial_strength >= 1.0) 1.0 else concordance[idx_e]^2)
+              } else if (!keep[idx_e] && sum(w_p[-fallback_kernel]) > 0) {
+                0.65
+              } else {
+                0.0
+              }
+              w_blend <- (1.0 - alpha_sp) * w_v_own + alpha_sp * w_p
+              w_blend <- round(w_blend / 0.02) * 0.02
+              if (sum(w_blend) <= 0) {
+                w_blend <- rep(0, ncol(kernels))
+                w_blend[fallback_kernel] <- 1.0
+              } else {
+                w_blend <- w_blend / sum(w_blend)
+              }
+              w_fold[, v] <- w_blend
+            } else {
+              w_fold[, v] <- w_v_own
+            }
+            chosen[v] <- which.max(w_fold[, v])
+            if (reason[v] == "fallback_prespecified" && sum(w_fold[-fallback_kernel, v]) > 0.05) {
+              reason[v] <- if (!is.null(spatial_groups) && spatial_strength > 0) "voxel_soft_spatial" else "voxel_soft"
+            }
+          }
+        }
+      }
+      if (pooling == "parcel" && selection_mode == "soft_average") {
+        if (!is.null(gate) && length(eligible)) {
+          incompat_v <- eligible[colSums(gate$compatible[, eligible, drop = FALSE]) == 0L]
+          if (length(incompat_v)) {
+            w_fold[, incompat_v] <- 0
+            w_fold[fallback_kernel, incompat_v] <- 1.0
+          }
+        }
+        chosen[eligible] <- max.col(t(w_fold[, eligible, drop = FALSE]), ties.method = "first")
+        soft_dep <- eligible[colSums(w_fold[-fallback_kernel, eligible, drop = FALSE]) > 0.05 &
+          reason[eligible] == "fallback_prespecified"]
+        if (length(soft_dep)) reason[soft_dep] <- "pooled_parcel"
       }
       selected_score[eligible] <- scores[cbind(chosen[eligible], eligible)]
     }
+    if (selection_mode == "hard") {
+      w_fold[] <- 0
+      w_fold[cbind(chosen, seq_along(voxel_ids))] <- 1.0
+    }
+    k_mat <- kernels %*% w_fold
+    k_sums <- colSums(k_mat)
+    bad_sum <- !is.finite(k_sums) | abs(k_sums) < 1e-6
+    if (any(bad_sum)) {
+      k_mat[, bad_sum] <- kernels[, fallback_kernel]
+      k_sums[bad_sum] <- sum(kernels[, fallback_kernel])
+    }
+    k_mat <- sweep(k_mat, 2L, k_sums, "/")
+    colnames(k_mat) <- voxel_ids
+    kernel_weights[[target]] <- w_fold
+    selected_kernels[[target]] <- k_mat
     selections[[target]] <- data.frame(target_run = names(bold)[target], voxel = voxel_ids,
       parcel = if (is.null(spatial_groups)) NA_character_ else spatial_groups,
       kernel_index = chosen, kernel = candidate_ids[chosen], status = reason,
@@ -623,6 +889,7 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     if (return_scores) candidate_scores[[target]] <- scores
   }
   structure(list(kernels = kernels, parameters = parameters, selections = selections,
+    kernel_weights = kernel_weights, selected_kernels = selected_kernels,
     parcels = anchors, training_runs = training_runs,
     signal_status = do.call(rbind, event_manifest), designs = do.call(rbind, design_manifest),
     scores = if (return_scores) candidate_scores else NULL,
@@ -636,10 +903,12 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
       min_r2 = min_r2, min_training_runs = min_training_runs, min_parcel_voxels = min_parcel_voxels,
       batch_size = as.integer(batch_size), score = "mean_adjusted_partial_r2",
       rank_tolerance = 1e-8, evidence = evidence, evidence_alpha = evidence_alpha,
-      canonical_strength = canonical_strength, noise_grid = noise_grid,
+      canonical_strength = canonical_strength, selection_mode = selection_mode,
+      noise_grid = noise_grid,
       noise_pooling = if (is.null(spatial_groups)) "run" else "supplied_parcel",
       nuisance = "run_specific_intercept_linear_trend_and_supplied", noise_model = noise_model,
-      selection = "leave_target_run_out", parcel_fallback = !is.null(spatial_groups),
+      selection = if (is_single_run) "within_run_subblock_pooled" else "leave_target_run_out",
+      parcel_fallback = !is.null(spatial_groups),
       spatial_regularization = if (pooling == "parcel") "shared_parcel_hrf" else
         if (spatial_strength > 0) "discrete_parcel_shape_penalty" else "none")),
     class = "crossrun_hrf")
@@ -650,9 +919,10 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
 #' @param bold Named time-by-voxel run matrices with IDs/order/dimensions matching
 #'   the HRF fit. These should be the same preprocessed BOLD used for estimation.
 #' @param hrf_fit Object returned by estimate_crossrun_hrf().
-#' @param lambda Nonnegative regularization strength. If \code{NULL}, selected
-#'   automatically from \code{lambda_grid} by prewhitened generalized
-#'   cross-validation using \code{gcv_rule}.
+#' @param lambda Nonnegative regularization strength. If \code{NULL} (the
+#'   default for modern \code{ar1}/\code{calibrated} fits), selected
+#'   automatically from \code{lambda_grid} by gain-calibrated, task-weighted
+#'   adaptive prewhitened generalized cross-validation using \code{gcv_rule}.
 #' @param scaling Input scaling: zscore (default), noise_sd, demean, none, or psc.
 #' @param penalty Quadratic penalty: diff2, diff1, ridge, matern1, or sobolev.
 #' @param backend Fixed linear inverse backend: cpp, r, or scalar wiener.
@@ -697,13 +967,14 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
     penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"), backend = c("cpp", "r", "wiener"),
     batch_size = 2048L, tail_padding = 0L, ridge_floor = 1e-8, operator_cache_mb = 128,
     nuisance_mode = NULL, observation_mask = NULL,
-    lambda_grid = 10^seq(-3, 1.5, length.out = 12), gcv_rule = c("min", "1se")) {
+    lambda_grid = 10^seq(-2, 1.0, length.out = 16), gcv_rule = c("min", "1se")) {
   hrf_validate_bold(bold)
   if (!inherits(hrf_fit, "crossrun_hrf")) stop("hrf_fit must be a crossrun_hrf object")
   if (!identical(names(bold), hrf_fit$run_ids) || !identical(colnames(bold[[1L]]), hrf_fit$voxel_ids) ||
       !identical(vapply(bold, nrow, integer(1)), hrf_fit$n_time))
     stop("BOLD run/voxel IDs and dimensions must match the HRF fit")
-  if (missing(lambda)) stop("Specify lambda explicitly (or pass lambda = NULL for GCV tuning)")
+  modern <- identical(hrf_fit$settings$noise_model, "ar1") || identical(hrf_fit$settings$evidence, "calibrated")
+  if (missing(lambda) && !modern) stop("Specify lambda explicitly (or pass lambda = NULL for GCV tuning)")
   checkmate::assert_number(lambda, lower = 0, finite = TRUE, null.ok = TRUE)
   gcv_rule <- match.arg(gcv_rule)
   scaling <- match.arg(scaling, c("zscore", "demean", "none", "psc", "noise_sd"))
@@ -712,7 +983,6 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
   checkmate::assert_integerish(tail_padding, lower = 0, len = 1L)
   checkmate::assert_number(ridge_floor, lower = 0, finite = TRUE)
   checkmate::assert_number(operator_cache_mb, lower = 0, finite = TRUE)
-  modern <- identical(hrf_fit$settings$noise_model, "ar1") || identical(hrf_fit$settings$evidence, "calibrated")
   if (is.null(nuisance_mode)) nuisance_mode <- "ignore"
   if (is.null(observation_mask)) observation_mask <- if (modern) "fit" else "all"
   nuisance_mode <- match.arg(nuisance_mode, c("joint", "ignore"))
@@ -721,52 +991,24 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       nuisance_mode != "ignore" || observation_mask != "all"))
     stop("Wiener does not implement masked, nuisance-adjusted AR GLS; use cpp/r, or an OLS fit with nuisance_mode = 'ignore', observation_mask = 'all'")
 
-  # Automatic global GCV tuning when lambda = NULL:
-  # Select the first run with >= 3 usable timepoints and >= 1 valid voxel, take
-  # up to 256 valid voxels, and run prewhitened GCV over lambda_grid using the
-  # modal selected HRF kernel and median run AR(1) rho. The chosen scalar lambda
-  # and full GCV tuning table are frozen in settings$lambda and settings$lambda_tuning.
+  # Automatic gain-calibrated, task-weighted prewhitened GCV tuning when lambda = NULL:
   lambda_tuning <- NULL
   if (is.null(lambda)) {
     checkmate::assert_numeric(lambda_grid, lower = 0, any.missing = FALSE, min.len = 1L, finite = TRUE)
     lambda_grid <- sort(unique(as.numeric(lambda_grid)))
-    for (r_tune in seq_along(bold)) {
-      y_t <- bold[[r_tune]]
-      n_t <- nrow(y_t)
-      mask_t <- if (observation_mask == "fit") hrf_fit$specification$valid_rows[[r_tune]] else rep(TRUE, n_t)
-      rows_t <- which(!is.na(mask_t) & mask_t)
-      if (length(rows_t) < 3L) next
-      st_t <- decon_signal_status(y_t[rows_t, , drop = FALSE])
-      ok_cols <- which(st_t == "ok")
-      if (!length(ok_cols)) next
-      if (length(ok_cols) > 256L) ok_cols <- ok_cols[seq_len(256L)]
-      sel_t <- hrf_fit$selections[[r_tune]]$kernel_index[ok_cols]
-      k_mode <- as.integer(names(sort(table(sel_t), decreasing = TRUE))[1L])
-      rho_t <- if (is.null(hrf_fit$noise)) 0 else stats::median(hrf_fit$noise[[r_tune]]$rho[ok_cols], na.rm = TRUE)
-      if (!is.finite(rho_t)) rho_t <- 0
-      sc_t <- scale_decon_input(y_t[rows_t, ok_cols, drop = FALSE], scaling = scaling, noise_rho = rho_t)
-      tune_res <- deconvolve_reglin(
-        BOLDobs = sc_t$y,
-        kernel = hrf_fit$kernels[, k_mode],
-        lambda = NULL,
-        lambda_grid = lambda_grid,
-        penalty = penalty,
-        tune_by = "global",
-        normalize = FALSE,
-        demean = FALSE,
-        ridge_floor = ridge_floor,
-        return_diagnostics = TRUE,
-        prewhiten_gcv = rho_t != 0,
-        prewhiten_rho = rho_t,
-        backend = if (backend == "wiener") "wiener" else "cpp",
-        gcv_rule = gcv_rule,
-        scaling = "none"
-      )
-      lambda <- as.numeric(tune_res$lambda[1L])
-      lambda_tuning <- tune_res$tuning
-      break
-    }
-    if (is.null(lambda) || !is.finite(lambda)) lambda <- lambda_grid[1L]
+    tuned <- hrf_tune_decon_lambda(
+      bold = bold,
+      hrf_fit = hrf_fit,
+      lambda_grid = lambda_grid,
+      scaling = scaling,
+      penalty = penalty,
+      ridge_floor = ridge_floor,
+      observation_mask = observation_mask,
+      backend = backend,
+      gcv_rule = gcv_rule
+    )
+    lambda <- tuned$lambda
+    lambda_tuning <- tuned$tuning
   }
 
   settings <- list(lambda = lambda, lambda_tuning = lambda_tuning, scaling = scaling, penalty = penalty,
@@ -791,8 +1033,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       cache_keys <- character(); cache_bytes <- 0
       cached_design <- design
     }
-    selected <- hrf_fit$selections[[r]]$kernel_index
-    rho <- if (is.null(hrf_fit$noise)) rep(0, ncol(y)) else hrf_fit$noise[[r]]$rho
+    strat <- hrf_stratum_kernels(hrf_fit, r)
+    rho <- strat$rho
     status <- if (length(rows) >= 3L) decon_signal_status(y[rows, , drop = FALSE]) else
       rep("insufficient_observations", ncol(y))
     if (identical(hrf_fit$settings$noise_model, "ar1") && !is.null(hrf_fit$noise)) {
@@ -801,19 +1043,20 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
     }
     out <- matrix(NA_real_, n, ncol(y), dimnames = dimnames(y))
     centers <- divisors <- noise_sds <- rep(NA_real_, ncol(y))
-    # Group voxels into strata that share the exact same (kernel_index, rho) pair.
+    # Group voxels into strata that share the exact same (kernel / weight vector, rho) pair.
     # Because the regularized GLS inverse operator M = (H' W' Q_Z W H + lambda P)^-1 H' W' Q_Z W
     # depends only on (n, kernel, valid_rows, rho, nuisance, lambda, penalty),
     # all voxels in a stratum share a single n x m_obs inverse operator matrix,
     # turning voxelwise deconvolution into fast BLAS matrix multiplication (M %*% Y_block)
     # and caching operators across runs when observation masks and nuisance match.
-    strata <- paste(selected, sprintf("%.17g", rho), sep = ":")
+    strata <- strat$keys
     for (key in unique(strata[status == "ok"])) {
       columns <- which(strata == key & status == "ok")
-      k <- selected[columns[1L]]; ar <- rho[columns[1L]]
+      ar <- rho[columns[1L]]
+      k_vec <- as.numeric(strat$get_kernel(columns[1L]))
       if (backend != "wiener") {
         if (exists(key, envir = operators, inherits = FALSE)) operator <- get(key, envir = operators) else {
-          operator <- hrf_inverse_operator(n, hrf_fit$kernels[, k], rows, ar, z, settings)
+          operator <- hrf_inverse_operator(n, k_vec, rows, ar, z, settings)
           bytes <- as.numeric(utils::object.size(operator))
           if (bytes <= operator_cache_mb * 1024^2) {
             while (length(cache_keys) && cache_bytes + bytes > operator_cache_mb * 1024^2) {
@@ -829,7 +1072,7 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
         scaled <- scale_decon_input(y[rows, indices, drop = FALSE], scaling = scaling, noise_rho = ar)
         out[, indices] <- if (backend == "wiener") {
           fit_input <- rbind(scaled$y, matrix(0, tail_padding, length(indices)))
-          deconvolve_reglin(fit_input, hrf_fit$kernels[, k], lambda = lambda,
+          deconvolve_reglin(fit_input, k_vec, lambda = lambda,
             scaling = "none", backend = "wiener")[seq_len(n), , drop = FALSE]
         } else operator %*% scaled$y
         centers[indices] <- scaled$center; divisors[indices] <- scaled$scale

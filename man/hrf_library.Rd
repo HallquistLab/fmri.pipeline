@@ -10,7 +10,7 @@ hrf_library(
   dispersions = c(0.8, 1, 1.2),
   undershoot_ratios = 6,
   duration = 32,
-  preset = c("custom", "standard", "extended", "dense")
+  preset = c("custom", "standard", "extended", "medusa", "dense")
 )
 }
 \arguments{
@@ -27,8 +27,9 @@ hrf_library(
 \item{preset}{Optional preset grid configuration: `"custom"` (default, uses
 supplied `peak_delays`, `dispersions`, `undershoot_ratios`), `"standard"`
 (delays 5, 6, 7s; dispersions 0.8, 1, 1.2), `"extended"` (delays 4--8s;
-dispersions 0.8, 1, 1.25), or `"dense"` (delays 4--8.5s by 0.5s; dispersions
-0.8, 1, 1.2, 1.4).}
+dispersions 0.8, 1, 1.25), `"medusa"` (recommended 0.5s medium grid:
+delays 4--8s by 0.5s; dispersions 0.9, 1.0, 1.1; 27 candidates), or `"dense"`
+(delays 4--8.5s by 0.5s; dispersions 0.8, 1, 1.2, 1.4).}
 }
 \value{
 A unit-sum kernel matrix, with time rows, candidate columns, and a

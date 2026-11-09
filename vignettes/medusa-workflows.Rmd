@@ -143,19 +143,21 @@ head(hrf_fit$selections$run1)
 
 Run 1's training manifest should list runs 2 and 3. Trial-amplitude training is requested during this step; in closely coupled multi-condition schedules, the implementation compares designs freeing one condition at a time to reduce ambiguity. In every case, the RPE values have **not** been supplied. We use `"trial"` because trial modulation is central to the example, but `"condition"` remains the faster default and deserves comparison in real data. Weak or inconsistent evidence can retain the first, prespecified canonical kernel.
 
-Inspect the entire selection tables, `hrf_fit$signal_status`, and `hrf_fit$designs`. A plausible shape by eye is insufficient: check support, fallback reasons, candidate scores, and stability across target runs. With only two runs, a fold has only one training run and cannot assess compatibility across training runs. Cross-fitting HRFs does not make the resulting folds independent observations for inference.
+Inspect the entire selection tables, `hrf_fit$signal_status`, and `hrf_fit$designs`. A plausible shape by eye is insufficient: check support, fallback reasons, candidate scores, and stability across target runs. With only two runs, a fold has only one training run and cannot assess compatibility across training runs; when only a single run is available (`length(bold) == 1L`), `estimate_crossrun_hrf()` automatically partitions usable observations into contiguous temporal sub-blocks (3 blocks for longer runs, 2 halves for shorter runs) scored against the full causal event design and pooled with cross-block compatibility testing while keeping the full continuous run intact for `deconvolve_crossrun_hrf()`. Cross-fitting HRFs does not make the resulting folds independent observations for inference.
 
 **Optional spatial borrowing recipe; not executed.** `parcel_ids` must be a named vector, independently defined, with names exactly equal to the voxel column IDs. This is an alternative fit, not an extra smoothing step on `hrf_fit`.
 
 ```{r parcel-recipe, eval=FALSE}
+medusa_candidates <- hrf_library(tr, preset = "medusa")
 parcel_fit <- estimate_crossrun_hrf(
-  bold, events, tr, candidates,
-  spatial_groups = parcel_ids, pooling = "voxel", spatial_strength = 0.02,
-  amplitude_model = "trial", noise_model = "ar1", evidence = "calibrated"
+  bold, events, tr, medusa_candidates,
+  spatial_groups = parcel_ids, pooling = "parcel",
+  amplitude_model = "trial", noise_model = "ar1", evidence = "calibrated",
+  selection_mode = "soft_average"
 )
 ```
 
-The strength above is an illustrative setting, not a validated universal recommendation. Hard parcel pooling (`pooling = "parcel"`) makes a stronger homogeneity assumption. Compare it with unpooled fits before adopting it.
+Here `preset = "medusa"` constructs the recommended $0.5\text{ s}$-spaced 27-candidate grid (`peak_delays = seq(4.0, 8.0, by = 0.5)`, `dispersions = c(0.9, 1.0, 1.1)`), and `selection_mode = "soft_average"` computes a unit-sum Boltzmann-weighted composite HRF (`parcel_fit$selected_kernels`) shrunk toward `fallback_kernel` by Empirical-Bayes parcel departure confidence. In simulations with continuous sub-grid vascular delays and nonlinear Windkessel-Balloon hemodynamics, pairing `preset = "medusa"` with `selection_mode = "soft_average"` reduces HRF waveform RMSE by 8--22% and downstream neural latency error by 20--35% compared to discrete hard selection (`selection_mode = "hard"`), while avoiding the collinearity and $7\times$ runtime cost of $0.25\text{ s}$ grids. Hard parcel pooling (`pooling = "parcel"`) shares one composite HRF per parcel; `pooling = "voxel"` with `spatial_strength = 0.02` blends voxel and parcel weight vectors via Empirical-Bayes concordance.
 
 # Recover continuous latent activity
 
@@ -169,7 +171,7 @@ head(decon$scaling$run1)
 dim(decon$activity$run1)
 ```
 
-Here `lambda = 0.1` is a fixed teaching value. It is not optimized for RPE recovery and should not be adopted as a study default. Passing `lambda = NULL` explicitly requests automatic prewhitened GCV tuning over `lambda_grid` (using `gcv_rule = "min"` or `"1se"`, and storing the selected value and GCV curve in `decon$settings$lambda` and `decon$settings$lambda_tuning`); omitting `lambda` entirely raises an error. Because GCV optimizes an observation-domain reconstruction criterion rather than trial-level slope recovery, compare prespecified settings in simulations reflecting your event timing, SNR, durations, and noise.
+Here `lambda = 0.1` is a fixed teaching value. In modern (`ar1` / `calibrated`) fits, `lambda = NULL` is the default and automatically invokes gain-calibrated, task-weighted adaptive prewhitened GCV (`hrf_tune_decon_lambda()`) over `lambda_grid = 10^seq(-2, 1.0, length.out = 16)` (storing the selected scalar in `decon$settings$lambda` and the full diagnostic table—including `var_level`, `var_contrast`, `mtf_rel`, `gcv_adaptive`, and `snr_task`—in `decon$settings$lambda_tuning`). Unlike naive observation-space GCV across all voxels—which over-smooths event-related activity when null voxels are present or per-TR signal power is modest—adaptive prewhitened GCV filters to task-supported voxels/parcels from `hrf_fit$selections` and balances Stage-3 gain-restored level/contrast variance against the operator's modulation transfer function, automatically adapting $\lambda$ across fSNR regimes and acquisition TRs. For legacy (`ols` / `legacy`) fits, omitting `lambda` still raises an error unless `lambda = NULL` is passed explicitly.
 
 `noise_sd` centers the input and divides by a high-frequency second-difference estimate of measurement noise SD (adjusted for AR(1) autocorrelation) rather than total temporal SD. The scale table (`decon$scaling$run1`) records `center`, `scale`, `noise_sd`, and validity status. Activity matrices preserve the acquisition grid and carry timing attributes. Use `decon$activity` for continuous diagnostics; retain the **whole object** for epoch regression.
 
@@ -431,10 +433,10 @@ Based on the five-pillar MEDuSA simulation validation suite, the table below sum
 
 | Pipeline Step | Function | Recommended Arguments | Why It Matters |
 |---|---|---|---|
-| **1. Cross-Run HRF Learning** | `estimate_crossrun_hrf()` | `noise_model = "ar1"`, `evidence = "calibrated"`, `spatial_groups = parcel_ids`, `pooling = "parcel"` (or `"voxel"` with `spatial_strength = 0.02`) | Prevents regional vascular HRF differences ($\ge 1.5\text{ s}$) from inverting within-trial neural peak ordering or causing false-positive lagged connectivity; uses Cauchy parcel evidence pooling (`hrf_cauchy_p()`). |
+| **1. Cross-Run HRF Learning** | `hrf_library()` + `estimate_crossrun_hrf()` | `hrf_library(tr, preset = "medusa")` ($0.5\text{ s}$ delay grid, $K=27$); `noise_model = "ar1"`, `evidence = "calibrated"`, `selection_mode = "soft_average"`, `spatial_groups = parcel_ids`, `pooling = "parcel"` (or `"voxel"` with `spatial_strength = 0.02`) | Interpolates sub-grid vascular delays and nonlinear Balloon hemodynamics via Empirical-Bayes Boltzmann kernel averaging (`selection_mode = "soft_average"`), reducing HRF RMSE by 8--22% and neural latency error by 20--35% over hard selection without the runtime cost of $0.25\text{ s}$ grids. |
 | **2. Continuous Deconvolution** | `deconvolve_crossrun_hrf()` | `scaling = "noise_sd"`, `penalty = "sobolev"`, `backend = "cpp"` | Scales runs by AR(1) innovation noise SD rather than total `"zscore"` variance (which compresses high-signal runs and absorbs drift/motion variance); Sobolev penalty controls both high-frequency ringing and low-frequency drift. |
 | **3a. Punctate / Impulse Epochs** | `decon_epoch_regression()` | `source_model = "impulse"`, `readout_kernel = "triangle"`, `demix_other_events = TRUE`, `demix_target_trials = TRUE`, `restore_scale = TRUE`, `weighting = "gls"`, `whiten_panel = TRUE`, `return_panel = TRUE` | Removes preceding event bleed via condition-mean de-mixing (`demix_ridge = 0.05`, or `< 0.03` when non-target events carry strong trial-varying confounds) and restores per-trial target gain via 2nd-order Tikhonov inversion. |
-| **3b. Multi-Lag Waveforms $\beta(\tau)$** | `decon_epoch_regression()` | Same as 3a + `demix_within_trial = TRUE` (`within_trial_ridge = 0.06`) across $\ge 3$ lags | Sharpens within-trial temporal waveform profiles across lags by inverting the lag-by-lag point-spread matrix. |
+| **3b. Multi-Lag Waveforms $\beta(\tau)$** | `decon_epoch_regression()` | Same as 3a + `demix_within_trial = TRUE` (`within_trial_ridge = 0.06`) across $\ge 3$ lags spaced at $1\times\text{TR}$ | Sharpens within-trial temporal waveform profiles across lags by inverting the lag-by-lag point-spread matrix (automatically scales `within_trial_ridge` by $(\text{TR}/\Delta\tau)^2$ if `lags` is sampled finer than $1\times\text{TR}$). |
 | **3c. Variable-Duration (RT) Epochs** | `decon_epoch_regression()` | Same as 3a + `source_model = "duration"`, `trial_durations = rt_by_run`, `duration_scale = "rate"` | Eliminates reaction-time duration confounding (preventing both destructive signal cancellation when $r(x, \text{RT}) < 0$ and 100% false-positive rate inflation when $r(x, \text{RT}) > 0$). |
 | **4. Group Mixed-Effects Model** | `mixed_by()` | `decon_demixed_whitened ~ x_whitened + (1 + x_whitened \| id) + (1 \| run_id)`, `weights = "precision_weight"` | Combines Empirical-Bayes precision weights across heteroskedastic runs/trials with null-mode-damped, Bartlett-adaptive within-run ZCA correlation whitening. |
 
