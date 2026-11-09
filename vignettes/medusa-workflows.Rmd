@@ -25,7 +25,7 @@ stopifnot(all(vapply(needed, exists, logical(1),
 
 # Choose the route that answers your question
 
-Read the [conceptual primer](medusa-concepts.html) first if HRF selection, regularization, or resolution matrices are unfamiliar. This vignette documents the API through PR #54. It uses a small synthetic dataset so the core workflow runs without an imaging dataset, AFNI, a scheduler, or external files. Blocks labeled **recipe; not executed** require your study inputs. All other R chunks execute when the vignette is rendered.
+Read the [conceptual primer](medusa-concepts.html) first if HRF selection, regularization, or resolution matrices are unfamiliar. This vignette documents the MEDuSA API through PR #55 and the operator precision-weight/whitening extensions. It uses a small synthetic dataset so the core workflow runs without an imaging dataset, AFNI, a scheduler, or external files. Blocks labeled **recipe; not executed** require your study inputs. All other R chunks execute when the vignette is rendered.
 
 | Goal | Route | Important boundary |
 |---|---|---|
@@ -169,9 +169,9 @@ head(decon$scaling$run1)
 dim(decon$activity$run1)
 ```
 
-Here lambda is a fixed teaching value. It is not optimized for RPE recovery and should not be adopted as a study default. `lambda = NULL` explicitly requests GCV over `lambda_grid`; omitting lambda raises an error. GCV optimizes an observation-domain criterion, which is different from trial recovery. Compare prespecified settings in simulations reflecting your event timing, SNR, durations, and noise.
+Here `lambda = 0.1` is a fixed teaching value. It is not optimized for RPE recovery and should not be adopted as a study default. Passing `lambda = NULL` explicitly requests automatic prewhitened GCV tuning over `lambda_grid` (using `gcv_rule = "min"` or `"1se"`, and storing the selected value and GCV curve in `decon$settings$lambda` and `decon$settings$lambda_tuning`); omitting `lambda` entirely raises an error. Because GCV optimizes an observation-domain reconstruction criterion rather than trial-level slope recovery, compare prespecified settings in simulations reflecting your event timing, SNR, durations, and noise.
 
-`noise_sd` centers the input and divides by estimated measurement noise rather than total temporal SD. The scale table records the divisor and validity status. Activity matrices preserve the acquisition grid and carry timing attributes. Use `decon$activity` for continuous diagnostics; retain the **whole object** for epoch regression.
+`noise_sd` centers the input and divides by a high-frequency second-difference estimate of measurement noise SD (adjusted for AR(1) autocorrelation) rather than total temporal SD. The scale table (`decon$scaling$run1`) records `center`, `scale`, `noise_sd`, and validity status. Activity matrices preserve the acquisition grid and carry timing attributes. Use `decon$activity` for continuous diagnostics; retain the **whole object** for epoch regression.
 
 We set `nuisance_mode = "ignore"` explicitly to match the default and use data with no simulated drift. In a study, use appropriately cleaned input or a validated joint nuisance model. Nuisance regressors supplied for HRF training are **not automatically removed by the inverse** under `"ignore"`. `"joint"` fits nuisance terms in the inverse, but can make low-frequency activity weakly identified; assess recovery rather than assuming it is superior. Censored acquisition rows are omitted from the observation fit but still have model-based latent estimates on the full grid. Such estimates are not directly observed data.
 
@@ -193,14 +193,15 @@ feedback_fit <- decon_epoch_regression(
   target_condition = "feedback", lags = seq(-2, 4, by = 1),
   source_model = "impulse", readout_kernel = "triangle", readout_width = 1.5 * tr,
   demix_other_events = TRUE, demix_target_trials = TRUE,
+  demix_within_trial = TRUE, weighting = "precision", whiten_panel = TRUE,
   restore_scale = TRUE, return_panel = TRUE
 )
 knitr::kable(feedback_fit$summary, digits = 3)
 ```
 
-The function models non-target cue/decision contributions and the operator's target-trial cross-talk. It then estimates covariate slopes after within-run centering. For multiple predictors, supply a data frame or matrix per run with consistent column names/order; do not add a constant intercept column to those centered predictors. Non-target events should remain in `events`, even though covariate rows refer only to feedback records.
+The function models non-target cue/decision contributions (`demix_other_events = TRUE`), the operator's trial-to-trial cross-talk (`demix_target_trials = TRUE`), and within-trial multi-lag smearing across the requested `-2..+4 s` lag grid (`demix_within_trial = TRUE`). It also propagates the exact run-specific AR(1) observation noise covariance through the readout and unmixing operators to compute per-trial standard errors (`se_raw`, `se_demixed`), Empirical-Bayes stabilized inverse-variance precision weights (`precision_weight`), covariance-propagated sandwich standard errors (`se_weighted`), and ZCA-whitened GLS slopes (`beta_gls`, `se_gls`). For multiple predictors, supply a data frame or matrix per run with consistent column names/order; do not add a constant intercept column to those centered predictors. Non-target events should remain in `events`, even though covariate rows refer only to feedback records.
 
-`restore_scale = TRUE` reports effects in original input units under the unit-sum HRF convention. It reverses the scaling divisor; it does not make estimates physiologically calibrated or guarantee unbiased amplitudes. `beta_raw` is the uncorrected readout under this same inverse, not the historical Bush pipeline. `beta_corrected` includes model-based de-mixing and gain correction. Correlations in a multi-predictor result are marginal correlations with each predictor, not partial correlations.
+`restore_scale = TRUE` reports effects in original input units under the unit-sum HRF convention. It reverses the scaling divisor; it does not make estimates physiologically calibrated or guarantee unbiased amplitudes. `beta_raw` is the uncorrected readout under this same inverse, not the historical Bush pipeline. `beta_corrected` includes model-based de-mixing, gain correction, and (when `weighting = "precision"`, the default) Empirical-Bayes precision weighting; `beta_gls` applies full within-run ZCA whitening of the trial error covariance matrix. Correlations in a multi-predictor result are marginal correlations with each predictor, not partial correlations.
 
 ```{r recovery-comparison, fig.cap="Raw and corrected feedback RPE slopes. The dashed line marks the simulated onset effect averaged across voxels. Nonzero lag analyses shift the assumed source as well as the readout; they are not independent temporal measurements."}
 s <- feedback_fit$summary
@@ -218,7 +219,11 @@ at_zero <- subset(feedback_fit$coefficients, lag == 0)
 knitr::kable(data.frame(
   voxel = at_zero$voxel,
   truth = true_beta[match(at_zero$voxel, voxel_ids)],
-  raw = at_zero$beta_raw, corrected = at_zero$beta_corrected
+  raw = at_zero$beta_raw,
+  corrected = at_zero$beta_corrected,
+  gls = at_zero$beta_gls,
+  se_weighted = at_zero$se_weighted,
+  se_gls = at_zero$se_gls
 ), digits = 3)
 ```
 
@@ -284,18 +289,21 @@ panel$trial_id <- vapply(seq_len(nrow(panel)), function(j) {
   events[[panel$run[j]]]$trial_id[panel$event_index[j]]
 }, integer(1))
 head(panel[, c("id", "run", "trial", "event_index", "trial_id", "evt_time",
-               "voxel", "decon_raw", "decon_demixed", "rpe")])
+               "voxel", "decon_raw", "decon_demixed", "se_demixed",
+               "precision_weight", "error_ac1", "decon_demixed_whitened",
+               "rpe", "rpe_whitened")])
 stopifnot(!anyDuplicated(panel[c("id", "run", "trial_id", "evt_time", "voxel")]),
-          all(is.finite(panel$decon_demixed)))
+          all(is.finite(panel$decon_demixed)),
+          all(is.finite(panel$precision_weight) & panel$precision_weight > 0))
 ```
 
-`run`, `trial`, `event_index`, `onset`, `evt_time`, and `voxel` describe each observation; `decon_raw` and `decon_demixed` contain its readouts. Covariate columns are included. `trial` is **not necessarily your original behavioral trial ID**. Join behavior through the preserved event-row mapping, then validate one-to-one identity at the intended grain. Add participant and session IDs explicitly before combining people; do not let identical run names imply identical participants.
+`run`, `trial`, `event_index`, `onset`, `evt_time`, and `voxel` describe each observation; `decon_raw` and `decon_demixed` contain its readouts; `se_raw`, `se_demixed`, `precision_weight`, and `error_ac1` capture the operator-propagated per-trial standard errors, Empirical-Bayes stabilized precision weights, and lag-1 trial error autocorrelation. Because `whiten_panel = TRUE` was requested, `decon_demixed_whitened` and `rpe_whitened` also provide within-run ZCA-decorrelated trial responses and centered covariates. `trial` is **not necessarily your original behavioral trial ID**. Join behavior through the preserved event-row mapping, then validate one-to-one identity at the intended grain. Add participant and session IDs explicitly before combining people; do not let identical run names imply identical participants.
 
 The finite-value assertion is appropriate to this complete synthetic dataset. In real data, report retained trials by run/lag/voxel, investigate missing estimates, and never silently discard a participant with sparse support. `summary` averages across usable voxels and is descriptive; it is not a population analysis.
 
 ## Handoff to group models
 
-**Multi-participant recipe; not executed.** Repeat the participant workflow and retain one panel per participant, with ID/session and event mappings added as above. `participant_panels` below refers to those completed panels, not replications of this simulation.
+**Multi-participant recipe; not executed.** Repeat the participant workflow and retain one panel per participant, with ID/session and event mappings added as above. `participant_panels` below refers to those completed panels, not replications of this simulation. `mixed_by()` now accepts `weights = "precision_weight"` to weight each trial by its normalized inverse-variance precision weight across all supported engines (`lme4`, `rstanarm`, and `jlmer`). Alternatively, when trial-to-trial error autocorrelation (`error_ac1`) is substantial in rapid designs, you can fit the ZCA-whitened panel columns (`decon_demixed_whitened ~ rpe_whitened`).
 
 ```{r group-recipe, eval=FALSE}
 all_panels <- data.table::rbindlist(participant_panels, use.names = TRUE)
@@ -303,17 +311,28 @@ all_panels[, run_id := interaction(id, run, drop = TRUE)]
 all_panels[, rpe_within := rpe - mean(rpe), by = .(id, run)]
 stopifnot(data.table::uniqueN(all_panels$id) > 1L)
 
-# One model per voxel and prespecified lag; random effects need design-specific review.
+# Option A: Precision-weighted mixed model (propagates per-trial inverse-variance weights)
 group_results <- mixed_by(
   data = all_panels,
   model_formulae = list(rpe = decon_demixed ~ rpe_within +
                          (1 + rpe_within | id) + (1 | run_id)),
   split_on = c("voxel", "evt_time"),
+  weights = "precision_weight",
+  engine = "lme4", ncores = 1L
+)
+
+# Option B: Within-run ZCA-whitened mixed model (decorrelates and standardizes
+# within-run trial errors when whiten_panel = TRUE was used in decon_epoch_regression)
+group_results_whitened <- mixed_by(
+  data = all_panels,
+  model_formulae = list(rpe = decon_demixed_whitened ~ rpe_whitened +
+                         (0 + rpe_whitened | id)),
+  split_on = c("voxel", "evt_time"),
   engine = "lme4", ncores = 1L
 )
 ```
 
-This illustrates the package interface, not a fully validated inferential recipe. De-mixing induces unequal trial uncertainty and residual dependence; the panel currently provides no per-trial precision weights. Ordinary mixed-model standard errors do not automatically propagate HRF selection, regularization, behavioral-model uncertainty, or the full deconvolution covariance. Validate interval coverage/null behavior for the intended study or use a justified participant-level analysis/resampling procedure. Keep folds/runs/trials clustered within participants. Prespecify the lag/region family and its multiplicity correction; neither HRF evidence gates nor descriptive epoch p-values provide that correction. Do not treat voxels as independent participant replicates. A parcel analysis requires an explicit, independently defined voxel-to-parcel mapping and aggregation strategy.
+While `weights = "precision_weight"` and `whiten_panel = TRUE` propagate the operator-induced heteroskedasticity and within-run error covariance conditioned on the frozen HRF and penalty, mixed-model standard errors still condition on the selected HRF, regularization parameter, and behavioral model. Validate interval coverage and active-null behavior for the intended study design. Keep folds/runs/trials clustered within participants. Prespecify the lag/region family and its multiplicity correction; neither HRF evidence gates nor descriptive epoch p-values provide that correction. Do not treat voxels as independent participant replicates. A parcel analysis requires an explicit, independently defined voxel-to-parcel mapping and aggregation strategy.
 
 **Saving recipe; not executed.** Keeping only the panel loses the fitted operator context needed for audits.
 

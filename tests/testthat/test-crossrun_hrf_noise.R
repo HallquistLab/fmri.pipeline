@@ -537,3 +537,216 @@ test_that("decon_epoch_regression trial-varying duration source model eliminates
   expect_gt(reg_int$summary$mean_r_demixed, 0.70)
   expect_lt(abs(reg_int$summary$mean_beta_corrected - true_beta), 0.15)
 })
+
+test_that("decon_epoch_regression propagates analytical per-trial precision weights and ZCA whitening to mixed_by", {
+  set.seed(202612)
+  tr <- 1.0
+  n_time <- 180L
+  n_trials <- 24L
+  lib <- hrf_library(tr, peak_delays = c(5, 6), dispersions = 1, undershoot_ratios = 6)
+  hrf <- lib[, 1L, drop = FALSE]
+  true_group_beta <- 0.45
+  n_subj <- 10L
+  subj_betas <- true_group_beta + rnorm(n_subj, sd = 0.08)
+
+  panel_all <- vector("list", n_subj)
+  subj_err_unw <- subj_err_pw <- subj_err_gls <- numeric(n_subj)
+
+  for (s in seq_len(n_subj)) {
+    bold <- events <- cov_list <- rt_list <- list()
+    for (r in 1:2) {
+      # Heterogeneous ISI (crowded vs isolated) and trial durations (short RT = 0.35s vs long RT = 2.4s)
+      isi <- rep(c(2.8, 7.2), length.out = n_trials) + runif(n_trials, -0.25, 0.25)
+      t_choice <- cumsum(c(8, isi[-n_trials]))
+      rt <- sample(c(rep(0.35, n_trials / 2L), rep(2.4, n_trials / 2L)))
+      val <- as.numeric(scale(stats::filter(rnorm(n_trials + 10L), 0.50, method = "recursive")[-seq_len(10L)]))
+      des_choice <- hrf_event_design_cpp(n_time, tr, 0, t_choice, rt,
+        seq_len(n_trials), n_trials, hrf)[[1L]]
+      amp <- 1.0 + subj_betas[s] * val + rnorm(n_trials, sd = 0.05)
+      sig <- as.numeric(des_choice %*% amp)
+      # Run 1 has low scanner noise (sd = 0.12); Run 2 has high scanner noise (sd = 0.55)
+      sd_r <- if (r == 1L) 0.12 else 0.55
+      W_r <- hrf_whitening_matrix(1:n_time, 0.40)
+      eps1 <- sd_r * sqrt(1 - 0.40^2) * as.numeric(solve(W_r, rnorm(n_time)))
+      eps2 <- sd_r * sqrt(1 - 0.40^2) * as.numeric(solve(W_r, rnorm(n_time)))
+      bold[[paste0("run", r)]] <- cbind(v1 = 100 + sig + eps1, v2 = 100 + sig + eps2)
+      events[[paste0("run", r)]] <- data.frame(onset = t_choice, duration = rt, condition = "choice")
+      cov_list[[paste0("run", r)]] <- data.frame(value = val)
+      rt_list[[paste0("run", r)]] <- rt
+    }
+
+    fit_s <- list(
+      kernels = hrf,
+      run_ids = c("run1", "run2"),
+      voxel_ids = c("v1", "v2"),
+      n_time = c(run1 = n_time, run2 = n_time),
+      selections = list(
+        run1 = data.frame(voxel = c("v1", "v2"), kernel_index = c(1L, 1L), status = "voxel"),
+        run2 = data.frame(voxel = c("v1", "v2"), kernel_index = c(1L, 1L), status = "voxel")
+      ),
+      noise = list(
+        run1 = data.frame(voxel = c("v1", "v2"), rho = c(0.40, 0.40), method = "reml"),
+        run2 = data.frame(voxel = c("v1", "v2"), rho = c(0.40, 0.40), method = "reml")
+      ),
+      specification = list(
+        events = events,
+        nuisance = list(
+          run1 = cbind(1, seq(-1, 1, length.out = n_time)),
+          run2 = cbind(1, seq(-1, 1, length.out = n_time))
+        ),
+        valid_rows = list(run1 = rep(TRUE, n_time), run2 = rep(TRUE, n_time))
+      ),
+      settings = list(tr = tr, time_offset = c(0, 0), noise_model = "ar1")
+    )
+    class(fit_s) <- "crossrun_hrf"
+    dec_s <- deconvolve_crossrun_hrf(bold, fit_s, lambda = 1.0, scaling = "noise_sd", penalty = "sobolev")
+    expect_true("noise_sd" %in% names(dec_s$scaling$run1))
+    expect_true(all(is.finite(dec_s$scaling$run1$noise_sd)))
+
+    reg_s <- decon_epoch_regression(
+      dec_s, cov_list, events = events, target_condition = "choice",
+      lags = 0, source_model = "duration", trial_durations = rt_list,
+      restore_scale = TRUE, weighting = "precision", whiten_panel = TRUE,
+      return_epochs = TRUE, return_panel = TRUE
+    )
+
+    expect_true(all(c(
+      "se_raw", "se_demixed", "precision_weight", "precision_weight_op",
+      "precision_weight_raw", "error_ac1", "decon_demixed_whitened", "value_whitened"
+    ) %in% names(reg_s$panel)))
+
+    # Short-RT trials and high-noise run2 must have larger analytical SE and smaller precision weight
+    p_v1 <- reg_s$panel[reg_s$panel$voxel == "v1", ]
+    rt_vec <- c(rt_list$run1, rt_list$run2)
+    expect_gt(
+      mean(p_v1$se_demixed[p_v1$run == "run2"]),
+      2.5 * mean(p_v1$se_demixed[p_v1$run == "run1"])
+    )
+    expect_gt(
+      mean(p_v1$se_demixed[p_v1$run == "run1" & rt_vec == 0.35]),
+      2.0 * mean(p_v1$se_demixed[p_v1$run == "run1" & rt_vec == 2.4])
+    )
+    expect_gt(
+      mean(p_v1$precision_weight[p_v1$run == "run1" & rt_vec == 2.4]),
+      2.5 * mean(p_v1$precision_weight[p_v1$run == "run2" & rt_vec == 0.35])
+    )
+    expect_equal(mean(p_v1$precision_weight), 1.0, tolerance = 1e-10)
+    expect_equal(mean(p_v1$precision_weight_op), 1.0, tolerance = 1e-10)
+
+    subj_err_unw[s] <- abs(reg_s$summary$mean_beta_unweighted - subj_betas[s])
+    subj_err_pw[s] <- abs(reg_s$summary$mean_beta_weighted - subj_betas[s])
+    subj_err_gls[s] <- abs(reg_s$summary$mean_beta_gls - subj_betas[s])
+
+    p_s <- reg_s$panel
+    p_s$id <- factor(paste0("s", s))
+    panel_all[[s]] <- p_s
+  }
+
+  # Precision-weighted and GLS single-subject estimators beat unweighted OLS
+  expect_lt(mean(subj_err_pw), 0.65 * mean(subj_err_unw))
+  expect_lt(mean(subj_err_gls), 0.65 * mean(subj_err_unw))
+
+  # Downstream mixed_by with weights = "precision_weight" and whitened panel
+  panel_group <- data.table::rbindlist(panel_all)
+  res_unw <- suppressMessages(suppressWarnings(mixed_by(
+    panel_group,
+    outcomes = "decon_demixed",
+    rhs_model_formulae = list(m1 = ~ value + (1 | id)),
+    split_on = c("voxel", "evt_time"),
+    calculate = "parameter_estimates_reml"
+  )))
+  res_pw <- suppressMessages(suppressWarnings(mixed_by(
+    panel_group,
+    outcomes = "decon_demixed",
+    rhs_model_formulae = list(m1 = ~ value + (1 | id)),
+    split_on = c("voxel", "evt_time"),
+    weights = "precision_weight",
+    calculate = "parameter_estimates_reml",
+    emtrends_spec = list(vt = list(outcome = "decon_demixed", model_name = "m1", specs = ~ 1, var = "value"))
+  )))
+  res_gls <- suppressMessages(suppressWarnings(mixed_by(
+    panel_group,
+    outcomes = "decon_demixed_whitened",
+    rhs_model_formulae = list(m1 = ~ value_whitened + (1 | id)),
+    split_on = c("voxel", "evt_time"),
+    engine_args = list(weights = "precision_weight"),
+    calculate = "parameter_estimates_reml"
+  )))
+
+  b_unw <- res_unw$coef_df_reml[res_unw$coef_df_reml$term == "value", ]
+  b_pw <- res_pw$coef_df_reml[res_pw$coef_df_reml$term == "value", ]
+  b_gls <- res_gls$coef_df_reml[res_gls$coef_df_reml$term == "value_whitened", ]
+
+  expect_true(data.table::is.data.table(res_pw$emtrends_list$vt))
+  expect_equal(nrow(res_pw$emtrends_list$vt), 2L)
+  expect_lt(mean(b_pw$std.error), 0.50 * mean(b_unw$std.error))
+  expect_lt(mean(b_gls$std.error), 0.50 * mean(b_unw$std.error))
+  expect_lt(mean(abs(b_pw$estimate - mean(subj_betas))), 0.08)
+  expect_lt(mean(abs(b_gls$estimate - mean(subj_betas))), 0.08)
+})
+
+test_that("decon_epoch_regression removes trial-level non-target cue confounding and sharpens within-trial lag profiles", {
+  set.seed(202615)
+  tr <- 1.0
+  n_time <- 180L
+  n_trials <- 24L
+  lib <- hrf_library(tr, peak_delays = c(4.5, 6.0), dispersions = c(0.9, 1.0), undershoot_ratios = 6)
+  hrf_can <- lib[, 1L, drop = FALSE]
+
+  bold <- events <- x_list <- list()
+  for (r in 1:2) {
+    t_cue <- seq(8, by = 6.5, length.out = n_trials)
+    t_fb <- t_cue + runif(n_trials, 2.2, 3.2)
+    x <- as.numeric(scale(rnorm(n_trials)))
+    z_orth <- as.numeric(scale(stats::resid(stats::lm(rnorm(n_trials) ~ x))))
+    cue_mod <- 0.65 * x + sqrt(1 - 0.65^2) * z_orth
+
+    des_cue <- hrf_event_design_cpp(n_time, tr, 0, t_cue, rep(0, n_trials),
+      seq_len(n_trials), n_trials, hrf_can)[[1L]]
+    des_fb <- hrf_event_design_cpp(n_time, tr, 0, t_fb, rep(0, n_trials),
+      seq_len(n_trials), n_trials, hrf_can)[[1L]]
+
+    # Voxels 1-2: Null target (beta_fb = 0) with strong correlated cue modulation (beta_cue = 0.90)
+    sig_null <- as.numeric(des_cue %*% (1.0 + 0.90 * cue_mod) + des_fb %*% rep(0.6, n_trials))
+    # Voxels 3-4: True phasic target (beta_fb = 0.70) at lag = 0
+    sig_phasic <- as.numeric(des_cue %*% rep(0.6, n_trials) + des_fb %*% (0.8 + 0.70 * x))
+
+    bold[[paste0("run", r)]] <- cbind(
+      v1 = 100 + sig_null + rnorm(n_time, sd = 0.12),
+      v2 = 100 + sig_null + rnorm(n_time, sd = 0.12),
+      v3 = 100 + sig_phasic + rnorm(n_time, sd = 0.12),
+      v4 = 100 + sig_phasic + rnorm(n_time, sd = 0.12)
+    )
+    events[[paste0("run", r)]] <- rbind(
+      data.frame(onset = t_cue, duration = 0, condition = "cue"),
+      data.frame(onset = t_fb, duration = 0, condition = "feedback")
+    )
+    x_list[[paste0("run", r)]] <- data.frame(x = x)
+  }
+
+  fit <- estimate_crossrun_hrf(bold, events, tr, lib, noise_model = "ols")
+  dec <- deconvolve_crossrun_hrf(bold, fit, lambda = 0.5, scaling = "noise_sd", penalty = "sobolev")
+
+  reg_no_other <- decon_epoch_regression(dec, x_list, events = events, target_condition = "feedback",
+    lags = -2:3, source_model = "impulse", demix_other_events = FALSE, demix_target_trials = TRUE)
+  reg_with_other <- decon_epoch_regression(dec, x_list, events = events, target_condition = "feedback",
+    lags = -2:3, source_model = "impulse", demix_other_events = TRUE, demix_target_trials = TRUE,
+    demix_within_trial = TRUE, within_trial_ridge = 0.08)
+
+  cf_no <- reg_no_other$coefficients
+  cf_wt <- reg_with_other$coefficients
+
+  b_null_no <- mean(abs(cf_no$beta_corrected[cf_no$voxel %in% c("v1", "v2") & cf_no$lag == 0]))
+  b_null_wt <- mean(abs(cf_wt$beta_corrected[cf_wt$voxel %in% c("v1", "v2") & cf_wt$lag == 0]))
+  expect_lt(b_null_wt, 0.35 * b_null_no)
+
+  # Within-trial multi-lag de-mixing sharpens peak concentration at lag = 0 vs off-peak lags
+  prof_no <- tapply(cf_no$beta_corrected[cf_no$voxel %in% c("v3", "v4")],
+    cf_no$lag[cf_no$voxel %in% c("v3", "v4")], mean)
+  prof_wt <- tapply(cf_wt$beta_corrected[cf_wt$voxel %in% c("v3", "v4")],
+    cf_wt$lag[cf_wt$voxel %in% c("v3", "v4")], mean)
+  ratio_no <- prof_no["0"] / mean(abs(prof_no[c("-2", "2", "3")]))
+  ratio_wt <- prof_wt["0"] / mean(abs(prof_wt[c("-2", "2", "3")]))
+  expect_gt(ratio_wt, ratio_no)
+  expect_true(reg_with_other$settings$demix_within_trial)
+})

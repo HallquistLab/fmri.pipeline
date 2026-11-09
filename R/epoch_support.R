@@ -17,6 +17,13 @@ resolve_overlap_policy <- function(overlap_policy, collide_before, collide_after
   match.arg(overlap_policy, c("allow", "truncate", "exclude"))
 }
 
+# Build 9-point quadrature offsets and normalized weights around each target
+# output time for local window-integrated readouts ("boxcar", "triangle",
+# "gaussian"). Unlike two-point linear interpolation (which only evaluates a
+# point value), local kernel quadrature integrates over a window of width
+# `readout_width` (default 1.5 * max_gap) within each contiguous uncensored
+# segment, improving SNR for slower or duration-modulated epoch signals while
+# strictly refusing to integrate across censored observations or TR gaps.
 epoch_kernel_quadrature <- function(readout_kernel = "linear", readout_width = NULL, max_gap = 1.0) {
   readout_kernel <- match.arg(readout_kernel, c("linear", "boxcar", "triangle", "gaussian"))
   if (readout_kernel == "linear") {

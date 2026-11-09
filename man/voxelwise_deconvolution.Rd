@@ -82,7 +82,7 @@ implementation and does not require an external executable.
   data.frame containing the metadata for the current subject in the loop.
 
 Set \code{decon_settings$scaling} explicitly to \code{"zscore"},
-\code{"demean"}, \code{"none"}, or \code{"psc"}. The default is z-scoring.
+\code{"noise_sd"}, \code{"demean"}, \code{"none"}, or \code{"psc"}. The default is z-scoring.
 An explicit mode overrides \code{normalize}/\code{demean}; otherwise
 \code{normalize = FALSE} selects demeaning unless \code{demean = FALSE} too.
 The voxelwise Bush paths require z-scoring because their learning-rate and

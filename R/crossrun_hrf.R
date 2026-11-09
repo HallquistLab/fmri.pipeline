@@ -78,6 +78,18 @@ hrf_run_numeric <- function(x, bold, argument) {
   x
 }
 
+# Build the per-run event-convolved design matrices across all candidate HRFs.
+# In "condition" mode, events of the same condition share one regressor per
+# candidate HRF. In "trial" mode, each event gets its own free amplitude column
+# so zero-mean parametric signals (e.g., reward prediction errors) can still
+# inform HRF shape selection. However, when multiple conditions are closely
+# coupled within trials (median cross-condition onset separation <= 8 s) or
+# event count exceeds residual degrees of freedom, simultaneous free columns
+# across coupled conditions act like a local Taylor/derivative basis that can
+# absorb HRF timing differences into trial amplitudes. In that case, we screen
+# candidate designs that grant free trial columns to one focal condition at a
+# time (pooling the remaining conditions) and select the focal condition with
+# the strongest mean maximum partial R^2 across usable voxels.
 hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
     amplitude_model, rho_ref, batch_size, fallback_kernel) {
   labels <- as.character(ev$condition)
@@ -106,6 +118,7 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
     return(hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
       design_columns, max(design_columns), kernels))
   }
+  # Screen focal-condition trial-free designs using the reference AR(1) rho.
   cond_cols <- match(labels, u_cond)
   best_des <- NULL
   best_val <- -Inf
@@ -135,6 +148,10 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
     design_columns, max(design_columns), kernels)
 }
 
+# Compute a parcel-masked Gaussian spatial affinity matrix W_ij = exp(-d_ij^2 / (2 * sigma^2))
+# from 3D voxel coordinates. When spatial_fwhm is NULL, sigma defaults to 1.5x
+# the median nearest-neighbor distance. Cross-parcel weights are strictly zeroed
+# so anatomical boundaries are respected.
 hrf_compute_spatial_weights <- function(spatial_coords, spatial_groups, spatial_fwhm) {
   if (is.null(spatial_coords)) return(NULL)
   v <- nrow(spatial_coords)
@@ -411,8 +428,34 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
       voxels <- which(spatial_groups == g)
       eligible <- voxels[counts[voxels] >= min_training_runs]
       pooled <- if (length(eligible)) rowMeans(scores[, eligible, drop = FALSE]) else rep(NA_real_, ncol(kernels))
-      admissible <- if (is.null(gate)) rep(TRUE, ncol(kernels)) else
-        rowSums(gate$supported[, eligible, drop = FALSE]) >= min_parcel_voxels
+      admissible <- if (is.null(gate)) {
+        rep(TRUE, ncol(kernels))
+      } else {
+        # Strict parcel admissibility requires >= min_parcel_voxels individually
+        # passing all three calibrated gates (task support, shape departure, and
+        # cross-run compatibility). When at least one voxel in the parcel shows
+        # a supported non-canonical departure, we also allow pooled parcel
+        # admissibility via the Cauchy combination test (hrf_cauchy_p), which is
+        # valid under arbitrary spatial correlation across voxels inside a parcel.
+        adm_strict <- rowSums(gate$supported[, eligible, drop = FALSE]) >= min_parcel_voxels
+        if (length(eligible) >= min_parcel_voxels && ncol(kernels) > 1L &&
+            any(gate$supported[-fallback_kernel, eligible, drop = FALSE])) {
+          comp_cnt <- rowSums(gate$compatible[, eligible, drop = FALSE])
+          task_cnt <- rowSums(gate$task_supported[, eligible, drop = FALSE])
+          beat_fb <- rowSums(sweep(scores[, eligible, drop = FALSE], 2L,
+            scores[fallback_kernel, eligible], ">="), na.rm = TRUE)
+          p_task_pool <- apply(gate$task_p[, eligible, drop = FALSE], 1L, hrf_cauchy_p)
+          p_shape_pool <- apply(gate$shape_p[, eligible, drop = FALSE], 1L, hrf_cauchy_p)
+          adm_pooled <- (comp_cnt >= min_parcel_voxels) &
+            (task_cnt >= ceiling(0.5 * min_parcel_voxels)) &
+            (beat_fb >= min_parcel_voxels) &
+            !is.na(p_task_pool) & (p_task_pool <= evidence_alpha) &
+            !is.na(p_shape_pool) & (p_shape_pool <= evidence_alpha)
+          adm_strict | adm_pooled
+        } else {
+          adm_strict
+        }
+      }
       pooled_objective <- pooled
       if (!is.null(gate)) pooled_objective <- pooled_objective - canonical_strength * distance[, fallback_kernel]
       pooled_objective[!admissible] <- -Inf
@@ -450,6 +493,15 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
         eff_anchor <- anchor[eligible]
         neigh_scores <- objective
         concordance <- rep(1.0, length(eligible))
+        # Empirical-Bayes concordance-weighted spatial pooling:
+        # Rather than blindly forcing every voxel toward the parcel anchor (which
+        # would bias focal sub-regions or edge voxels that genuinely differ from
+        # their neighbors), we measure the correlation (concordance c_v) between
+        # voxel v's candidate score profile and its leave-one-voxel-out
+        # neighborhood profile (optionally weighted by 3D Gaussian distance via
+        # spatial_coords / spatial_fwhm). Shrinkage weight scales with c_v^2 so
+        # discordant focal voxels retain their own supported HRF while noisy but
+        # concordant voxels borrow strength from the parcel neighborhood.
         use_eb_spatial <- spatial_strength > 0 && (!is.null(gate) || !is.null(spatial_weights)) &&
           !is.null(spatial_groups)
         if (use_eb_spatial) {
@@ -667,6 +719,11 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       nuisance_mode != "ignore" || observation_mask != "all"))
     stop("Wiener does not implement masked, nuisance-adjusted AR GLS; use cpp/r, or an OLS fit with nuisance_mode = 'ignore', observation_mask = 'all'")
 
+  # Automatic global GCV tuning when lambda = NULL:
+  # Select the first run with >= 3 usable timepoints and >= 1 valid voxel, take
+  # up to 256 valid voxels, and run prewhitened GCV over lambda_grid using the
+  # modal selected HRF kernel and median run AR(1) rho. The chosen scalar lambda
+  # and full GCV tuning table are frozen in settings$lambda and settings$lambda_tuning.
   lambda_tuning <- NULL
   if (is.null(lambda)) {
     checkmate::assert_numeric(lambda_grid, lower = 0, any.missing = FALSE, min.len = 1L, finite = TRUE)
@@ -741,7 +798,13 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       status[status == "ok" & unknown] <- "noise_unidentified"
     }
     out <- matrix(NA_real_, n, ncol(y), dimnames = dimnames(y))
-    centers <- divisors <- rep(NA_real_, ncol(y))
+    centers <- divisors <- noise_sds <- rep(NA_real_, ncol(y))
+    # Group voxels into strata that share the exact same (kernel_index, rho) pair.
+    # Because the regularized GLS inverse operator M = (H' W' Q_Z W H + lambda P)^-1 H' W' Q_Z W
+    # depends only on (n, kernel, valid_rows, rho, nuisance, lambda, penalty),
+    # all voxels in a stratum share a single n x m_obs inverse operator matrix,
+    # turning voxelwise deconvolution into fast BLAS matrix multiplication (M %*% Y_block)
+    # and caching operators across runs when observation masks and nuisance match.
     strata <- paste(selected, sprintf("%.17g", rho), sep = ":")
     for (key in unique(strata[status == "ok"])) {
       columns <- which(strata == key & status == "ok")
@@ -768,6 +831,11 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
             scaling = "none", backend = "wiener")[seq_len(n), , drop = FALSE]
         } else operator %*% scaled$y
         centers[indices] <- scaled$center; divisors[indices] <- scaled$scale
+        noise_sds[indices] <- if (identical(scaling, "noise_sd")) {
+          scaled$scale
+        } else {
+          estimate_decon_noise_sd(y[rows, indices, drop = FALSE], noise_rho = ar)
+        }
       }
     }
     attr(out, "tr") <- hrf_fit$settings$tr
@@ -775,8 +843,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
     attr(out, "observation_mask") <- seq_len(n) %in% rows
     activity[[r]] <- out
     scaling_tables[[r]] <- data.frame(run = names(bold)[r], voxel = colnames(y),
-      status = status, center = centers, scale = divisors, scaling = scaling,
-      noise_rho = rho, n_observations = length(rows))
+      status = status, center = centers, scale = divisors, noise_sd = noise_sds,
+      scaling = scaling, noise_rho = rho, n_observations = length(rows))
   }
   list(activity = activity, scaling = scaling_tables, hrf_fit = hrf_fit, settings = settings)
 }

@@ -1,13 +1,31 @@
 # fmri.pipeline 0.4-1
 
-## MEDuSA learning sequence and workflow documentation
+## MEDuSA learning sequence, precision-weighted epoch regression, and workflow documentation
 
-* Add conceptual and executable workflow vignettes covering cross-run HRF
+* Add conceptual (`vignettes/medusa-concepts.Rmd`) and executable workflow
+  (`vignettes/medusa-workflows.Rmd`) vignettes covering cross-run HRF
   learning, noise scaling, operator-based epoch de-mixing, duration models,
-  NIfTI inputs, and the handoff to multilevel analysis.
-* Revise the technical companion through PR #54, align descriptions with the
-  current implementation, distinguish legacy benchmark tables from live
-  experiments, and remove unsupported forecasts of human-data gains.
+  per-trial precision weights, within-run ZCA whitening, NIfTI inputs, and the
+  handoff to multilevel analysis (`mixed_by(..., weights = "precision_weight")`).
+* Revise the technical companion (`medusa_deconvolution_review_prs_42_53.qmd`)
+  through PR #55+, align descriptions with the current implementation,
+  distinguish legacy benchmark tables from live experiments, and add thorough
+  inline documentation across all MEDuSA R functions.
+* `decon_epoch_regression()` now propagates exact run-specific AR(1) observation
+  noise covariance through the readout and unmixing operators to compute
+  per-trial standard errors (`se_raw`, `se_demixed`), lag-1 trial error
+  autocorrelation (`error_ac1`), Empirical-Bayes stabilized precision weights
+  (`precision_weight`), ZCA-whitened GLS slopes (`beta_gls`, `se_gls`),
+  within-trial multi-lag de-mixing (`demix_within_trial = TRUE`), and optional
+  within-run ZCA-whitened panel columns (`whiten_panel = TRUE`).
+* `mixed_by()` now accepts `weights = "precision_weight"` (normalizing positive
+  precision weights within each split and forwarding to `lme4`, `rstanarm`, and
+  `jlmer`).
+* `hrf_library()` adds `preset = c("custom", "standard", "extended", "dense")`;
+  `estimate_crossrun_hrf()` adds Galwey spectral effective candidate multiplicity
+  (`hrf_effective_candidates()`) and Cauchy combination parcel pooling
+  (`hrf_cauchy_p()`); and `deconvolve_crossrun_hrf()` supports automatic
+  prewhitened GCV tuning when `lambda = NULL`.
 
 ## Banded linear deconvolution solver and exact Takahashi trace
 

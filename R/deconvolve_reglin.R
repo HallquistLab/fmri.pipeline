@@ -225,6 +225,12 @@ deconvolve_reglin <- function(
     scale_decon_input(BOLDobs, scaling = scaling, noise_rho = prewhiten_rho)
   } else NULL
 
+  # Two-pass AR(1) prewhitened GCV:
+  # Estimating AR(1) autocorrelation directly from raw BOLD would conflate slow
+  # hemodynamic task signal with colored noise. Instead, we run an unwhitened
+  # first pass at max(lambda_grid) (strong smoothing), subtract the reconvolved
+  # task fit, and estimate a pooled median AR(1) rho from the reconstruction
+  # residuals before running prewhitened GCV over the full lambda_grid.
   if (isTRUE(prewhiten_gcv) && is.null(prewhiten_rho)) {
     first_pass <- deconvolve_reglin(
       BOLDobs = BOLDobs,
@@ -915,6 +921,15 @@ smooth_periodogram <- function(x, width = 7L) {
   as.numeric(stats::filter(padded, filter = kernel, sides = 2L))[(pad + 1L):(pad + length(x))]
 }
 
+# Construct the m x m quadratic penalty matrix P for latent activity x:
+# - "ridge":   I_m (pure L2 amplitude shrinkage)
+# - "diff1":   D1' D1 (first-difference roughness penalty)
+# - "diff2":   D2' D2 (second-difference curvature penalty)
+# - "matern1": 0.10 * I_m + 0.90 * D1' D1 (damped Ornstein-Uhlenbeck / Matérn-1/2
+#              prior that eliminates the zero-frequency nullspace of pure D1' D1)
+# - "sobolev": 0.05 * I_m + 0.45 * D1' D1 + 0.50 * D2' D2 (critically damped
+#              second-order Sobolev prior that suppresses oscillatory sidelobe
+#              ringing around sharp impulses while stabilizing low frequencies)
 decon_penalty_crossprod <- function(n_latent, penalty) {
   if (penalty == "ridge") {
     return(diag(n_latent))

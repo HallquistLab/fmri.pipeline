@@ -6,9 +6,9 @@ The teaching sequence comprises two standard package vignettes and a Quarto tech
 |---|---|---|
 | `vignettes/medusa-concepts.Rmd` | `medusa-concepts.html` | Conceptual foundations and literature |
 | `vignettes/medusa-workflows.Rmd` | `medusa-workflows.html` | Executable example and study recipes |
-| `medusa_deconvolution_review_prs_42_53.qmd` | `medusa_deconvolution_review_prs_42_53.html` | Technical review through PR #54 |
+| `medusa_deconvolution_review_prs_42_53.qmd` | `medusa_deconvolution_review_prs_42_53.html` | Technical review through PR #55+ |
 
-Run the commands below from the repository root. Install the package dependencies first. Rendering requires R, knitr/rmarkdown, Pandoc (also bundled with Quarto), and the Quarto CLI for the technical companion. The standalone QMD is outside `vignettes/`, so pkgdown and package vignette builds do not discover it or require the Quarto R package. The current source must be installed for a Quarto render, which executes R in its own process. Merely loading a development checkout in another R process does not update that installation.
+Run the commands below from the repository root. Install the package dependencies first. Rendering requires R, knitr/rmarkdown, Pandoc (also bundled with Quarto), and the Quarto CLI for the technical companion. The current source must be installed for a Quarto render, which executes R in its own process. Merely loading a development checkout in another R process does not update that installation.
 
 A temporary package library avoids changing a regular installation. It should contain no older build of `fmri.pipeline`; dependencies can remain in the normal R libraries. On systems with a different temporary directory, choose equivalent paths.
 
@@ -20,9 +20,9 @@ R_LIBS=/tmp/medusa-lib Rscript -e 'rmarkdown::render("vignettes/medusa-workflows
 R_LIBS=/tmp/medusa-lib quarto render medusa_deconvolution_review_prs_42_53.qmd --to html --output-dir local/medusa-docs
 ```
 
-For the R Markdown commands, `output_dir` is resolved against the invoking R process's working directory; the commands assume the package root. The Quarto input now lives at the repository root, so its output directory is also `local/medusa-docs`. Keep all three HTML files together for the companion's relative navigation links to work. Package vignettes link to the standalone companion source on GitHub because its HTML is not part of the package site. `local/` is excluded from package builds and git tracking. Open `local/medusa-docs/medusa-concepts.html` to begin.
+For both the R Markdown and Quarto commands, `output_dir` / `--output-dir` is resolved from the repository root. Keep all three HTML files together in `local/medusa-docs/` for their relative navigation links to work. `local/` is excluded from package builds and git tracking. Open `local/medusa-docs/medusa-concepts.html` to begin.
 
-The two Rmd files have standard vignette engine/index metadata and are included by the existing knitr build machinery. A normal package build with vignettes enabled or pkgdown article build can publish them. The QMD remains a standalone report at the repository root, excluded via `.Rbuildignore`; it is neither a package vignette nor a pkgdown article. No rendering command in the documents installs dependencies or compiles native code automatically.
+The two Rmd files have standard vignette engine/index metadata and are included by the existing knitr build machinery. A normal package build with vignettes enabled or pkgdown article build can publish them. The QMD lives at the repository root (and is listed in `.Rbuildignore`) as a standalone technical companion rather than requiring the Quarto CLI on pkgdown CI runners. No rendering command in the documents installs dependencies or compiles native code automatically.
 
 The worked vignette executes the small simulation, HRF estimation, continuous deconvolution, impulse and duration epoch regressions, fixed-HRF comparison, and trial-identity checks. Study-specific NIfTI/file/group recipes are deliberately marked `eval=FALSE`. The technical companion executes its simulation chunks, except that the historical speed figure only plots a legacy hard-coded table. Use `inst/benchmarks/` for actual runtime comparisons and record the source revision, hardware, thread count, and session information.
 

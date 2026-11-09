@@ -1,5 +1,5 @@
 ---
-title: "MEDuSA technical companion: deconvolution and epoch models (PRs #42–#54)"
+title: "MEDuSA technical companion: deconvolution and epoch models (PRs #42–#55+)"
 subtitle: "Derivations, simulation experiments, implementation notes, and limitations"
 author: "fmri.pipeline Methods & Architecture Review"
 date: today
@@ -69,7 +69,7 @@ This is the third part of a MEDuSA learning sequence:
 2. [Worked workflows](medusa-workflows.html): an executable one-participant simulation, followed by NIfTI, file-alignment, and group-model recipes.
 3. **This companion**: retain the equations and experiments for readers who want to inspect how the estimator works.
 
-The review covers **13 PRs, #42–#54**. Its historical basename is retained; the standalone source now lives at the repository root, outside package and pkgdown vignette discovery. The PR ledger is a navigation aid; the workflow vignette is the starting point for running an analysis. Literature precedents and an annotated reading sequence appear in the [primer](medusa-concepts.html#reading).
+The review covers **13 PRs, #42–#54**. Its historical filename is unchanged to preserve links. The PR ledger is a navigation aid; the workflow vignette is the starting point for running an analysis. Literature precedents and an annotated reading sequence appear in the [primer](medusa-concepts.html#reading).
 
 MEDuSA analyzes event-aligned proxies for latent population activity estimated from BOLD. The computational sequence is HRF specification/selection, continuous regularized inversion, event-level readout/source correction, and downstream trial/group modeling. None of these stages calibrates neuronal firing or establishes temporal resolution finer than the observations support.
 
@@ -1191,27 +1191,27 @@ kable(
 
 ---
 
-### Remaining Technical Weaknesses & Recommended Next Steps
+### Recently Resolved & Remaining Technical Extensions
 
-With **trial-varying duration source models (`source_model = "duration"`)** now illustrated above, four concrete architectural and statistical extensions remain for future work:
+With **trial-varying duration source models (`source_model = "duration"`)** and **operator-propagated precision weights + within-run ZCA whitening** now implemented, here is the status of the four architectural and statistical extensions:
 
-1. **Unifying the In-Memory Cross-Run API with the File-Based NIfTI MEDuSA Pipeline:**
+1. **Propagating Inverse-Operator Precision Weights & ZCA Whitening to Downstream Mixed Models (`lme4` / `mixed_by`) [Implemented]:**
+   - *Problem:* Trials preceded by short jitter delays or very short durations undergo stronger unmixing amplification and have correlated estimation errors under AR(1) noise and regularized deconvolution.
+   - *Implementation:* `decon_epoch_regression()` now computes the exact operator-propagated covariance $\boldsymbol{\Sigma}_{\text{raw},r} = \sigma_{e,r}^2 \mathbf{T}_{\text{raw},r} \boldsymbol{\Omega}_r \mathbf{T}_{\text{raw},r}^\top$ and $\boldsymbol{\Sigma}_{\text{demix},r} = \mathbf{G}_r^\top \boldsymbol{\Sigma}_{\text{raw},r} \mathbf{G}_r$, exporting per-trial standard errors (`se_raw`, `se_demixed`), lag-1 trial error autocorrelation (`error_ac1`), Empirical-Bayes stabilized precision weights (`precision_weight`), ZCA-whitened GLS slopes (`beta_gls`, `se_gls`), within-trial multi-lag de-mixing (`demix_within_trial = TRUE`), and optional within-run ZCA-whitened panel variables (`whiten_panel = TRUE`). `mixed_by(..., weights = "precision_weight")` normalizes and forwards these weights to `lme4`, `rstanarm`, and `jlmer`.
+2. **Unifying the In-Memory Cross-Run API with the File-Based NIfTI MEDuSA Pipeline [Future Work]:**
    - *Weakness:* `voxelwise_deconvolution()` and `evt_align_decon_files()` now support `scaling = "noise_sd"`, `matern1`/`sobolev` penalties, and `readout_kernel`, but they do not invoke `estimate_crossrun_hrf()` or `decon_epoch_regression()`'s resolution-matrix de-mixing. A fixed canonical HRF is the default; optional within-run candidate tuning is a different workflow from cross-fitting.
    - *Fix:* Add optional cross-run HRF estimation and resolution-matrix epoch de-mixing directly into the subject-level NIfTI deconvolution/alignment workflow.
-2. **Propagating Inverse-Operator Precision Weights to Downstream Mixed Models (`lme4` / `mixed_by`):**
-   - *Weakness:* `decon_epoch_regression(..., return_panel = TRUE)` exports de-mixed trial estimates $\hat{a}_{r,i,v}(\tau)$ as if all trials had equal error variance. In reality, trials preceded by short jitter delays or very short durations can have greater estimation variance.
-   - *Fix:* Export per-trial precision weights $w_{r,i,v}(\tau)$ in `$panel` and validate a covariance-aware downstream analysis. Marginal precision weights alone would not account for correlated trial errors.
-3. **Extending Prewhitening from AR(1) to Banded AR($p$) for Sub-Second Multiband TRs:**
+3. **Extending Prewhitening from AR(1) to Banded AR($p$) for Sub-Second Multiband TRs [Future Work]:**
    - *Weakness:* A one-parameter AR(1) filter can leave residual temporal structure; adequacy must be checked for the acquisition and preprocessing, rather than inferred from a TR threshold.
    - *Fix:* Generalizing $\mathbf{W}_r^\top \mathbf{W}_r$ from AR(1) (bandwidth 1) to AR($p$) ($p \in \{3, 4\}$, bandwidth $p$) increases the normal-matrix half-bandwidth from $K$ to $K - 1 + p$, preserving our exact $O(T b^2)$ banded Cholesky solver while capturing higher-order physiological autocorrelation.
-4. **Time-Varying / Iteratively Reweighted Sparse Penalties for Continuous Rest/Movie Deconvolution:**
+4. **Time-Varying / Iteratively Reweighted Sparse Penalties for Continuous Rest/Movie Deconvolution [Future Work]:**
    - *Weakness:* When event onsets are unknown (e.g., resting state or naturalistic viewing), `decon_epoch_regression()` cannot be applied, and a global scalar $\lambda$ either over-smooths phasic spikes or passes inter-event baseline noise.
    - *Fix:* Implement 3–5 iterations of Iteratively Reweighted Least Squares (IRLS) with a Huber/$\ell_1$ penalty on $\mathbf{D}_1 \mathbf{s}$ using the fast $O(T b^2)$ banded Cholesky solver.
 
 
 ## Reproducibility and validation map
 
-Render with the Quarto CLI and a current installed package. See [rendering instructions](https://github.com/HallquistLab/fmri.pipeline/blob/master/vignettes/medusa-docs.md) for commands and an rmarkdown fallback when Quarto cannot write its theme cache. For an isolated command-line render, install the current checkout into an explicit temporary library and pass that library through `R_LIBS`. This standalone QMD is excluded from package and pkgdown builds, so it adds no Quarto R dependency to those workflows. Rendering itself does not install packages. The standard package vignettes are `medusa-concepts.Rmd` and `medusa-workflows.Rmd`; they use the existing knitr/rmarkdown vignette engine.
+Render with the Quarto CLI and a current installed package. See [rendering instructions](vignettes/medusa-docs.md) for commands and an rmarkdown fallback when Quarto cannot write its theme cache. For an isolated command-line render, install the current checkout into an explicit temporary library and pass that library through `R_LIBS`. Rendering itself does not install packages. This QMD lives at the repository root (and is listed in `.Rbuildignore`) so `pkgdown` CI builds do not require the external Quarto CLI binary; the standard package vignettes are `vignettes/medusa-concepts.Rmd` and `vignettes/medusa-workflows.Rmd`, which use the standard `knitr::rmarkdown` vignette engine.
 
 | Question | Repository evidence to inspect |
 |---|---|
