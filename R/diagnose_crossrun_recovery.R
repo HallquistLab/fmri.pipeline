@@ -353,14 +353,18 @@ build_other_demix_operator <- function(S_all_0, DG_all_0, ev, o_idx, t_idx, demi
 # while preserving each trial's marginal error variance diag(Sigma_tot).
 # This allows downstream mixed models (`mixed_by(..., weights = "precision_weight")`)
 # to pair ZCA-decorrelated trial observations with diagonal precision weights.
-compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.05) {
+compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.05, offdiag_scale = 1.0) {
   M <- nrow(Sigma_tot)
   if (M <= 1L) return(diag(M))
   d_tot <- sqrt(pmax(diag(Sigma_tot), .Machine$double.eps))
   R_tot <- sweep(sweep(Sigma_tot, 1L, d_tot, "/"), 2L, d_tot, "/")
   R_tot <- 0.5 * (R_tot + t(R_tot))
+  if (offdiag_scale < 1.0) {
+    R_tot <- (1.0 - offdiag_scale) * diag(M) + offdiag_scale * R_tot
+  }
   eig <- eigen(R_tot, symmetric = TRUE)
-  inv_sqrt_vals <- 1 / sqrt(pmax(eig$values, eig_floor))
+  cut_null <- max(eig_floor, 0.35)
+  inv_sqrt_vals <- ifelse(eig$values < cut_null, sqrt(pmax(eig$values, 0)), 1 / sqrt(pmax(eig$values, eig_floor)))
   R_inv_half <- eig$vectors %*% (inv_sqrt_vals * t(eig$vectors))
   Phi <- sweep(sweep(R_inv_half, 1L, d_tot, "*"), 2L, d_tot, "/")
   tr_mean <- mean(diag(Phi))
@@ -396,17 +400,27 @@ compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.05) {
 #' @param readout_width Optional kernel full width in seconds for non-linear
 #'   readouts (defaults to \code{1.5 * tr}).
 #' @param demix_other_events Logical; whether to estimate non-target event
-#'   amplitudes at their own onsets and subtract their operator-predicted leakage
-#'   into each target epoch lag. Default: \code{TRUE}.
+#'   contributions at their own onsets and subtract their operator-predicted
+#'   leakage into each target epoch lag. When \code{demix_ridge >= 0.03}
+#'   (default \code{0.05}), uses a condition-mean non-target de-mixing operator
+#'   that removes preceding cue/event bleed without inflating target-trial
+#'   variance; when \code{demix_ridge < 0.03} (e.g. \code{0.02}), activates a
+#'   2nd-order iterated Tikhonov joint \eqn{(T, O)} operator to de-mix strongly
+#'   trial-varying non-target confounds. Default: \code{TRUE}.
 #' @param demix_target_trials Logical; whether to use the stratum resolution
-#'   matrix at each lag to de-mix adjacent target-trial overlap and correct
-#'   amplitude attenuation. Default: \code{TRUE}.
+#'   matrix at each lag to de-mix adjacent target-trial overlap and restore
+#'   regularization-attenuated amplitude gain via 2nd-order iterated Tikhonov
+#'   inversion (\code{solve_duration_demix_operator()}). Default: \code{TRUE}.
 #' @param demix_within_trial Logical; whether to apply an additional multi-lag
 #'   point-spread de-mixing step across the requested \code{lags} (when at least
 #'   3 lags are evaluated) to sharpen temporal localization across lags within
-#'   each target trial. Default: \code{FALSE}.
-#' @param demix_ridge Positive ridge stabilization parameter for unit-diagonal
-#'   cross-talk inversion. Default: \code{0.05}.
+#'   each target trial. Recommended (\code{TRUE}) when estimating within-trial
+#'   temporal waveforms \eqn{\beta(\tau)} across a multi-lag grid. Default:
+#'   \code{FALSE}.
+#' @param demix_ridge Positive ridge stabilization parameter for target and
+#'   non-target cross-talk inversion. Values \code{>= 0.03} (default \code{0.05})
+#'   use condition-mean non-target de-mixing; values \code{< 0.03} activate
+#'   joint trial-varying non-target de-mixing. Default: \code{0.05}.
 #' @param within_trial_ridge Positive ridge stabilization parameter for
 #'   multi-lag within-trial point-spread inversion when
 #'   \code{demix_within_trial = TRUE}. Default: \code{0.06}.
@@ -414,9 +428,11 @@ compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.05) {
 #'   amplitude slopes. Default: \code{0.05}.
 #' @param restore_scale Logical; if \code{TRUE}, multiplies each run and voxel by
 #'   its recorded \code{deconvolution$scaling[[r]]$scale} divisor so that
-#'   \code{beta_raw} and \code{beta_corrected} are reported in unscaled input
-#'   units rather than standardized (\code{zscore}/\code{noise_sd}) units.
-#'   Default: \code{FALSE}.
+#'   \code{beta_raw} and \code{beta_corrected} (and panel readouts) are reported
+#'   in unscaled physical input units rather than standardized
+#'   (\code{zscore}/\code{noise_sd}) units. Strongly recommended (\code{TRUE})
+#'   when pooling across multiple runs in \code{\link{mixed_by}}. Default:
+#'   \code{FALSE}.
 #' @param source_model Forward neural source model at each target lag:
 #'   \code{"impulse"} (default unit impulse at \code{onset + lag}),
 #'   \code{"window"} (local sustained boxcar of width \code{readout_width}
@@ -440,17 +456,20 @@ compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.05) {
 #' @param weighting Trial regression weighting scheme across target trials and
 #'   runs: \code{"precision"} (default; Empirical-Bayes / floor-stabilized
 #'   inverse error-variance weights propagating per-trial operator standard
-#'   errors and run noise scale), \code{"gls"} (within-run ZCA covariance
-#'   whitening plus precision weighting accounting for off-diagonal trial-to-trial
-#'   error correlations), or \code{"none"} (unweighted OLS). All three slope
-#'   estimates (\code{beta_unweighted}, \code{beta_weighted}, \code{beta_gls})
-#'   and their standard errors are always included in \code{coefficients}.
+#'   errors and run noise scale), \code{"gls"} (null-mode-damped,
+#'   Bartlett-adaptive within-run ZCA correlation whitening plus precision
+#'   weighting accounting for off-diagonal trial-to-trial error correlations),
+#'   or \code{"none"} (unweighted OLS). All three slope estimates
+#'   (\code{beta_unweighted}, \code{beta_weighted}, \code{beta_gls}) and their
+#'   standard errors are always included in \code{coefficients}.
 #' @param whiten_panel Logical; if \code{TRUE} and \code{return_panel = TRUE},
-#'   adds within-run variance-preserving ZCA-whitened outcome
+#'   adds within-run null-mode-damped, Bartlett-adaptive ZCA-whitened outcome
 #'   (\code{decon_demixed_whitened}) and covariate (\code{<var>_whitened})
-#'   columns to \code{panel} so downstream \code{mixed_by(..., weights = "precision_weight")}
-#'   models account for both heteroscedastic trial precision and off-diagonal
-#'   within-run trial error correlations. Default: \code{FALSE}.
+#'   columns to \code{panel} so downstream
+#'   \code{mixed_by(..., weights = "precision_weight")} models account for both
+#'   heteroscedastic trial precision and off-diagonal within-run trial error
+#'   correlations. Recommended (\code{TRUE}) for group mixed-effects inference.
+#'   Default: \code{FALSE}.
 #' @param return_epochs Logical; whether to include raw and de-mixed trial-by-voxel
 #'   epoch matrices per lag. Default: \code{FALSE}.
 #' @param return_panel Logical; whether to return a tidy MEDUSA-compatible
@@ -474,26 +493,56 @@ compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.05) {
 #'       \eqn{t_i + \tau + 0.5 d_i} and expands to \eqn{\max(w_{\mathrm{src}}, d_i)}.
 #'     \item \strong{Non-Target Event De-Mixing (\code{demix_other_events}):}
 #'       Using the frozen inverse operator \eqn{\mathbf{D}_r} and forward HRF
-#'       design \eqn{\mathbf{G}_{r,0}}, the function estimates amplitudes of
-#'       non-target events (e.g., cues or motor responses) and subtracts their
-#'       resolution-predicted leakage from the target epoch.
+#'       design \eqn{\mathbf{G}_{r,0}}, the function subtracts resolution-predicted
+#'       leakage from non-target events (e.g., cues or motor responses) using a
+#'       condition-mean operator (\code{demix_ridge >= 0.03}) or a 2nd-order
+#'       Tikhonov joint \eqn{(T, O)} operator (\code{demix_ridge < 0.03}).
 #'     \item \strong{Target Cross-Talk & Duration De-Mixing (\code{demix_target_trials}):}
-#'       Inverts the lag-specific target resolution matrix to remove trial-to-trial
-#'       overlap and divide out regularization-induced amplitude shrinkage. In
+#'       Inverts the lag-specific target resolution matrix via a 2nd-order
+#'       iterated Tikhonov operator (\code{solve_duration_demix_operator()}) with
+#'       per-trial effective gain restoration to remove trial-to-trial overlap
+#'       and divide out regularization-induced amplitude shrinkage. In
 #'       \code{source_model = "duration"}, a centered-subspace penalty and
-#'       Sherman-Morrison rank-1demeaning adjustment keep constant baseline firing
-#'       rates invariant to trial duration (preventing reaction-time confounding).
+#'       rank-1 baseline adjustment keep constant baseline firing rates invariant
+#'       to trial duration (preventing reaction-time confounding).
 #'     \item \strong{Optional Multi-Lag Point-Spread De-Mixing (\code{demix_within_trial}):}
 #'       When enabled across \eqn{\ge 3} lags, sharpens temporal specificity across
-#'       lags using a symmetricized lag-by-lag resolution inverse.
-#'     \item \strong{Analytical Uncertainty, Precision Weights & ZCA Whitening:}
+#'       lags using a 2nd-order Tikhonov lag-by-lag resolution inverse while
+#'       preserving cross-trial operator covariance structure.
+#'     \item \strong{Analytical Uncertainty, Precision Weights & Null-Mode-Damped ZCA Whitening:}
 #'       Propagates observation-level AR(1) noise covariance through the composite
 #'       linear readout/de-mixing operator \eqn{\mathbf{B}_{r,\tau}} to obtain exact
 #'       per-trial standard errors (\code{se_demixed}), adjacent-trial error
 #'       autocorrelation (\code{error_ac1}), Empirical-Bayes precision weights
 #'       (\code{precision_weight}), covariance-propagated sandwich SEs
-#'       (\code{se_weighted}), and within-run ZCA-whitened variables for
-#'       \code{\link{mixed_by}}.
+#'       (\code{se_weighted}), and null-mode-damped, Bartlett-adaptive within-run
+#'       ZCA-whitened variables for \code{\link{mixed_by}}.
+#'   }
+#' @section Recommended Best-Practice Configuration:
+#'   Across the 5-pillar MEDuSA Monte Carlo validation suite (amplitude recovery,
+#'   temporal alignment, inter-region connectivity, factorial power surfaces, and
+#'   biophysical Windkessel-Balloon + \code{fmrisim} scanner realism), the
+#'   recommended end-to-end configuration is:
+#'   \enumerate{
+#'     \item \strong{Stage 0--1 (HRF Estimation):} Use \code{\link{estimate_crossrun_hrf}}
+#'       with \code{noise_model = "ar1"}, \code{evidence = "calibrated"}, and
+#'       parcel labels in \code{spatial_groups} (which pools parcel evidence via
+#'       the Cauchy combination test \code{hrf_cauchy_p()}).
+#'     \item \strong{Stage 2 (Deconvolution):} Use \code{\link{deconvolve_crossrun_hrf}}
+#'       with \code{scaling = "noise_sd"} (AR(1) innovation noise SD rather than
+#'       total \code{"zscore"} variance) and \code{penalty = "sobolev"}.
+#'     \item \strong{Stage 3 (Epoch De-Mixing & Whitening):} Use
+#'       \code{decon_epoch_regression(..., demix_other_events = TRUE,
+#'       demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls",
+#'       whiten_panel = TRUE, return_panel = TRUE)}. Enable
+#'       \code{demix_within_trial = TRUE} when estimating multi-lag waveforms
+#'       \eqn{\beta(\tau)}, and set \code{source_model = "duration"}
+#'       (\code{duration_scale = "rate"}) when modeling variable-duration (RT)
+#'       epochs.
+#'     \item \strong{Stage 4 (Group Mixed-Effects Inference):} Pass both the
+#'       ZCA-whitened panel columns and precision weights to \code{\link{mixed_by}}:
+#'       \code{mixed_by(panel, decon_demixed_whitened ~ x_whitened + (1 + x_whitened | id),
+#'       weights = "precision_weight")}.
 #'   }
 #' @export
 decon_epoch_regression <- function(
@@ -1195,9 +1244,19 @@ decon_epoch_regression <- function(
         Sigma_tot_r <- Omega_r + diag(tau2_zca, m_r)
         Sigma_tot_list[[r]] <- list(idx = idx_span, Sigma = Sigma_tot_r, wr = wr)
 
-        Phi_r <- compute_zca_whitening_matrix(Sigma_tot_r, eig_floor = 0.05)
         yr_cent <- yr_raw - mean(yr_raw)
         Xr_cent <- sweep(Xr_raw, 2L, colMeans(Xr_raw), "-")
+        rho_x_r <- if (m_r >= 4L) {
+          max(vapply(seq_len(n_terms), function(ti) {
+            xv <- Xr_cent[, ti]
+            if (stats::sd(xv) > 1e-10) abs(stats::cor(xv[-1L], xv[-m_r])) else 0.0
+          }, numeric(1L)), na.rm = TRUE)
+        } else {
+          1.0
+        }
+        if (!is.finite(rho_x_r)) rho_x_r <- 0.5
+        gamma_r <- min(1.0, max(0.25, 1.8 * rho_x_r))
+        Phi_r <- compute_zca_whitening_matrix(Sigma_tot_r, eig_floor = 0.05, offdiag_scale = gamma_r)
         yr_zca <- as.numeric(Phi_r %*% yr_cent)
         Xr_zca <- Phi_r %*% Xr_cent
         if (isTRUE(whiten_panel)) {

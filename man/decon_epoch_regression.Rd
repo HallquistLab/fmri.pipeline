@@ -40,32 +40,45 @@ and optional \code{condition} and \code{duration}. Defaults to the HRF fit's
 event tables.}
 
 \item{target_condition}{Optional character scalar naming the target event
-condition in \code{events[[r]]$condition} (e.g., \code{"feedback"}).}
+condition in \code{events[[r]]$condition} (e.g., \code{"feedback"}). When
+supplied, non-target events in \code{events[[r]]} are treated as interfering
+events whose leakage into the target epoch is removed when
+\code{demix_other_events = TRUE}.}
 
 \item{lags}{Numeric vector of epoch readout lags (in seconds) relative to each
 target event onset.}
 
-\item{readout_kernel}{Epoch readout kernel: \code{"triangle"}, \code{"linear"},
-\code{"boxcar"}, or \code{"gaussian"}.}
+\item{readout_kernel}{Epoch readout kernel: \code{"linear"}, \code{"boxcar"},
+\code{"triangle"}, or \code{"gaussian"}. Default: \code{"triangle"}.}
 
 \item{readout_width}{Optional kernel full width in seconds for non-linear
 readouts (defaults to \code{1.5 * tr}).}
 
 \item{demix_other_events}{Logical; whether to estimate non-target event
-amplitudes at their own onsets and subtract their operator-predicted leakage
-into each target epoch lag. Default: \code{TRUE}.}
+contributions at their own onsets and subtract their operator-predicted
+leakage into each target epoch lag. When \code{demix_ridge >= 0.03}
+(default \code{0.05}), uses a condition-mean non-target de-mixing operator
+that removes preceding cue/event bleed without inflating target-trial
+variance; when \code{demix_ridge < 0.03} (e.g. \code{0.02}), activates a
+2nd-order iterated Tikhonov joint \eqn{(T, O)} operator to de-mix strongly
+trial-varying non-target confounds. Default: \code{TRUE}.}
 
 \item{demix_target_trials}{Logical; whether to use the stratum resolution
-matrix at each lag to de-mix adjacent target-trial overlap and correct
-amplitude attenuation. Default: \code{TRUE}.}
+matrix at each lag to de-mix adjacent target-trial overlap and restore
+regularization-attenuated amplitude gain via 2nd-order iterated Tikhonov
+inversion (\code{solve_duration_demix_operator()}). Default: \code{TRUE}.}
 
 \item{demix_within_trial}{Logical; whether to apply an additional multi-lag
 point-spread de-mixing step across the requested \code{lags} (when at least
 3 lags are evaluated) to sharpen temporal localization across lags within
-each target trial. Default: \code{FALSE}.}
+each target trial. Recommended (\code{TRUE}) when estimating within-trial
+temporal waveforms \eqn{\beta(\tau)} across a multi-lag grid. Default:
+\code{FALSE}.}
 
-\item{demix_ridge}{Positive ridge stabilization parameter for unit-diagonal
-cross-talk inversion. Default: \code{0.05}.}
+\item{demix_ridge}{Positive ridge stabilization parameter for target and
+non-target cross-talk inversion. Values \code{>= 0.03} (default \code{0.05})
+use condition-mean non-target de-mixing; values \code{< 0.03} activate
+joint trial-varying non-target de-mixing. Default: \code{0.05}.}
 
 \item{within_trial_ridge}{Positive ridge stabilization parameter for
 multi-lag within-trial point-spread inversion when
@@ -75,7 +88,11 @@ multi-lag within-trial point-spread inversion when
 amplitude slopes. Default: \code{0.05}.}
 
 \item{restore_scale}{Logical; if \code{TRUE}, multiplies each run and voxel by
-its recorded \code{deconvolution$scaling[[r]]$scale} divisor. Default:
+its recorded \code{deconvolution$scaling[[r]]$scale} divisor so that
+\code{beta_raw} and \code{beta_corrected} (and panel readouts) are reported
+in unscaled physical input units rather than standardized
+(\code{zscore}/\code{noise_sd}) units. Strongly recommended (\code{TRUE})
+when pooling across multiple runs in \code{\link{mixed_by}}. Default:
 \code{FALSE}.}
 
 \item{source_model}{Forward neural source model at each target lag:
@@ -95,29 +112,41 @@ trials and defaults \code{source_model} to \code{"duration"} when
 
 \item{duration_scale}{Scaling convention for positive-duration target trials
 when \code{source_model = "duration"}: \code{"rate"} (default; trial
-amplitude represents neural firing rate / boxcar height per TR bin) or
-\code{"integral"} (each trial boxcar is normalized to unit time-integrated
-neural mass across its duration).}
+amplitude represents neural firing rate / boxcar height per TR bin, so
+integrated neural activity scales with duration and constant baseline firing
+rates are de-confounded from duration variability) or \code{"integral"}
+(each trial boxcar is normalized to unit time-integrated neural mass across
+its duration).}
 
 \item{weighting}{Trial regression weighting scheme across target trials and
 runs: \code{"precision"} (default; Empirical-Bayes / floor-stabilized
 inverse error-variance weights propagating per-trial operator standard
-errors and run noise scale), \code{"gls"} (within-run ZCA covariance
-whitening plus precision weighting accounting for off-diagonal trial-to-trial
-error correlations), or \code{"none"} (unweighted OLS).}
+errors and run noise scale), \code{"gls"} (null-mode-damped,
+Bartlett-adaptive within-run ZCA correlation whitening plus precision
+weighting accounting for off-diagonal trial-to-trial error correlations),
+or \code{"none"} (unweighted OLS). All three slope estimates
+(\code{beta_unweighted}, \code{beta_weighted}, \code{beta_gls}) and their
+standard errors are always included in \code{coefficients}.}
 
 \item{whiten_panel}{Logical; if \code{TRUE} and \code{return_panel = TRUE},
-adds within-run variance-preserving ZCA-whitened outcome
+adds within-run null-mode-damped, Bartlett-adaptive ZCA-whitened outcome
 (\code{decon_demixed_whitened}) and covariate (\code{<var>_whitened})
-columns to \code{panel} for downstream \code{mixed_by()} modeling.
+columns to \code{panel} so downstream
+\code{mixed_by(..., weights = "precision_weight")} models account for both
+heteroscedastic trial precision and off-diagonal within-run trial error
+correlations. Recommended (\code{TRUE}) for group mixed-effects inference.
 Default: \code{FALSE}.}
 
 \item{return_epochs}{Logical; whether to include raw and de-mixed trial-by-voxel
 epoch matrices per lag. Default: \code{FALSE}.}
 
 \item{return_panel}{Logical; whether to return a tidy MEDUSA-compatible
-\code{data.table} (\code{panel}) for downstream \code{mixed_by()} modeling.
-Default: \code{FALSE}.}
+\code{data.table} (\code{panel}) with columns \code{run}, \code{trial},
+\code{event_index}, \code{onset}, \code{evt_time}, \code{voxel},
+\code{decon_raw}, \code{decon_demixed}, \code{se_raw}, \code{se_demixed},
+\code{precision_weight}, \code{precision_weight_op},
+\code{precision_weight_raw}, \code{error_ac1}, and the covariate columns for
+downstream \code{mixed_by()} modeling. Default: \code{FALSE}.}
 }
 \value{
 A list with \code{coefficients} (per voxel, lag, and predictor term),
@@ -132,34 +161,67 @@ per-trial operator precision weights and within-run error covariance.
 }
 \details{
 \code{decon_epoch_regression()} bridges continuous regularized deconvolution
-and trial-level cognitive neuroscience models in five stages:
-\enumerate{
-  \item \strong{Kernel Quadrature Readout:} At each requested lag \eqn{\tau},
-    continuous deconvolved activity is integrated around each target event
-    using \code{readout_kernel}. For \code{source_model = "duration"}, the
-    readout window centers on the trial's midpoint
-    \eqn{t_i + \tau + 0.5 d_i} and expands to \eqn{\max(w_{\mathrm{src}}, d_i)}.
-  \item \strong{Non-Target Event De-Mixing (\code{demix_other_events}):}
-    Using the frozen inverse operator \eqn{\mathbf{D}_r} and forward HRF
-    design \eqn{\mathbf{G}_{r,0}}, the function estimates amplitudes of
-    non-target events (e.g., cues or motor responses) and subtracts their
-    resolution-predicted leakage from the target epoch.
-  \item \strong{Target Cross-Talk & Duration De-Mixing (\code{demix_target_trials}):}
-    Inverts the lag-specific target resolution matrix to remove trial-to-trial
-    overlap and divide out regularization-induced amplitude shrinkage. In
-    \code{source_model = "duration"}, a centered-subspace penalty and
-    Sherman-Morrison rank-1 demeaning adjustment keep constant baseline firing
-    rates invariant to trial duration (preventing reaction-time confounding).
-  \item \strong{Optional Multi-Lag Point-Spread De-Mixing (\code{demix_within_trial}):}
-    When enabled across \eqn{\ge 3} lags, sharpens temporal specificity across
-    lags using a symmetricized lag-by-lag resolution inverse.
-  \item \strong{Analytical Uncertainty, Precision Weights & ZCA Whitening:}
-    Propagates observation-level AR(1) noise covariance through the composite
-    linear readout/de-mixing operator \eqn{\mathbf{B}_{r,\tau}} to obtain exact
-    per-trial standard errors (\code{se_demixed}), adjacent-trial error
-    autocorrelation (\code{error_ac1}), Empirical-Bayes precision weights
-    (\code{precision_weight}), covariance-propagated sandwich SEs
-    (\code{se_weighted}), and within-run ZCA-whitened variables for
-    \code{\link{mixed_by}}.
+  and trial-level cognitive neuroscience models in five stages:
+  \enumerate{
+    \item \strong{Kernel Quadrature Readout:} At each requested lag \eqn{\tau},
+      continuous deconvolved activity is integrated around each target event
+      using \code{readout_kernel}. For \code{source_model = "duration"}, the
+      readout window centers on the trial's midpoint
+      \eqn{t_i + \tau + 0.5 d_i} and expands to \eqn{\max(w_{\mathrm{src}}, d_i)}.
+    \item \strong{Non-Target Event De-Mixing (\code{demix_other_events}):}
+      Using the frozen inverse operator \eqn{\mathbf{D}_r} and forward HRF
+      design \eqn{\mathbf{G}_{r,0}}, the function subtracts resolution-predicted
+      leakage from non-target events (e.g., cues or motor responses) using a
+      condition-mean operator (\code{demix_ridge >= 0.03}) or a 2nd-order
+      Tikhonov joint \eqn{(T, O)} operator (\code{demix_ridge < 0.03}).
+    \item \strong{Target Cross-Talk & Duration De-Mixing (\code{demix_target_trials}):}
+      Inverts the lag-specific target resolution matrix via a 2nd-order
+      iterated Tikhonov operator (\code{solve_duration_demix_operator()}) with
+      per-trial effective gain restoration to remove trial-to-trial overlap
+      and divide out regularization-induced amplitude shrinkage. In
+      \code{source_model = "duration"}, a centered-subspace penalty and
+      rank-1 baseline adjustment keep constant baseline firing rates invariant
+      to trial duration (preventing reaction-time confounding).
+    \item \strong{Optional Multi-Lag Point-Spread De-Mixing (\code{demix_within_trial}):}
+      When enabled across \eqn{\ge 3} lags, sharpens temporal specificity across
+      lags using a 2nd-order Tikhonov lag-by-lag resolution inverse while
+      preserving cross-trial operator covariance structure.
+    \item \strong{Analytical Uncertainty, Precision Weights & Null-Mode-Damped ZCA Whitening:}
+      Propagates observation-level AR(1) noise covariance through the composite
+      linear readout/de-mixing operator \eqn{\mathbf{B}_{r,\tau}} to obtain exact
+      per-trial standard errors (\code{se_demixed}), adjacent-trial error
+      autocorrelation (\code{error_ac1}), Empirical-Bayes precision weights
+      (\code{precision_weight}), covariance-propagated sandwich SEs
+      (\code{se_weighted}), and null-mode-damped, Bartlett-adaptive within-run
+      ZCA-whitened variables for \code{\link{mixed_by}}.
+  }
 }
+\section{Recommended Best-Practice Configuration}{
+
+  Across the 5-pillar MEDuSA Monte Carlo validation suite (amplitude recovery,
+  temporal alignment, inter-region connectivity, factorial power surfaces, and
+  biophysical Windkessel-Balloon + \code{fmrisim} scanner realism), the
+  recommended end-to-end configuration is:
+  \enumerate{
+    \item \strong{Stage 0--1 (HRF Estimation):} Use \code{\link{estimate_crossrun_hrf}}
+      with \code{noise_model = "ar1"}, \code{evidence = "calibrated"}, and
+      parcel labels in \code{spatial_groups} (which pools parcel evidence via
+      the Cauchy combination test \code{hrf_cauchy_p()}).
+    \item \strong{Stage 2 (Deconvolution):} Use \code{\link{deconvolve_crossrun_hrf}}
+      with \code{scaling = "noise_sd"} (AR(1) innovation noise SD rather than
+      total \code{"zscore"} variance) and \code{penalty = "sobolev"}.
+    \item \strong{Stage 3 (Epoch De-Mixing & Whitening):} Use
+      \code{decon_epoch_regression(..., demix_other_events = TRUE,
+      demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls",
+      whiten_panel = TRUE, return_panel = TRUE)}. Enable
+      \code{demix_within_trial = TRUE} when estimating multi-lag waveforms
+      \eqn{\beta(\tau)}, and set \code{source_model = "duration"}
+      (\code{duration_scale = "rate"}) when modeling variable-duration (RT)
+      epochs.
+    \item \strong{Stage 4 (Group Mixed-Effects Inference):} Pass both the
+      ZCA-whitened panel columns and precision weights to \code{\link{mixed_by}}:
+      \code{mixed_by(panel, decon_demixed_whitened ~ x_whitened + (1 + x_whitened | id),
+      weights = "precision_weight")}.
+  }
 }
+
