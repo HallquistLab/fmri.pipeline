@@ -43,6 +43,14 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
   out
 }
 
+# Estimate the effective number of independent candidate tests across the HRF
+# library. For compact libraries (K <= 9, such as "standard"), exact Bonferroni
+# multiplicity (K for task, K - 1 for non-fallback shape departure) is used.
+# For extended or dense libraries (K > 9) where candidate HRF shapes are
+# strongly positively correlated, standard Bonferroni is overly conservative;
+# we compute the Galwey (2009) spectral effective number of tests
+# M_eff = (sum_i sqrt(lambda_i))^2 / sum_i lambda_i from the eigenvalues of the
+# absolute cosine-similarity matrix |H_norm' H_norm|, floored at 9.
 hrf_effective_candidates <- function(kernels) {
   if (is.null(kernels) || !is.matrix(kernels) || ncol(kernels) <= 9L) {
     k <- if (is.matrix(kernels)) ncol(kernels) else 1L
@@ -61,6 +69,29 @@ hrf_effective_candidates <- function(kernels) {
   list(task = m_eff, shape = max(1, m_eff - 1))
 }
 
+# Cauchy combination test (Liu & Xie, 2020) for pooling p-values across
+# spatially correlated voxels within a parcel. Because the standard Cauchy tail
+# is invariant to arbitrary dependency structures, this provides a valid
+# parcel-level omnibus test without assuming spatial independence across voxels.
+hrf_cauchy_p <- function(p) {
+  p <- p[is.finite(p)]
+  if (!length(p)) return(NA_real_)
+  p <- pmin(pmax(p, 1e-15), 1 - 1e-15)
+  t_stat <- mean(tan((0.5 - p) * pi))
+  0.5 - atan(t_stat) / pi
+}
+
+# Combine per-run calibrated GLS F-test p-values across training runs in a
+# leave-target-run-out fold using Fisher's method (-2 * sum log p ~ chi^2_{2R}),
+# apply library multiplicity correction (hrf_effective_candidates), and evaluate
+# the three-gate calibrated decision rule:
+#   1. compatible: no single training run rejects candidate k in favor of a
+#      better-scoring alternative at alpha / (R * (K - 1)).
+#   2. task_supported: Fisher-combined task F-test p <= alpha AND mean adjusted
+#      partial R^2 >= min_r2 AND compatible across runs.
+#   3. depart: Fisher-combined pairwise encompassing F-test vs fallback_kernel
+#      has p <= alpha AND mean score strictly exceeds fallback_kernel (the
+#      fallback kernel itself is exempt from the departure requirement).
 hrf_fold_evidence <- function(results, train, counts, scores, fallback, alpha, min_r2, kernels = NULL) {
   k <- nrow(scores); v <- ncol(scores)
   eff <- if (is.null(kernels)) list(task = k, shape = max(1L, k - 1L)) else hrf_effective_candidates(kernels)
@@ -100,6 +131,11 @@ hrf_fold_evidence <- function(results, train, counts, scores, fallback, alpha, m
     supported = task_supported & depart)
 }
 
+# Construct the exact gap-aware AR(1) Cholesky whitening matrix W on observed
+# acquisition indices `rows`. When censoring creates a gap of d = rows[i] - rows[i-1]
+# TRs between consecutive usable observations, the lag-d correlation is rho^d
+# and the accumulated innovation variance is (1 - rho^(2d)) / (1 - rho^2),
+# ensuring whitening remains exact across scrub/censor gaps.
 hrf_whitening_matrix <- function(rows, rho) {
   m <- length(rows)
   w <- diag(m)

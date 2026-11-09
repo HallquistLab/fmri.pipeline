@@ -684,3 +684,69 @@ test_that("decon_epoch_regression propagates analytical per-trial precision weig
   expect_lt(mean(abs(b_pw$estimate - mean(subj_betas))), 0.08)
   expect_lt(mean(abs(b_gls$estimate - mean(subj_betas))), 0.08)
 })
+
+test_that("decon_epoch_regression removes trial-level non-target cue confounding and sharpens within-trial lag profiles", {
+  set.seed(202615)
+  tr <- 1.0
+  n_time <- 180L
+  n_trials <- 24L
+  lib <- hrf_library(tr, peak_delays = c(4.5, 6.0), dispersions = c(0.9, 1.0), undershoot_ratios = 6)
+  hrf_can <- lib[, 1L, drop = FALSE]
+
+  bold <- events <- x_list <- list()
+  for (r in 1:2) {
+    t_cue <- seq(8, by = 6.5, length.out = n_trials)
+    t_fb <- t_cue + runif(n_trials, 2.2, 3.2)
+    x <- as.numeric(scale(rnorm(n_trials)))
+    z_orth <- as.numeric(scale(stats::resid(stats::lm(rnorm(n_trials) ~ x))))
+    cue_mod <- 0.65 * x + sqrt(1 - 0.65^2) * z_orth
+
+    des_cue <- hrf_event_design_cpp(n_time, tr, 0, t_cue, rep(0, n_trials),
+      seq_len(n_trials), n_trials, hrf_can)[[1L]]
+    des_fb <- hrf_event_design_cpp(n_time, tr, 0, t_fb, rep(0, n_trials),
+      seq_len(n_trials), n_trials, hrf_can)[[1L]]
+
+    # Voxels 1-2: Null target (beta_fb = 0) with strong correlated cue modulation (beta_cue = 0.90)
+    sig_null <- as.numeric(des_cue %*% (1.0 + 0.90 * cue_mod) + des_fb %*% rep(0.6, n_trials))
+    # Voxels 3-4: True phasic target (beta_fb = 0.70) at lag = 0
+    sig_phasic <- as.numeric(des_cue %*% rep(0.6, n_trials) + des_fb %*% (0.8 + 0.70 * x))
+
+    bold[[paste0("run", r)]] <- cbind(
+      v1 = 100 + sig_null + rnorm(n_time, sd = 0.12),
+      v2 = 100 + sig_null + rnorm(n_time, sd = 0.12),
+      v3 = 100 + sig_phasic + rnorm(n_time, sd = 0.12),
+      v4 = 100 + sig_phasic + rnorm(n_time, sd = 0.12)
+    )
+    events[[paste0("run", r)]] <- rbind(
+      data.frame(onset = t_cue, duration = 0, condition = "cue"),
+      data.frame(onset = t_fb, duration = 0, condition = "feedback")
+    )
+    x_list[[paste0("run", r)]] <- data.frame(x = x)
+  }
+
+  fit <- estimate_crossrun_hrf(bold, events, tr, lib, noise_model = "ols")
+  dec <- deconvolve_crossrun_hrf(bold, fit, lambda = 0.5, scaling = "noise_sd", penalty = "sobolev")
+
+  reg_no_other <- decon_epoch_regression(dec, x_list, events = events, target_condition = "feedback",
+    lags = -2:3, source_model = "impulse", demix_other_events = FALSE, demix_target_trials = TRUE)
+  reg_with_other <- decon_epoch_regression(dec, x_list, events = events, target_condition = "feedback",
+    lags = -2:3, source_model = "impulse", demix_other_events = TRUE, demix_target_trials = TRUE,
+    demix_within_trial = TRUE, within_trial_ridge = 0.08)
+
+  cf_no <- reg_no_other$coefficients
+  cf_wt <- reg_with_other$coefficients
+
+  b_null_no <- mean(abs(cf_no$beta_corrected[cf_no$voxel %in% c("v1", "v2") & cf_no$lag == 0]))
+  b_null_wt <- mean(abs(cf_wt$beta_corrected[cf_wt$voxel %in% c("v1", "v2") & cf_wt$lag == 0]))
+  expect_lt(b_null_wt, 0.35 * b_null_no)
+
+  # Within-trial multi-lag de-mixing sharpens peak concentration at lag = 0 vs off-peak lags
+  prof_no <- tapply(cf_no$beta_corrected[cf_no$voxel %in% c("v3", "v4")],
+    cf_no$lag[cf_no$voxel %in% c("v3", "v4")], mean)
+  prof_wt <- tapply(cf_wt$beta_corrected[cf_wt$voxel %in% c("v3", "v4")],
+    cf_wt$lag[cf_wt$voxel %in% c("v3", "v4")], mean)
+  ratio_no <- prof_no["0"] / mean(abs(prof_no[c("-2", "2", "3")]))
+  ratio_wt <- prof_wt["0"] / mean(abs(prof_wt[c("-2", "2", "3")]))
+  expect_gt(ratio_wt, ratio_no)
+  expect_true(reg_with_other$settings$demix_within_trial)
+})

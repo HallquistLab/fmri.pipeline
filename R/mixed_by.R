@@ -342,7 +342,7 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
       external_df <- readRDS(external_df) # only supports .rds at the moment
     } else {
       checkmate::assert_data_frame(external_df)
-      external_df <- if (is.data.table(external_df)) {
+      external_df <- if (data.table::is.data.table(external_df)) {
         data.table::copy(external_df)
       } else {
         data.table::as.data.table(external_df)
@@ -371,6 +371,10 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
       }
     }
 
+    # Normalize positive observation/trial precision weights (e.g., from
+    # decon_epoch_regression()$panel$precision_weight) to mean 1.0 within each
+    # split so residual variance components remain on the original outcome scale,
+    # while non-positive or non-finite weights are masked out.
     if (!is.null(weights)) {
       w_vec <- as.numeric(data[[weights]])
       bad_w <- !is.finite(w_vec) | (w_vec <= 0)
@@ -425,7 +429,7 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
   # convert to data.table and nest
   if (isTRUE(single_df)) {
     # Keep all subsequent by-reference operations local to this function.
-    data <- if (is.data.table(data)) {
+    data <- if (data.table::is.data.table(data)) {
       data.table::copy(data)
     } else {
       data.table::as.data.table(data)

@@ -24,8 +24,11 @@ hrf_library(
 
 \item{duration}{Kernel duration in seconds (at least two acquisition intervals).}
 
-\item{preset}{Optional preset grid configuration: \code{"custom"} (default),
-\code{"standard"}, \code{"extended"}, or \code{"dense"}.}
+\item{preset}{Optional preset grid configuration: `"custom"` (default, uses
+supplied `peak_delays`, `dispersions`, `undershoot_ratios`), `"standard"`
+(delays 5, 6, 7s; dispersions 0.8, 1, 1.2), `"extended"` (delays 4--8s;
+dispersions 0.8, 1, 1.25), or `"dense"` (delays 4--8.5s by 0.5s; dispersions
+0.8, 1, 1.2, 1.4).}
 }
 \value{
 A unit-sum kernel matrix, with time rows, candidate columns, and a

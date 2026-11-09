@@ -14,7 +14,9 @@ decon_epoch_regression(
   readout_width = NULL,
   demix_other_events = TRUE,
   demix_target_trials = TRUE,
+  demix_within_trial = FALSE,
   demix_ridge = 0.05,
+  within_trial_ridge = 0.06,
   gain_floor = 0.05,
   restore_scale = FALSE,
   source_model = c("impulse", "window", "duration"),
@@ -57,8 +59,17 @@ into each target epoch lag. Default: \code{TRUE}.}
 matrix at each lag to de-mix adjacent target-trial overlap and correct
 amplitude attenuation. Default: \code{TRUE}.}
 
+\item{demix_within_trial}{Logical; whether to apply an additional multi-lag
+point-spread de-mixing step across the requested \code{lags} (when at least
+3 lags are evaluated) to sharpen temporal localization across lags within
+each target trial. Default: \code{FALSE}.}
+
 \item{demix_ridge}{Positive ridge stabilization parameter for unit-diagonal
 cross-talk inversion. Default: \code{0.05}.}
+
+\item{within_trial_ridge}{Positive ridge stabilization parameter for
+multi-lag within-trial point-spread inversion when
+\code{demix_within_trial = TRUE}. Default: \code{0.06}.}
 
 \item{gain_floor}{Minimum absolute operator gain used when correcting
 amplitude slopes. Default: \code{0.05}.}
@@ -115,6 +126,40 @@ A list with \code{coefficients} (per voxel, lag, and predictor term),
 }
 \description{
 Estimate trial-by-trial correlations and regression slopes across epoch lags
-relative to a target event while removing preceding/neighboring event leakage
-and correcting regularization-induced amplitude attenuation.
+relative to a target event while removing preceding/neighboring event leakage,
+correcting regularization-induced amplitude attenuation, and propagating
+per-trial operator precision weights and within-run error covariance.
+}
+\details{
+\code{decon_epoch_regression()} bridges continuous regularized deconvolution
+and trial-level cognitive neuroscience models in five stages:
+\enumerate{
+  \item \strong{Kernel Quadrature Readout:} At each requested lag \eqn{\tau},
+    continuous deconvolved activity is integrated around each target event
+    using \code{readout_kernel}. For \code{source_model = "duration"}, the
+    readout window centers on the trial's midpoint
+    \eqn{t_i + \tau + 0.5 d_i} and expands to \eqn{\max(w_{\mathrm{src}}, d_i)}.
+  \item \strong{Non-Target Event De-Mixing (\code{demix_other_events}):}
+    Using the frozen inverse operator \eqn{\mathbf{D}_r} and forward HRF
+    design \eqn{\mathbf{G}_{r,0}}, the function estimates amplitudes of
+    non-target events (e.g., cues or motor responses) and subtracts their
+    resolution-predicted leakage from the target epoch.
+  \item \strong{Target Cross-Talk & Duration De-Mixing (\code{demix_target_trials}):}
+    Inverts the lag-specific target resolution matrix to remove trial-to-trial
+    overlap and divide out regularization-induced amplitude shrinkage. In
+    \code{source_model = "duration"}, a centered-subspace penalty and
+    Sherman-Morrison rank-1 demeaning adjustment keep constant baseline firing
+    rates invariant to trial duration (preventing reaction-time confounding).
+  \item \strong{Optional Multi-Lag Point-Spread De-Mixing (\code{demix_within_trial}):}
+    When enabled across \eqn{\ge 3} lags, sharpens temporal specificity across
+    lags using a symmetricized lag-by-lag resolution inverse.
+  \item \strong{Analytical Uncertainty, Precision Weights & ZCA Whitening:}
+    Propagates observation-level AR(1) noise covariance through the composite
+    linear readout/de-mixing operator \eqn{\mathbf{B}_{r,\tau}} to obtain exact
+    per-trial standard errors (\code{se_demixed}), adjacent-trial error
+    autocorrelation (\code{error_ac1}), Empirical-Bayes precision weights
+    (\code{precision_weight}), covariance-propagated sandwich SEs
+    (\code{se_weighted}), and within-run ZCA-whitened variables for
+    \code{\link{mixed_by}}.
+}
 }
