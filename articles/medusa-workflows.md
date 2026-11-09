@@ -350,22 +350,31 @@ knitr::kable(feedback_fit$summary, digits = 3)
 | lag | term | mean_beta_raw | mean_beta_corrected | mean_beta_unweighted | mean_beta_weighted | mean_beta_gls | mean_r_raw | mean_r_demixed | mean_gain | mean_se_trial | mean_error_ac1 | n_voxels |
 |---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | -2 | rpe | 0.121 | 0.188 | 0.188 | 0.188 | 0.188 | 0.725 | 0.354 | 0.239 | 0.176 | 0.042 | 6 |
-| -1 | rpe | 0.165 | 0.628 | 0.628 | 0.628 | 0.627 | 0.841 | 0.814 | 0.239 | 0.178 | 0.050 | 6 |
-| 0 | rpe | 0.174 | 0.700 | 0.700 | 0.700 | 0.697 | 0.911 | 0.872 | 0.239 | 0.179 | 0.057 | 6 |
+| -1 | rpe | 0.165 | 0.628 | 0.628 | 0.628 | 0.628 | 0.841 | 0.814 | 0.239 | 0.178 | 0.050 | 6 |
+| 0 | rpe | 0.174 | 0.700 | 0.700 | 0.700 | 0.699 | 0.911 | 0.872 | 0.239 | 0.179 | 0.057 | 6 |
 | 1 | rpe | 0.143 | 0.476 | 0.475 | 0.476 | 0.476 | 0.938 | 0.766 | 0.239 | 0.179 | 0.056 | 6 |
-| 2 | rpe | 0.088 | 0.142 | 0.141 | 0.142 | 0.145 | 0.829 | 0.279 | 0.239 | 0.179 | 0.051 | 6 |
-| 3 | rpe | 0.032 | -0.121 | -0.122 | -0.121 | -0.116 | 0.351 | -0.334 | 0.239 | 0.179 | 0.052 | 6 |
+| 2 | rpe | 0.088 | 0.142 | 0.141 | 0.142 | 0.143 | 0.829 | 0.279 | 0.239 | 0.179 | 0.051 | 6 |
+| 3 | rpe | 0.032 | -0.121 | -0.122 | -0.121 | -0.120 | 0.351 | -0.334 | 0.239 | 0.179 | 0.052 | 6 |
 | 4 | rpe | -0.007 | -0.114 | -0.114 | -0.114 | -0.115 | -0.052 | -0.253 | 0.239 | 0.180 | 0.057 | 6 |
 
 The function models non-target cue/decision contributions
 (`demix_other_events = TRUE`), the operator’s trial-to-trial cross-talk
 (`demix_target_trials = TRUE`), and within-trial multi-lag smearing
 across the requested `-2..+4 s` lag grid (`demix_within_trial = TRUE`).
-It also propagates the exact run-specific AR(1) observation noise
-covariance through the readout and unmixing operators to compute
-per-trial standard errors (`se_raw`, `se_demixed`), Empirical-Bayes
-stabilized inverse-variance precision weights (`precision_weight`),
-covariance-propagated sandwich standard errors (`se_weighted`), and
+By default (`demix_ridge = 0.05`, i.e., `>= 0.03`), non-target events
+are subtracted using a condition-mean operator that removes preceding
+cue/decision bleed without inflating target-trial variance; when
+non-target events carry strong trial-varying parametric confounds that
+correlate with the target predictor, setting `demix_ridge = 0.02`
+(`< 0.03`) activates a 2nd-order iterated Tikhonov joint $`(T, O)`$
+de-mixing operator. Target-trial overlap is inverted via a 2nd-order
+Tikhonov operator (`solve_duration_demix_operator()`) with per-trial
+effective gain restoration. The function also propagates the exact
+run-specific AR(1) observation noise covariance through the readout and
+unmixing operators to compute per-trial standard errors (`se_raw`,
+`se_demixed`), Empirical-Bayes stabilized inverse-variance precision
+weights (`precision_weight`), covariance-propagated sandwich standard
+errors (`se_weighted`), and null-mode-damped, Bartlett-adaptive
 ZCA-whitened GLS slopes (`beta_gls`, `se_gls`). For multiple predictors,
 supply a data frame or matrix per run with consistent column
 names/order; do not add a constant intercept column to those centered
@@ -425,12 +434,12 @@ knitr::kable(data.frame(
 
 | voxel | truth |   raw | corrected |   gls | se_weighted | se_gls |
 |:------|------:|------:|----------:|------:|------------:|-------:|
-| v1    |   0.5 | 0.109 |     0.463 | 0.461 |       0.048 |  0.049 |
-| v2    |   0.6 | 0.137 |     0.552 | 0.549 |       0.048 |  0.049 |
-| v3    |   0.7 | 0.156 |     0.639 | 0.634 |       0.044 |  0.045 |
-| v4    |   0.8 | 0.184 |     0.712 | 0.709 |       0.053 |  0.054 |
-| v5    |   0.9 | 0.210 |     0.867 | 0.864 |       0.044 |  0.045 |
-| v6    |   1.0 | 0.248 |     0.968 | 0.964 |       0.050 |  0.051 |
+| v1    |   0.5 | 0.109 |     0.463 | 0.462 |       0.048 |  0.049 |
+| v2    |   0.6 | 0.137 |     0.552 | 0.551 |       0.048 |  0.049 |
+| v3    |   0.7 | 0.156 |     0.639 | 0.638 |       0.044 |  0.045 |
+| v4    |   0.8 | 0.184 |     0.712 | 0.711 |       0.053 |  0.054 |
+| v5    |   0.9 | 0.210 |     0.867 | 0.866 |       0.044 |  0.044 |
+| v6    |   1.0 | 0.248 |     0.968 | 0.967 |       0.050 |  0.051 |
 
 ### Keep a fixed-HRF comparator
 
@@ -504,8 +513,8 @@ knitr::kable(decision_fit$summary, digits = 3)
 
 | lag | term | mean_beta_raw | mean_beta_corrected | mean_beta_unweighted | mean_beta_weighted | mean_beta_gls | mean_r_raw | mean_r_demixed | mean_gain | mean_se_trial | mean_error_ac1 | n_voxels |
 |---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0 | value | 0.072 | 0.185 | 0.185 | 0.185 | 0.180 | 0.537 | 0.344 | 0.323 | 0.136 | 0.049 | 6 |
-| 1 | value | 0.056 | 0.138 | 0.138 | 0.138 | 0.136 | 0.360 | 0.233 | 0.323 | 0.138 | 0.057 | 6 |
+| 0 | value | 0.072 | 0.185 | 0.185 | 0.185 | 0.183 | 0.537 | 0.344 | 0.323 | 0.136 | 0.049 | 6 |
+| 1 | value | 0.056 | 0.138 | 0.138 | 0.138 | 0.138 | 0.360 | 0.233 | 0.323 | 0.138 | 0.057 | 6 |
 
 The known simulated decision-height slope is 0.35. Compare the table
 with that value: a duration-aware source does not by itself eliminate
@@ -551,19 +560,19 @@ head(panel[, c("id", "run", "trial", "event_index", "trial_id", "evt_time",
 #> 5 sim01 run1     5          15        5       -2    v1 0.32630153    0.04084404
 #> 6 sim01 run1     6          18        6       -2    v1 0.17730537   -0.47538659
 #>   se_demixed precision_weight   error_ac1 decon_demixed_whitened        rpe
-#> 1  0.1734259        0.9925422  0.00000000            -0.08545096  0.1181378
-#> 2  0.1643144        1.0058441  0.09751308            -1.28384584 -0.3123133
-#> 3  0.1703535        0.9970680  0.06547193             0.27626585  1.8923639
-#> 4  0.1662414        1.0030615 -0.03049123            -0.57739081 -1.1696051
-#> 5  0.1685862        0.9996530  0.06061239             0.04341504 -0.4224070
-#> 6  0.1713055        0.9956699  0.04353783            -0.47450334 -1.0995872
+#> 1  0.1734259        0.9925422  0.00000000            -0.08695795  0.1181378
+#> 2  0.1643144        1.0058441  0.09751308            -1.27224402 -0.3123133
+#> 3  0.1703535        0.9970680  0.06547193             0.27193667  1.8923639
+#> 4  0.1662414        1.0030615 -0.03049123            -0.57970211 -1.1696051
+#> 5  0.1685862        0.9996530  0.06061239             0.04186698 -0.4224070
+#> 6  0.1713055        0.9956699  0.04353783            -0.47507428 -1.0995872
 #>   rpe_whitened
-#> 1    0.1222088
-#> 2   -0.3112265
-#> 3    1.8818221
-#> 4   -1.1714825
-#> 5   -0.4054581
-#> 6   -1.0928183
+#> 1    0.1197465
+#> 2   -0.3120384
+#> 3    1.8885246
+#> 4   -1.1704039
+#> 5   -0.4157397
+#> 6   -1.0970118
 stopifnot(!anyDuplicated(panel[c("id", "run", "trial_id", "evt_time", "voxel")]),
           all(is.finite(panel$decon_demixed)),
           all(is.finite(panel$precision_weight) & panel$precision_weight > 0))
@@ -594,13 +603,20 @@ descriptive; it is not a population analysis.
 workflow and retain one panel per participant, with ID/session and event
 mappings added as above. `participant_panels` below refers to those
 completed panels, not replications of this simulation.
-[`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md)
-now accepts `weights = "precision_weight"` to weight each trial by its
-normalized inverse-variance precision weight across all supported
-engines (`lme4`, `rstanarm`, and `jlmer`). Alternatively, when
-trial-to-trial error autocorrelation (`error_ac1`) is substantial in
-rapid designs, you can fit the ZCA-whitened panel columns
-(`decon_demixed_whitened ~ rpe_whitened`).
+
+Across our five-pillar Monte Carlo validation suite, the **recommended
+primary group specification** combines **both** within-run ZCA-whitened
+panel columns (`decon_demixed_whitened ~ rpe_whitened`, exported when
+`whiten_panel = TRUE`) **and** Empirical-Bayes precision weights
+(`weights = "precision_weight"`) in
+[`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md).
+Because `compute_zca_whitening_matrix()` applies null-mode-damped,
+Bartlett-adaptive ZCA whitening to the within-run *correlation* matrix
+while preserving trial variance scale, pairing
+`decon_demixed_whitened ~ rpe_whitened` with
+`weights = "precision_weight"` simultaneously accounts for (a)
+between-run and per-trial heteroskedastic noise precision and (b)
+within-run off-diagonal trial error autocorrelation (`error_ac1`).
 
 ``` r
 
@@ -609,23 +625,27 @@ all_panels[, run_id := interaction(id, run, drop = TRUE)]
 all_panels[, rpe_within := rpe - mean(rpe), by = .(id, run)]
 stopifnot(data.table::uniqueN(all_panels$id) > 1L)
 
-# Option A: Precision-weighted mixed model (propagates per-trial inverse-variance weights)
-group_results <- mixed_by(
+# Recommended Primary Specification (Modern MEDuSA ZCA + PW):
+# Combines null-mode-damped within-run ZCA correlation whitening with
+# Empirical-Bayes inverse-variance precision weights across runs and trials.
+group_results_zca_pw <- mixed_by(
   data = all_panels,
-  model_formulae = list(rpe = decon_demixed ~ rpe_within +
-                         (1 + rpe_within | id) + (1 | run_id)),
+  model_formulae = list(rpe = decon_demixed_whitened ~ rpe_whitened +
+                         (1 + rpe_whitened | id) + (1 | run_id)),
   split_on = c("voxel", "evt_time"),
   weights = "precision_weight",
   engine = "lme4", ncores = 1L
 )
 
-# Option B: Within-run ZCA-whitened mixed model (decorrelates and standardizes
-# within-run trial errors when whiten_panel = TRUE was used in decon_epoch_regression)
-group_results_whitened <- mixed_by(
+# Alternative Specification (Precision-Weighted Unwhitened):
+# Propagates per-trial inverse-variance precision weights on the unwhitened
+# de-mixed scale when trial predictors have negligible serial autocorrelation.
+group_results_pw <- mixed_by(
   data = all_panels,
-  model_formulae = list(rpe = decon_demixed_whitened ~ rpe_whitened +
-                         (0 + rpe_whitened | id)),
+  model_formulae = list(rpe = decon_demixed ~ rpe_within +
+                         (1 + rpe_within | id) + (1 | run_id)),
   split_on = c("voxel", "evt_time"),
+  weights = "precision_weight",
   engine = "lme4", ncores = 1L
 )
 ```
@@ -767,6 +787,20 @@ encodings and linear amplitudes have different meanings, and non-zscore
 input modes are not supported by the voxelwise Bush route. This recipe
 uses a fixed canonical HRF. The file wrapper can also tune supplied
 candidates within a run, but that is not leave-one-run-out HRF learning.
+
+## Summary of recommended best-practice settings
+
+Based on the five-pillar MEDuSA simulation validation suite, the table
+below summarizes the recommended settings for empirical studies:
+
+| Pipeline Step | Function | Recommended Arguments | Why It Matters |
+|----|----|----|----|
+| **1. Cross-Run HRF Learning** | [`estimate_crossrun_hrf()`](https://hallquistlab.github.io/fmri.pipeline/reference/estimate_crossrun_hrf.md) | `noise_model = "ar1"`, `evidence = "calibrated"`, `spatial_groups = parcel_ids`, `pooling = "parcel"` (or `"voxel"` with `spatial_strength = 0.02`) | Prevents regional vascular HRF differences ($`\ge 1.5\text{ s}`$) from inverting within-trial neural peak ordering or causing false-positive lagged connectivity; uses Cauchy parcel evidence pooling (`hrf_cauchy_p()`). |
+| **2. Continuous Deconvolution** | [`deconvolve_crossrun_hrf()`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_crossrun_hrf.md) | `scaling = "noise_sd"`, `penalty = "sobolev"`, `backend = "cpp"` | Scales runs by AR(1) innovation noise SD rather than total `"zscore"` variance (which compresses high-signal runs and absorbs drift/motion variance); Sobolev penalty controls both high-frequency ringing and low-frequency drift. |
+| **3a. Punctate / Impulse Epochs** | [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md) | `source_model = "impulse"`, `readout_kernel = "triangle"`, `demix_other_events = TRUE`, `demix_target_trials = TRUE`, `restore_scale = TRUE`, `weighting = "gls"`, `whiten_panel = TRUE`, `return_panel = TRUE` | Removes preceding event bleed via condition-mean de-mixing (`demix_ridge = 0.05`, or `< 0.03` when non-target events carry strong trial-varying confounds) and restores per-trial target gain via 2nd-order Tikhonov inversion. |
+| **3b. Multi-Lag Waveforms $`\beta(\tau)`$** | [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md) | Same as 3a + `demix_within_trial = TRUE` (`within_trial_ridge = 0.06`) across $`\ge 3`$ lags | Sharpens within-trial temporal waveform profiles across lags by inverting the lag-by-lag point-spread matrix. |
+| **3c. Variable-Duration (RT) Epochs** | [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md) | Same as 3a + `source_model = "duration"`, `trial_durations = rt_by_run`, `duration_scale = "rate"` | Eliminates reaction-time duration confounding (preventing both destructive signal cancellation when $`r(x, \text{RT}) < 0`$ and 100% false-positive rate inflation when $`r(x, \text{RT}) > 0`$). |
+| **4. Group Mixed-Effects Model** | [`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md) | `decon_demixed_whitened ~ x_whitened + (1 + x_whitened \| id) + (1 \| run_id)`, `weights = "precision_weight"` | Combines Empirical-Bayes precision weights across heteroskedastic runs/trials with null-mode-damped, Bartlett-adaptive within-run ZCA correlation whitening. |
 
 ## Before interpreting a result
 

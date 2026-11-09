@@ -237,8 +237,10 @@ units) for local anchor pooling.</p></dd>
   using pairwise encompassing models, and compatibility with every usable
   training run. Fisher combination uses independent runs; Bonferroni corrections
   account for candidate comparisons. Unsupported or inconsistent shapes fall
-  back. Parcel anchors require min_parcel_voxels individually supported voxels;
-  voxel p-values are not combined as independent spatial observations.
+  back. Parcel anchors are admitted either when at least min_parcel_voxels
+  voxels are individually supported or when the parcel-level Cauchy-combined
+  p-value (hrf_cauchy_p(), valid under arbitrary spatial correlation within a
+  parcel) passes the candidate-corrected evidence threshold.
   Run compatibility cannot be assessed with a single training run. There is
   no access to target-run vascular shape or guarantee of transfer to that run.
   AR covariance is estimated per run using a fixed event-amplitude mean model

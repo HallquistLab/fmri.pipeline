@@ -523,7 +523,7 @@ isolated-impulse audit.</p>
 <td align="right">0.628</td>
 <td align="right">0.628</td>
 <td align="right">0.628</td>
-<td align="right">0.627</td>
+<td align="right">0.628</td>
 <td align="right">0.841</td>
 <td align="right">0.814</td>
 <td align="right">0.239</td>
@@ -538,7 +538,7 @@ isolated-impulse audit.</p>
 <td align="right">0.700</td>
 <td align="right">0.700</td>
 <td align="right">0.700</td>
-<td align="right">0.697</td>
+<td align="right">0.699</td>
 <td align="right">0.911</td>
 <td align="right">0.872</td>
 <td align="right">0.239</td>
@@ -568,7 +568,7 @@ isolated-impulse audit.</p>
 <td align="right">0.142</td>
 <td align="right">0.141</td>
 <td align="right">0.142</td>
-<td align="right">0.145</td>
+<td align="right">0.143</td>
 <td align="right">0.829</td>
 <td align="right">0.279</td>
 <td align="right">0.239</td>
@@ -583,7 +583,7 @@ isolated-impulse audit.</p>
 <td align="right">-0.121</td>
 <td align="right">-0.122</td>
 <td align="right">-0.121</td>
-<td align="right">-0.116</td>
+<td align="right">-0.120</td>
 <td align="right">0.351</td>
 <td align="right">-0.334</td>
 <td align="right">0.239</td>
@@ -612,18 +612,30 @@ isolated-impulse audit.</p>
 (<code>demix_other_events = TRUE</code>), the operator’s trial-to-trial
 cross-talk (<code>demix_target_trials = TRUE</code>), and within-trial
 multi-lag smearing across the requested <code>-2..+4 s</code> lag grid
-(<code>demix_within_trial = TRUE</code>). It also propagates the exact
-run-specific AR(1) observation noise covariance through the readout and
-unmixing operators to compute per-trial standard errors
+(<code>demix_within_trial = TRUE</code>). By default
+(<code>demix_ridge = 0.05</code>, i.e., <code>&gt;= 0.03</code>),
+non-target events are subtracted using a condition-mean operator that
+removes preceding cue/decision bleed without inflating target-trial
+variance; when non-target events carry strong trial-varying parametric
+confounds that correlate with the target predictor, setting
+<code>demix_ridge = 0.02</code> (<code>&lt; 0.03</code>) activates a
+2nd-order iterated Tikhonov joint
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><mi>T</mi><mo>,</mo><mi>O</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">(T, O)</annotation></semantics></math>
+de-mixing operator. Target-trial overlap is inverted via a 2nd-order
+Tikhonov operator (<code>solve_duration_demix_operator()</code>) with
+per-trial effective gain restoration. The function also propagates the
+exact run-specific AR(1) observation noise covariance through the
+readout and unmixing operators to compute per-trial standard errors
 (<code>se_raw</code>, <code>se_demixed</code>), Empirical-Bayes
 stabilized inverse-variance precision weights
 (<code>precision_weight</code>), covariance-propagated sandwich standard
-errors (<code>se_weighted</code>), and ZCA-whitened GLS slopes
-(<code>beta_gls</code>, <code>se_gls</code>). For multiple predictors,
-supply a data frame or matrix per run with consistent column
-names/order; do not add a constant intercept column to those centered
-predictors. Non-target events should remain in <code>events</code>, even
-though covariate rows refer only to feedback records.</p>
+errors (<code>se_weighted</code>), and null-mode-damped,
+Bartlett-adaptive ZCA-whitened GLS slopes (<code>beta_gls</code>,
+<code>se_gls</code>). For multiple predictors, supply a data frame or
+matrix per run with consistent column names/order; do not add a constant
+intercept column to those centered predictors. Non-target events should
+remain in <code>events</code>, even though covariate rows refer only to
+feedback records.</p>
 <p><code>restore_scale = TRUE</code> reports effects in original input
 units under the unit-sum HRF convention. It reverses the scaling
 divisor; it does not make estimates physiologically calibrated or
@@ -682,7 +694,7 @@ independent temporal measurements.
 <td align="right">0.5</td>
 <td align="right">0.109</td>
 <td align="right">0.463</td>
-<td align="right">0.461</td>
+<td align="right">0.462</td>
 <td align="right">0.048</td>
 <td align="right">0.049</td>
 </tr>
@@ -691,7 +703,7 @@ independent temporal measurements.
 <td align="right">0.6</td>
 <td align="right">0.137</td>
 <td align="right">0.552</td>
-<td align="right">0.549</td>
+<td align="right">0.551</td>
 <td align="right">0.048</td>
 <td align="right">0.049</td>
 </tr>
@@ -700,7 +712,7 @@ independent temporal measurements.
 <td align="right">0.7</td>
 <td align="right">0.156</td>
 <td align="right">0.639</td>
-<td align="right">0.634</td>
+<td align="right">0.638</td>
 <td align="right">0.044</td>
 <td align="right">0.045</td>
 </tr>
@@ -709,7 +721,7 @@ independent temporal measurements.
 <td align="right">0.8</td>
 <td align="right">0.184</td>
 <td align="right">0.712</td>
-<td align="right">0.709</td>
+<td align="right">0.711</td>
 <td align="right">0.053</td>
 <td align="right">0.054</td>
 </tr>
@@ -718,16 +730,16 @@ independent temporal measurements.
 <td align="right">0.9</td>
 <td align="right">0.210</td>
 <td align="right">0.867</td>
-<td align="right">0.864</td>
+<td align="right">0.866</td>
 <td align="right">0.044</td>
-<td align="right">0.045</td>
+<td align="right">0.044</td>
 </tr>
 <tr class="even">
 <td align="left">v6</td>
 <td align="right">1.0</td>
 <td align="right">0.248</td>
 <td align="right">0.968</td>
-<td align="right">0.964</td>
+<td align="right">0.967</td>
 <td align="right">0.050</td>
 <td align="right">0.051</td>
 </tr>
@@ -881,7 +893,7 @@ covaries with value.</p>
 <td align="right">0.185</td>
 <td align="right">0.185</td>
 <td align="right">0.185</td>
-<td align="right">0.180</td>
+<td align="right">0.183</td>
 <td align="right">0.537</td>
 <td align="right">0.344</td>
 <td align="right">0.323</td>
@@ -896,7 +908,7 @@ covaries with value.</p>
 <td align="right">0.138</td>
 <td align="right">0.138</td>
 <td align="right">0.138</td>
-<td align="right">0.136</td>
+<td align="right">0.138</td>
 <td align="right">0.360</td>
 <td align="right">0.233</td>
 <td align="right">0.323</td>
@@ -949,19 +961,19 @@ active-null simulations.</p>
 <span><span class="co">#&gt; 5 sim01 run1     5          15        5       -2    v1 0.32630153    0.04084404</span></span>
 <span><span class="co">#&gt; 6 sim01 run1     6          18        6       -2    v1 0.17730537   -0.47538659</span></span>
 <span><span class="co">#&gt;   se_demixed precision_weight   error_ac1 decon_demixed_whitened        rpe</span></span>
-<span><span class="co">#&gt; 1  0.1734259        0.9925422  0.00000000            -0.08545096  0.1181378</span></span>
-<span><span class="co">#&gt; 2  0.1643144        1.0058441  0.09751308            -1.28384584 -0.3123133</span></span>
-<span><span class="co">#&gt; 3  0.1703535        0.9970680  0.06547193             0.27626585  1.8923639</span></span>
-<span><span class="co">#&gt; 4  0.1662414        1.0030615 -0.03049123            -0.57739081 -1.1696051</span></span>
-<span><span class="co">#&gt; 5  0.1685862        0.9996530  0.06061239             0.04341504 -0.4224070</span></span>
-<span><span class="co">#&gt; 6  0.1713055        0.9956699  0.04353783            -0.47450334 -1.0995872</span></span>
+<span><span class="co">#&gt; 1  0.1734259        0.9925422  0.00000000            -0.08695795  0.1181378</span></span>
+<span><span class="co">#&gt; 2  0.1643144        1.0058441  0.09751308            -1.27224402 -0.3123133</span></span>
+<span><span class="co">#&gt; 3  0.1703535        0.9970680  0.06547193             0.27193667  1.8923639</span></span>
+<span><span class="co">#&gt; 4  0.1662414        1.0030615 -0.03049123            -0.57970211 -1.1696051</span></span>
+<span><span class="co">#&gt; 5  0.1685862        0.9996530  0.06061239             0.04186698 -0.4224070</span></span>
+<span><span class="co">#&gt; 6  0.1713055        0.9956699  0.04353783            -0.47507428 -1.0995872</span></span>
 <span><span class="co">#&gt;   rpe_whitened</span></span>
-<span><span class="co">#&gt; 1    0.1222088</span></span>
-<span><span class="co">#&gt; 2   -0.3112265</span></span>
-<span><span class="co">#&gt; 3    1.8818221</span></span>
-<span><span class="co">#&gt; 4   -1.1714825</span></span>
-<span><span class="co">#&gt; 5   -0.4054581</span></span>
-<span><span class="co">#&gt; 6   -1.0928183</span></span>
+<span><span class="co">#&gt; 1    0.1197465</span></span>
+<span><span class="co">#&gt; 2   -0.3120384</span></span>
+<span><span class="co">#&gt; 3    1.8885246</span></span>
+<span><span class="co">#&gt; 4   -1.1704039</span></span>
+<span><span class="co">#&gt; 5   -0.4157397</span></span>
+<span><span class="co">#&gt; 6   -1.0970118</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/stopifnot.html" class="external-link">stopifnot</a></span><span class="op">(</span><span class="op">!</span><span class="fu"><a href="https://rdrr.io/r/base/duplicated.html" class="external-link">anyDuplicated</a></span><span class="op">(</span><span class="va">panel</span><span class="op">[</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"id"</span>, <span class="st">"run"</span>, <span class="st">"trial_id"</span>, <span class="st">"evt_time"</span>, <span class="st">"voxel"</span><span class="op">)</span><span class="op">]</span><span class="op">)</span>,</span>
 <span>          <span class="fu"><a href="https://rdrr.io/r/base/all.html" class="external-link">all</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/is.finite.html" class="external-link">is.finite</a></span><span class="op">(</span><span class="va">panel</span><span class="op">$</span><span class="va">decon_demixed</span><span class="op">)</span><span class="op">)</span>,</span>
 <span>          <span class="fu"><a href="https://rdrr.io/r/base/all.html" class="external-link">all</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/is.finite.html" class="external-link">is.finite</a></span><span class="op">(</span><span class="va">panel</span><span class="op">$</span><span class="va">precision_weight</span><span class="op">)</span> <span class="op">&amp;</span> <span class="va">panel</span><span class="op">$</span><span class="va">precision_weight</span> <span class="op">&gt;</span> <span class="fl">0</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
@@ -993,37 +1005,49 @@ and is descriptive; it is not a population analysis.</p>
 participant workflow and retain one panel per participant, with
 ID/session and event mappings added as above.
 <code>participant_panels</code> below refers to those completed panels,
-not replications of this simulation. <code><a href="../reference/mixed_by.html">mixed_by()</a></code> now accepts
-<code>weights = "precision_weight"</code> to weight each trial by its
-normalized inverse-variance precision weight across all supported
-engines (<code>lme4</code>, <code>rstanarm</code>, and
-<code>jlmer</code>). Alternatively, when trial-to-trial error
-autocorrelation (<code>error_ac1</code>) is substantial in rapid
-designs, you can fit the ZCA-whitened panel columns
-(<code>decon_demixed_whitened ~ rpe_whitened</code>).</p>
+not replications of this simulation.</p>
+<p>Across our five-pillar Monte Carlo validation suite, the
+<strong>recommended primary group specification</strong> combines
+<strong>both</strong> within-run ZCA-whitened panel columns
+(<code>decon_demixed_whitened ~ rpe_whitened</code>, exported when
+<code>whiten_panel = TRUE</code>) <strong>and</strong> Empirical-Bayes
+precision weights (<code>weights = "precision_weight"</code>) in
+<code><a href="../reference/mixed_by.html">mixed_by()</a></code>. Because
+<code>compute_zca_whitening_matrix()</code> applies null-mode-damped,
+Bartlett-adaptive ZCA whitening to the within-run <em>correlation</em>
+matrix while preserving trial variance scale, pairing
+<code>decon_demixed_whitened ~ rpe_whitened</code> with
+<code>weights = "precision_weight"</code> simultaneously accounts for
+(a) between-run and per-trial heteroskedastic noise precision and (b)
+within-run off-diagonal trial error autocorrelation
+(<code>error_ac1</code>).</p>
 <div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">all_panels</span> <span class="op">&lt;-</span> <span class="fu">data.table</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/data.table/man/rbindlist.html" class="external-link">rbindlist</a></span><span class="op">(</span><span class="va">participant_panels</span>, use.names <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
 <span><span class="va">all_panels</span><span class="op">[</span>, <span class="va">run_id</span> <span class="op">:=</span> <span class="fu"><a href="https://rdrr.io/r/base/interaction.html" class="external-link">interaction</a></span><span class="op">(</span><span class="va">id</span>, <span class="va">run</span>, drop <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span><span class="op">]</span></span>
 <span><span class="va">all_panels</span><span class="op">[</span>, <span class="va">rpe_within</span> <span class="op">:=</span> <span class="va">rpe</span> <span class="op">-</span> <span class="fu"><a href="https://rdrr.io/r/base/mean.html" class="external-link">mean</a></span><span class="op">(</span><span class="va">rpe</span><span class="op">)</span>, by <span class="op">=</span> <span class="fu">.</span><span class="op">(</span><span class="va">id</span>, <span class="va">run</span><span class="op">)</span><span class="op">]</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/stopifnot.html" class="external-link">stopifnot</a></span><span class="op">(</span><span class="fu">data.table</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/data.table/man/duplicated.html" class="external-link">uniqueN</a></span><span class="op">(</span><span class="va">all_panels</span><span class="op">$</span><span class="va">id</span><span class="op">)</span> <span class="op">&gt;</span> <span class="fl">1L</span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Option A: Precision-weighted mixed model (propagates per-trial inverse-variance weights)</span></span>
-<span><span class="va">group_results</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mixed_by.html">mixed_by</a></span><span class="op">(</span></span>
+<span><span class="co"># Recommended Primary Specification (Modern MEDuSA ZCA + PW):</span></span>
+<span><span class="co"># Combines null-mode-damped within-run ZCA correlation whitening with</span></span>
+<span><span class="co"># Empirical-Bayes inverse-variance precision weights across runs and trials.</span></span>
+<span><span class="va">group_results_zca_pw</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mixed_by.html">mixed_by</a></span><span class="op">(</span></span>
 <span>  data <span class="op">=</span> <span class="va">all_panels</span>,</span>
-<span>  model_formulae <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>rpe <span class="op">=</span> <span class="va">decon_demixed</span> <span class="op">~</span> <span class="va">rpe_within</span> <span class="op">+</span></span>
-<span>                         <span class="op">(</span><span class="fl">1</span> <span class="op">+</span> <span class="va">rpe_within</span> <span class="op">|</span> <span class="va">id</span><span class="op">)</span> <span class="op">+</span> <span class="op">(</span><span class="fl">1</span> <span class="op">|</span> <span class="va">run_id</span><span class="op">)</span><span class="op">)</span>,</span>
+<span>  model_formulae <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>rpe <span class="op">=</span> <span class="va">decon_demixed_whitened</span> <span class="op">~</span> <span class="va">rpe_whitened</span> <span class="op">+</span></span>
+<span>                         <span class="op">(</span><span class="fl">1</span> <span class="op">+</span> <span class="va">rpe_whitened</span> <span class="op">|</span> <span class="va">id</span><span class="op">)</span> <span class="op">+</span> <span class="op">(</span><span class="fl">1</span> <span class="op">|</span> <span class="va">run_id</span><span class="op">)</span><span class="op">)</span>,</span>
 <span>  split_on <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"voxel"</span>, <span class="st">"evt_time"</span><span class="op">)</span>,</span>
 <span>  weights <span class="op">=</span> <span class="st">"precision_weight"</span>,</span>
 <span>  engine <span class="op">=</span> <span class="st">"lme4"</span>, ncores <span class="op">=</span> <span class="fl">1L</span></span>
 <span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Option B: Within-run ZCA-whitened mixed model (decorrelates and standardizes</span></span>
-<span><span class="co"># within-run trial errors when whiten_panel = TRUE was used in decon_epoch_regression)</span></span>
-<span><span class="va">group_results_whitened</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mixed_by.html">mixed_by</a></span><span class="op">(</span></span>
+<span><span class="co"># Alternative Specification (Precision-Weighted Unwhitened):</span></span>
+<span><span class="co"># Propagates per-trial inverse-variance precision weights on the unwhitened</span></span>
+<span><span class="co"># de-mixed scale when trial predictors have negligible serial autocorrelation.</span></span>
+<span><span class="va">group_results_pw</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mixed_by.html">mixed_by</a></span><span class="op">(</span></span>
 <span>  data <span class="op">=</span> <span class="va">all_panels</span>,</span>
-<span>  model_formulae <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>rpe <span class="op">=</span> <span class="va">decon_demixed_whitened</span> <span class="op">~</span> <span class="va">rpe_whitened</span> <span class="op">+</span></span>
-<span>                         <span class="op">(</span><span class="fl">0</span> <span class="op">+</span> <span class="va">rpe_whitened</span> <span class="op">|</span> <span class="va">id</span><span class="op">)</span><span class="op">)</span>,</span>
+<span>  model_formulae <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>rpe <span class="op">=</span> <span class="va">decon_demixed</span> <span class="op">~</span> <span class="va">rpe_within</span> <span class="op">+</span></span>
+<span>                         <span class="op">(</span><span class="fl">1</span> <span class="op">+</span> <span class="va">rpe_within</span> <span class="op">|</span> <span class="va">id</span><span class="op">)</span> <span class="op">+</span> <span class="op">(</span><span class="fl">1</span> <span class="op">|</span> <span class="va">run_id</span><span class="op">)</span><span class="op">)</span>,</span>
 <span>  split_on <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"voxel"</span>, <span class="st">"evt_time"</span><span class="op">)</span>,</span>
+<span>  weights <span class="op">=</span> <span class="st">"precision_weight"</span>,</span>
 <span>  engine <span class="op">=</span> <span class="st">"lme4"</span>, ncores <span class="op">=</span> <span class="fl">1L</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 <p>While <code>weights = "precision_weight"</code> and
@@ -1160,6 +1184,107 @@ amplitudes have different meanings, and non-zscore input modes are not
 supported by the voxelwise Bush route. This recipe uses a fixed
 canonical HRF. The file wrapper can also tune supplied candidates within
 a run, but that is not leave-one-run-out HRF learning.</p>
+</div>
+<div class="section level2">
+<h2 id="summary-of-recommended-best-practice-settings">Summary of recommended best-practice settings<a class="anchor" aria-label="anchor" href="#summary-of-recommended-best-practice-settings"></a>
+</h2>
+<p>Based on the five-pillar MEDuSA simulation validation suite, the
+table below summarizes the recommended settings for empirical
+studies:</p>
+<table class="table">
+<colgroup>
+<col width="25%">
+<col width="25%">
+<col width="25%">
+<col width="25%">
+</colgroup>
+<thead><tr class="header">
+<th>Pipeline Step</th>
+<th>Function</th>
+<th>Recommended Arguments</th>
+<th>Why It Matters</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td><strong>1. Cross-Run HRF Learning</strong></td>
+<td><code><a href="../reference/estimate_crossrun_hrf.html">estimate_crossrun_hrf()</a></code></td>
+<td>
+<code>noise_model = "ar1"</code>,
+<code>evidence = "calibrated"</code>,
+<code>spatial_groups = parcel_ids</code>,
+<code>pooling = "parcel"</code> (or <code>"voxel"</code> with
+<code>spatial_strength = 0.02</code>)</td>
+<td>Prevents regional vascular HRF differences
+(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo>≥</mo><mn>1.5</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">\ge 1.5\text{ s}</annotation></semantics></math>)
+from inverting within-trial neural peak ordering or causing
+false-positive lagged connectivity; uses Cauchy parcel evidence pooling
+(<code>hrf_cauchy_p()</code>).</td>
+</tr>
+<tr class="even">
+<td><strong>2. Continuous Deconvolution</strong></td>
+<td><code><a href="../reference/deconvolve_crossrun_hrf.html">deconvolve_crossrun_hrf()</a></code></td>
+<td>
+<code>scaling = "noise_sd"</code>, <code>penalty = "sobolev"</code>,
+<code>backend = "cpp"</code>
+</td>
+<td>Scales runs by AR(1) innovation noise SD rather than total
+<code>"zscore"</code> variance (which compresses high-signal runs and
+absorbs drift/motion variance); Sobolev penalty controls both
+high-frequency ringing and low-frequency drift.</td>
+</tr>
+<tr class="odd">
+<td><strong>3a. Punctate / Impulse Epochs</strong></td>
+<td><code><a href="../reference/decon_epoch_regression.html">decon_epoch_regression()</a></code></td>
+<td>
+<code>source_model = "impulse"</code>,
+<code>readout_kernel = "triangle"</code>,
+<code>demix_other_events = TRUE</code>,
+<code>demix_target_trials = TRUE</code>,
+<code>restore_scale = TRUE</code>, <code>weighting = "gls"</code>,
+<code>whiten_panel = TRUE</code>, <code>return_panel = TRUE</code>
+</td>
+<td>Removes preceding event bleed via condition-mean de-mixing
+(<code>demix_ridge = 0.05</code>, or <code>&lt; 0.03</code> when
+non-target events carry strong trial-varying confounds) and restores
+per-trial target gain via 2nd-order Tikhonov inversion.</td>
+</tr>
+<tr class="even">
+<td><strong>3b. Multi-Lag Waveforms
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>β</mi><mo stretchy="false" form="prefix">(</mo><mi>τ</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">\beta(\tau)</annotation></semantics></math></strong></td>
+<td><code><a href="../reference/decon_epoch_regression.html">decon_epoch_regression()</a></code></td>
+<td>Same as 3a + <code>demix_within_trial = TRUE</code>
+(<code>within_trial_ridge = 0.06</code>) across
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo>≥</mo><mn>3</mn></mrow><annotation encoding="application/x-tex">\ge 3</annotation></semantics></math>
+lags</td>
+<td>Sharpens within-trial temporal waveform profiles across lags by
+inverting the lag-by-lag point-spread matrix.</td>
+</tr>
+<tr class="odd">
+<td><strong>3c. Variable-Duration (RT) Epochs</strong></td>
+<td><code><a href="../reference/decon_epoch_regression.html">decon_epoch_regression()</a></code></td>
+<td>Same as 3a + <code>source_model = "duration"</code>,
+<code>trial_durations = rt_by_run</code>,
+<code>duration_scale = "rate"</code>
+</td>
+<td>Eliminates reaction-time duration confounding (preventing both
+destructive signal cancellation when
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi><mo stretchy="false" form="prefix">(</mo><mi>x</mi><mo>,</mo><mtext mathvariant="normal">RT</mtext><mo stretchy="false" form="postfix">)</mo><mo>&lt;</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">r(x, \text{RT}) &lt; 0</annotation></semantics></math>
+and 100% false-positive rate inflation when
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi><mo stretchy="false" form="prefix">(</mo><mi>x</mi><mo>,</mo><mtext mathvariant="normal">RT</mtext><mo stretchy="false" form="postfix">)</mo><mo>&gt;</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">r(x, \text{RT}) &gt; 0</annotation></semantics></math>).</td>
+</tr>
+<tr class="even">
+<td><strong>4. Group Mixed-Effects Model</strong></td>
+<td><code><a href="../reference/mixed_by.html">mixed_by()</a></code></td>
+<td>
+<code>decon_demixed_whitened ~ x_whitened + (1 + x_whitened \| id) + (1 \| run_id)</code>,
+<code>weights = "precision_weight"</code>
+</td>
+<td>Combines Empirical-Bayes precision weights across heteroskedastic
+runs/trials with null-mode-damped, Bartlett-adaptive within-run ZCA
+correlation whitening.</td>
+</tr>
+</tbody>
+</table>
 </div>
 <div class="section level2">
 <h2 id="before-interpreting-a-result">Before interpreting a result<a class="anchor" aria-label="anchor" href="#before-interpreting-a-result"></a>

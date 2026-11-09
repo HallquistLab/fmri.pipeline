@@ -298,31 +298,45 @@ neural coding.
 
 [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md)
 uses the actual event schedule, frozen HRF, scaling, and inverse
-settings to predict these distortions:
+settings to predict and invert these distortions:
 
-1.  **Non-target condition de-mixing (`demix_other_events = TRUE`):**
-    Regresses out nuisance/other-condition impulse responses in the
-    continuous latent domain via the exact operator
-    $`I - M H X_O (X_O^\top H^\top M^\top M H X_O + \gamma I)^{-1} X_O^\top H^\top M^\top`$.
-2.  **Trial-to-trial resolution-matrix de-mixing
-    (`demix_target_trials = TRUE`):** Computes the $`N_r \times N_r`$
-    trial resolution matrix $`R_r(\tau) = W_r(\tau) M_r H E_r(\tau)`$
-    and applies the ridge-stabilized linear unmixing matrix
-    $`G_r(\tau)`$ with column-sum conservation so a uniform unit neural
-    response across all trials maps to a unit de-mixed amplitude on
-    every trial.
-3.  **Within-trial multi-lag de-mixing (`demix_within_trial = TRUE`):**
-    When multiple lags $`\tau_1, \dots, \tau_L`$ are analyzed
-    simultaneously, temporal smoothing and HRF spread cause activity at
-    earlier lags to leak into later lags within the same trial. A
-    normalized block-Toeplitz lag-crosstalk system
-    $`(C^\top C + \gamma_{\text{wt}} I)^{-1} C^\top`$ suppresses
-    within-trial temporal smearing across the requested lag grid.
-4.  **Operator-propagated uncertainty, precision weights, and ZCA
-    whitening:** Because trials preceded by short jitter intervals or
-    rapid neighboring events undergo stronger unmixing amplification,
-    their de-mixed estimates have larger error variance and non-zero
-    trial-to-trial error covariance:
+1.  **Condition-mean and joint 2nd-order Tikhonov non-target de-mixing
+    (`demix_other_events = TRUE`):** When non-target events (such as
+    cues or choices) precede the target event, projecting out
+    $`M_{\text{other}}`$ individual non-target trial columns consumes
+    degrees of freedom and inflates target-trial variance. By default
+    (`demix_ridge >= 0.03`, default `0.05`),
+    `build_other_demix_operator()` estimates and subtracts the
+    **condition-mean** non-target response across events in
+    `events[[r]]`, removing schedule-confounded cue bleed without
+    inflating single-trial noise. When non-target events carry strong
+    trial-varying parametric confounds that correlate with the target
+    predictor, setting `demix_ridge < 0.03` (e.g., `0.02`) activates a
+    2nd-order iterated Tikhonov joint $`(T, O)`$ de-mixing operator.
+2.  **2nd-order Tikhonov target-trial de-mixing and per-trial gain
+    restoration (`demix_target_trials = TRUE`):** Forms the
+    $`N_r \times N_r`$ stratum resolution matrix
+    $`K_\tau = S_\tau D G_\tau`$ and applies a 2nd-order iterated
+    Tikhonov inverse (`solve_duration_demix_operator()`) with per-trial
+    effective gain restoration (`eff_gain_vec`) unified across
+    `"impulse"`, `"window"`, and `"duration"` source models. This
+    removes adjacent target-trial overlap and restores
+    regularization-attenuated physical slope scales while bounding noise
+    amplification.
+3.  **Within-trial multi-lag point-spread de-mixing
+    (`demix_within_trial = TRUE`):** When $`\ge 3`$ lags
+    $`\tau_1, \dots, \tau_L`$ are analyzed simultaneously, temporal
+    smoothing and HRF spread cause activity at earlier lags to leak into
+    later lags within the same trial. A 2nd-order Tikhonov multi-lag
+    inverse (`within_trial_ridge = 0.06`) sharpens within-trial temporal
+    waveform recovery across the requested lag grid while preserving
+    cross-trial operator covariances.
+4.  **Operator-propagated uncertainty, Empirical-Bayes precision
+    weights, and null-mode-damped ZCA whitening:** Because trials
+    preceded by short jitter intervals or rapid neighboring events
+    undergo stronger unmixing amplification, their de-mixed estimates
+    have larger error variance and non-zero trial-to-trial error
+    covariance:
     ``` math
     \Sigma_{\text{raw},r} = \sigma_{e,r}^2 \, T_{\text{raw},r} \Omega_r T_{\text{raw},r}^\top, \qquad
     \Sigma_{\text{demix},r} = G_r^\top \Sigma_{\text{raw},r} G_r.
@@ -332,10 +346,15 @@ settings to predict these distortions:
     lag-1 trial error autocorrelation (`error_ac1`), and Empirical-Bayes
     stabilized inverse-variance precision weights (`precision_weight`),
     and supports precision-weighted WLS (`weighting = "precision"`),
-    full ZCA-whitened GLS (`weighting = "gls"`), and exported within-run
+    ZCA-whitened GLS (`weighting = "gls"`), and exported within-run
     ZCA-whitened panel variables (`whiten_panel = TRUE`) for downstream
     mixed-effects models
-    (`mixed_by(..., weights = "precision_weight")`).
+    (`mixed_by(..., weights = "precision_weight")`). Crucially,
+    `compute_zca_whitening_matrix()` damps rank-deficient projection
+    null modes ($`\lambda_k < 0.35`$ arising from within-run centering
+    and condition-mean subtraction) rather than inverting them, and
+    scales off-diagonal whitening adaptively by the Bartlett lag-1
+    autocorrelation of the trial predictors.
 
 Correction remains conditional on the source model. Events that are
 indistinguishable in the design stay difficult to separate. Small gains
@@ -404,6 +423,24 @@ automatic replacement pipeline. The file route supports newer scaling,
 penalties, and readouts. Cross-run HRF learning and operator-based epoch
 regression currently require the matrix route. The next vignette shows
 both and how to move from NIfTI files to matrices.
+
+## Recommended best-practice configuration (5-stage MEDuSA checklist)
+
+Across the five-pillar Monte Carlo validation suite (evaluating trial
+amplitude recovery, within-trial waveform alignment, inter-region
+connectivity, sample-size/trial-count power surfaces, and nonlinear
+Windkessel-Balloon + `fmrisim` composite scanner realism), the following
+five-stage configuration consistently achieves the lowest group slope
+RMSE, well-calibrated 95% confidence intervals, and Type I error control
+under schedule and duration confounds:
+
+| Stage | Recommended Setting | Scientific Rationale |
+|----|----|----|
+| **Stage 0: Cross-Run Scaling** | `scaling = "noise_sd"` in [`deconvolve_crossrun_hrf()`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_crossrun_hrf.md) + `restore_scale = TRUE` in [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md) | Normalizes runs by AR(1) innovation noise SD rather than total signal SD (`"zscore"`), preventing task modulation variance, low-frequency drift, or motion spikes from compressing run amplitudes. |
+| **Stage 1: HRF Estimation** | `estimate_crossrun_hrf(..., noise_model = "ar1", evidence = "calibrated", spatial_groups = parcel_ids)` | Learns regional vascular delays out-of-sample across runs using Cauchy parcel evidence pooling (`hrf_cauchy_p()`), preventing vascular HRF differences ($`\ge 1.5\text{ s}`$) from inverting apparent neural timing or inducing false-positive lagged connectivity. |
+| **Stage 2: Deconvolution** | `deconvolve_crossrun_hrf(..., penalty = "sobolev", backend = "cpp")` | Combines amplitude, first-difference, and second-difference smoothness penalties under AR(1)-GLS prewhitening to suppress high-frequency ringing and low-frequency baseline wander. |
+| **Stage 3: Epoch De-Mixing & Duration Modeling** | `decon_epoch_regression(..., demix_other_events = TRUE, demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls", whiten_panel = TRUE, return_panel = TRUE)` | Subtracts preceding event bleed via condition-mean de-mixing (`demix_ridge = 0.05`, or `< 0.03` for trial-varying non-target confounds), restores per-trial target gain via 2nd-order Tikhonov inversion, and exports null-mode-damped ZCA-whitened panel columns. Add `demix_within_trial = TRUE` for multi-lag waveform trajectories $`\beta(\tau)`$ and `source_model = "duration"` (`duration_scale = "rate"`) for reaction-time epochs. |
+| **Stage 4: Group Multilevel Inference** | `mixed_by(data, decon_demixed_whitened ~ x_whitened + (1 + x_whitened \| id), weights = "precision_weight")` | Simultaneously accounts for between-run/per-trial heteroskedastic noise precision (`weights = "precision_weight"`) and within-run trial-to-trial error autocorrelation (`whiten_panel = TRUE`), maximizing small-sample power and preserving nominal Type I error when trial predictors are temporally autocorrelated. |
 
 ## Decide whether the result is useful
 

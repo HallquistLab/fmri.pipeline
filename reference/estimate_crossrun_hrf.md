@@ -198,16 +198,19 @@ departures from the prespecified shape using pairwise encompassing
 models, and compatibility with every usable training run. Fisher
 combination uses independent runs; Bonferroni corrections account for
 candidate comparisons. Unsupported or inconsistent shapes fall back.
-Parcel anchors require min_parcel_voxels individually supported voxels;
-voxel p-values are not combined as independent spatial observations. Run
-compatibility cannot be assessed with a single training run. There is no
-access to target-run vascular shape or guarantee of transfer to that
-run. AR covariance is estimated per run using a fixed event-amplitude
-mean model and, when residual degrees of freedom allow, its first two
-temporal derivatives. Noise likelihood profiles are pooled, not the BOLD
-signals. All whitening uses the original acquisition clock, including
-gaps. No automatic nested tuning or physiological amplitude calibration
-is included. Nonfinite/constant/nuisance-only voxel runs are omitted;
-observation masks are common across voxels. Candidate task ranks must
-match within a run and leave residual degrees of freedom, otherwise that
-run cannot inform HRF selection.
+Parcel anchors are admitted either when at least min_parcel_voxels
+voxels are individually supported or when the parcel-level
+Cauchy-combined p-value (hrf_cauchy_p(), valid under arbitrary spatial
+correlation within a parcel) passes the candidate-corrected evidence
+threshold. Run compatibility cannot be assessed with a single training
+run. There is no access to target-run vascular shape or guarantee of
+transfer to that run. AR covariance is estimated per run using a fixed
+event-amplitude mean model and, when residual degrees of freedom allow,
+its first two temporal derivatives. Noise likelihood profiles are
+pooled, not the BOLD signals. All whitening uses the original
+acquisition clock, including gaps. No automatic nested tuning or
+physiological amplitude calibration is included.
+Nonfinite/constant/nuisance-only voxel runs are omitted; observation
+masks are common across voxels. Candidate task ranks must match within a
+run and leave residual degrees of freedom, otherwise that run cannot
+inform HRF selection.
