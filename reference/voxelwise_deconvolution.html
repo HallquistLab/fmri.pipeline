@@ -157,7 +157,7 @@ implementation and does not require an external executable.
 <p>If you want to use subject metadata to name the output file, use <code>this_subj</code> in your <code>out_file_expression</code>, which will give you access to a one-row
   data.frame containing the metadata for the current subject in the loop.</p>
 <p>Set <code>decon_settings$scaling</code> explicitly to <code>"zscore"</code>,
-<code>"demean"</code>, <code>"none"</code>, or <code>"psc"</code>. The default is z-scoring.
+<code>"noise_sd"</code>, <code>"demean"</code>, <code>"none"</code>, or <code>"psc"</code>. The default is z-scoring.
 An explicit mode overrides <code>normalize</code>/<code>demean</code>; otherwise
 <code>normalize = FALSE</code> selects demeaning unless <code>demean = FALSE</code> too.
 The voxelwise Bush paths require z-scoring because their learning-rate and

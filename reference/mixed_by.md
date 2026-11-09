@@ -33,7 +33,8 @@ mixed_by(
   emmeans_pairs_args = list(),
   emtrends_spec = NULL,
   emtrends_pairs = FALSE,
-  emtrends_pairs_args = list()
+  emtrends_pairs_args = list(),
+  weights = NULL
 )
 ```
 
@@ -200,6 +201,15 @@ mixed_by(
   A named list of arguments passed to
   [`pairs()`](https://rdrr.io/r/graphics/pairs.html) (e.g.,
   `list(adjust = "tukey")`).
+
+- weights:
+
+  Optional character scalar naming a numeric column in `data` (or
+  `external_df`) containing positive observation/trial precision weights
+  (e.g., `"precision_weight"` from
+  [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md))
+  to be normalized within each split and passed to the mixed-model
+  engine.
 
 ## Value
 

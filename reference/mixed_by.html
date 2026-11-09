@@ -79,7 +79,8 @@
 <span>  emmeans_pairs_args <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="op">)</span>,</span>
 <span>  emtrends_spec <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  emtrends_pairs <span class="op">=</span> <span class="cn">FALSE</span>,</span>
-<span>  emtrends_pairs_args <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="op">)</span></span>
+<span>  emtrends_pairs_args <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="op">)</span>,</span>
+<span>  weights <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -218,6 +219,13 @@ Any arguments that are valid for emtrends can be passed through the list structu
 <dt id="arg-emtrends-pairs-args">emtrends_pairs_args<a class="anchor" aria-label="anchor" href="#arg-emtrends-pairs-args"></a></dt>
 <dd><p>A named list of arguments passed to <code><a href="https://rdrr.io/r/graphics/pairs.html" class="external-link">pairs()</a></code> (e.g.,
 <code>list(adjust = "tukey")</code>).</p></dd>
+
+
+<dt id="arg-weights">weights<a class="anchor" aria-label="anchor" href="#arg-weights"></a></dt>
+<dd><p>Optional character scalar naming a numeric column in <code>data</code>
+(or <code>external_df</code>) containing positive observation/trial precision
+weights (e.g., <code>"precision_weight"</code> from <code><a href="decon_epoch_regression.html">decon_epoch_regression()</a></code>)
+to be normalized within each split and passed to the mixed-model engine.</p></dd>
 
 </dl></div>
     <div class="section level2">

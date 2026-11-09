@@ -2,8 +2,9 @@
 
 Estimate trial-by-trial correlations and regression slopes across epoch
 lags relative to a target event while removing preceding/neighboring
-event leakage and correcting regularization-induced amplitude
-attenuation.
+event leakage, correcting regularization-induced amplitude attenuation,
+and propagating per-trial operator precision weights and within-run
+error covariance.
 
 ## Usage
 
@@ -18,12 +19,16 @@ decon_epoch_regression(
   readout_width = NULL,
   demix_other_events = TRUE,
   demix_target_trials = TRUE,
+  demix_within_trial = FALSE,
   demix_ridge = 0.05,
+  within_trial_ridge = 0.06,
   gain_floor = 0.05,
   restore_scale = FALSE,
   source_model = c("impulse", "window", "duration"),
   trial_durations = NULL,
   duration_scale = c("rate", "integral"),
+  weighting = c("precision", "gls", "none"),
+  whiten_panel = FALSE,
   return_epochs = FALSE,
   return_panel = FALSE
 )
@@ -79,10 +84,23 @@ decon_epoch_regression(
   de-mix adjacent target-trial overlap and correct amplitude
   attenuation. Default: `TRUE`.
 
+- demix_within_trial:
+
+  Logical; whether to apply an additional multi-lag point-spread
+  de-mixing step across the requested `lags` (when at least 3 lags are
+  evaluated) to sharpen temporal localization across lags within each
+  target trial. Default: `FALSE`.
+
 - demix_ridge:
 
   Positive ridge stabilization parameter for unit-diagonal cross-talk
   inversion. Default: `0.05`.
+
+- within_trial_ridge:
+
+  Positive ridge stabilization parameter for multi-lag within-trial
+  point-spread inversion when `demix_within_trial = TRUE`. Default:
+  `0.06`.
 
 - gain_floor:
 
@@ -121,6 +139,23 @@ decon_epoch_regression(
   `"integral"` (each trial boxcar is normalized to unit time-integrated
   neural mass across its duration).
 
+- weighting:
+
+  Trial regression weighting scheme across target trials and runs:
+  `"precision"` (default; Empirical-Bayes / floor-stabilized inverse
+  error-variance weights propagating per-trial operator standard errors
+  and run noise scale), `"gls"` (within-run ZCA covariance whitening
+  plus precision weighting accounting for off-diagonal trial-to-trial
+  error correlations), or `"none"` (unweighted OLS).
+
+- whiten_panel:
+
+  Logical; if `TRUE` and `return_panel = TRUE`, adds within-run
+  variance-preserving ZCA-whitened outcome (`decon_demixed_whitened`)
+  and covariate (`<var>_whitened`) columns to `panel` for downstream
+  [`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md)
+  modeling. Default: `FALSE`.
+
 - return_epochs:
 
   Logical; whether to include raw and de-mixed trial-by-voxel epoch
@@ -138,3 +173,43 @@ decon_epoch_regression(
 A list with `coefficients` (per voxel, lag, and predictor term),
 `summary` (averaged across usable voxels per lag and term), optional
 `epochs`, optional `panel`, and `settings`.
+
+## Details
+
+`decon_epoch_regression()` bridges continuous regularized deconvolution
+and trial-level cognitive neuroscience models in five stages:
+
+1.  **Kernel Quadrature Readout:** At each requested lag \\\tau\\,
+    continuous deconvolved activity is integrated around each target
+    event using `readout_kernel`. For `source_model = "duration"`, the
+    readout window centers on the trial's midpoint \\t_i + \tau + 0.5
+    d_i\\ and expands to \\\max(w\_{\mathrm{src}}, d_i)\\.
+
+2.  **Non-Target Event De-Mixing (`demix_other_events`):** Using the
+    frozen inverse operator \\\mathbf{D}\_r\\ and forward HRF design
+    \\\mathbf{G}\_{r,0}\\, the function estimates amplitudes of
+    non-target events (e.g., cues or motor responses) and subtracts
+    their resolution-predicted leakage from the target epoch.
+
+3.  **Target Cross-Talk & Duration De-Mixing (`demix_target_trials`):**
+    Inverts the lag-specific target resolution matrix to remove
+    trial-to-trial overlap and divide out regularization-induced
+    amplitude shrinkage. In `source_model = "duration"`, a
+    centered-subspace penalty and Sherman-Morrison rank-1 demeaning
+    adjustment keep constant baseline firing rates invariant to trial
+    duration (preventing reaction-time confounding).
+
+4.  **Optional Multi-Lag Point-Spread De-Mixing
+    (`demix_within_trial`):** When enabled across \\\ge 3\\ lags,
+    sharpens temporal specificity across lags using a symmetricized
+    lag-by-lag resolution inverse.
+
+5.  **Analytical Uncertainty, Precision Weights & ZCA Whitening:**
+    Propagates observation-level AR(1) noise covariance through the
+    composite linear readout/de-mixing operator \\\mathbf{B}\_{r,\tau}\\
+    to obtain exact per-trial standard errors (`se_demixed`),
+    adjacent-trial error autocorrelation (`error_ac1`), Empirical-Bayes
+    precision weights (`precision_weight`), covariance-propagated
+    sandwich SEs (`se_weighted`), and within-run ZCA-whitened variables
+    for
+    [`mixed_by`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md).

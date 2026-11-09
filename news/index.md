@@ -2,16 +2,41 @@
 
 ## fmri.pipeline 0.4-1
 
-### MEDuSA learning sequence and workflow documentation
+### MEDuSA learning sequence, precision-weighted epoch regression, and workflow documentation
 
-- Add conceptual and executable workflow vignettes covering cross-run
-  HRF learning, noise scaling, operator-based epoch de-mixing, duration
-  models, NIfTI inputs, and the handoff to multilevel analysis.
-- Revise the technical companion through PR
-  [\#54](https://github.com/HallquistLab/fmri.pipeline/issues/54), align
-  descriptions with the current implementation, distinguish legacy
-  benchmark tables from live experiments, and remove unsupported
-  forecasts of human-data gains.
+- Add conceptual (`vignettes/medusa-concepts.Rmd`) and executable
+  workflow (`vignettes/medusa-workflows.Rmd`) vignettes covering
+  cross-run HRF learning, noise scaling, operator-based epoch de-mixing,
+  duration models, per-trial precision weights, within-run ZCA
+  whitening, NIfTI inputs, and the handoff to multilevel analysis
+  (`mixed_by(..., weights = "precision_weight")`).
+- Revise the technical companion
+  (`medusa_deconvolution_review_prs_42_53.qmd`) through PR
+  [\#55](https://github.com/HallquistLab/fmri.pipeline/issues/55)+,
+  align descriptions with the current implementation, distinguish legacy
+  benchmark tables from live experiments, and add thorough inline
+  documentation across all MEDuSA R functions.
+- [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md)
+  now propagates exact run-specific AR(1) observation noise covariance
+  through the readout and unmixing operators to compute per-trial
+  standard errors (`se_raw`, `se_demixed`), lag-1 trial error
+  autocorrelation (`error_ac1`), Empirical-Bayes stabilized precision
+  weights (`precision_weight`), ZCA-whitened GLS slopes (`beta_gls`,
+  `se_gls`), within-trial multi-lag de-mixing
+  (`demix_within_trial = TRUE`), and optional within-run ZCA-whitened
+  panel columns (`whiten_panel = TRUE`).
+- [`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md)
+  now accepts `weights = "precision_weight"` (normalizing positive
+  precision weights within each split and forwarding to `lme4`,
+  `rstanarm`, and `jlmer`).
+- [`hrf_library()`](https://hallquistlab.github.io/fmri.pipeline/reference/hrf_library.md)
+  adds `preset = c("custom", "standard", "extended", "dense")`;
+  [`estimate_crossrun_hrf()`](https://hallquistlab.github.io/fmri.pipeline/reference/estimate_crossrun_hrf.md)
+  adds Galwey spectral effective candidate multiplicity
+  (`hrf_effective_candidates()`) and Cauchy combination parcel pooling
+  (`hrf_cauchy_p()`); and
+  [`deconvolve_crossrun_hrf()`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_crossrun_hrf.md)
+  supports automatic prewhitened GCV tuning when `lambda = NULL`.
 
 ### Banded linear deconvolution solver and exact Takahashi trace
 

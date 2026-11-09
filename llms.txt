@@ -345,14 +345,16 @@ MEDuSA documentation now follows a three-part learning sequence:
 
 1.  [Conceptual
     foundations](https://hallquistlab.github.io/fmri.pipeline/vignettes/medusa-concepts.Rmd):
-    convolution, regularization, HRF learning, event mixing, units, and
-    duration, with an annotated reading guide.
+    convolution, regularization, HRF learning, event mixing, units,
+    duration, and precision-weight propagation, with an annotated
+    reading guide.
 2.  [Worked
     workflows](https://hallquistlab.github.io/fmri.pipeline/vignettes/medusa-workflows.Rmd):
     executable simulation and recipes for NIfTI inputs, file alignment,
-    and downstream multilevel models.
+    and downstream precision-weighted / ZCA-whitened multilevel models
+    (`mixed_by`).
 3.  [Technical companion (PRs
-    \#42–#54)](https://hallquistlab.github.io/fmri.pipeline/medusa_deconvolution_review_prs_42_53.qmd):
+    \#42–#55+)](https://hallquistlab.github.io/fmri.pipeline/medusa_deconvolution_review_prs_42_53.qmd):
     equations, simulation demonstrations, implementation details, and
     validation limits.
 

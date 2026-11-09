@@ -125,18 +125,19 @@ If you want to use subject metadata to name the output file, use
 a one-row data.frame containing the metadata for the current subject in
 the loop.
 
-Set `decon_settings$scaling` explicitly to `"zscore"`, `"demean"`,
-`"none"`, or `"psc"`. The default is z-scoring. An explicit mode
-overrides `normalize`/`demean`; otherwise `normalize = FALSE` selects
-demeaning unless `demean = FALSE` too. The voxelwise Bush paths require
-z-scoring because their learning-rate and bounded-encoding/resampling
-behavior is sensitive to scale. Their output remains a bounded encoding.
-Use the linear algorithm for estimates in alternative units. For linear
-methods, z-scoring is recommended for standardized trial responses;
-demeaning retains input units, and percent signal change requires an
-appropriate positive baseline rather than residualized/zero-mean data.
-Raw scale does not by itself degrade the conditioning of the fixed
-linear inverse, but it changes signal weights during global tuning. See
+Set `decon_settings$scaling` explicitly to `"zscore"`, `"noise_sd"`,
+`"demean"`, `"none"`, or `"psc"`. The default is z-scoring. An explicit
+mode overrides `normalize`/`demean`; otherwise `normalize = FALSE`
+selects demeaning unless `demean = FALSE` too. The voxelwise Bush paths
+require z-scoring because their learning-rate and
+bounded-encoding/resampling behavior is sensitive to scale. Their output
+remains a bounded encoding. Use the linear algorithm for estimates in
+alternative units. For linear methods, z-scoring is recommended for
+standardized trial responses; demeaning retains input units, and percent
+signal change requires an appropriate positive baseline rather than
+residualized/zero-mean data. Raw scale does not by itself degrade the
+conditioning of the fixed linear inverse, but it changes signal weights
+during global tuning. See
 [`deconvolve_reglin`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_reglin.md).
 
 Scaling uses the observed run once, before any zero tail is appended

@@ -5,11 +5,12 @@
 Read the [conceptual
 primer](https://hallquistlab.github.io/fmri.pipeline/articles/medusa-concepts.md)
 first if HRF selection, regularization, or resolution matrices are
-unfamiliar. This vignette documents the API through PR \#54. It uses a
-small synthetic dataset so the core workflow runs without an imaging
-dataset, AFNI, a scheduler, or external files. Blocks labeled **recipe;
-not executed** require your study inputs. All other R chunks execute
-when the vignette is rendered.
+unfamiliar. This vignette documents the MEDuSA API through PR \#55 and
+the operator precision-weight/whitening extensions. It uses a small
+synthetic dataset so the core workflow runs without an imaging dataset,
+AFNI, a scheduler, or external files. Blocks labeled **recipe; not
+executed** require your study inputs. All other R chunks execute when
+the vignette is rendered.
 
 | Goal | Route | Important boundary |
 |----|----|----|
@@ -255,26 +256,39 @@ decon <- deconvolve_crossrun_hrf(
   nuisance_mode = "ignore", observation_mask = "fit", tail_padding = 0L
 )
 head(decon$scaling$run1)
-#>    run voxel status   center      scale  scaling noise_rho n_observations
-#> 1 run1    v1     ok 100.2592 0.04423482 noise_sd       0.3            220
-#> 2 run1    v2     ok 100.2564 0.04473766 noise_sd       0.3            220
-#> 3 run1    v3     ok 100.2542 0.04654673 noise_sd       0.3            220
-#> 4 run1    v4     ok 100.2518 0.05171876 noise_sd       0.3            220
-#> 5 run1    v5     ok 100.2556 0.05164993 noise_sd       0.3            220
-#> 6 run1    v6     ok 100.2505 0.04915651 noise_sd       0.3            220
+#>    run voxel status   center      scale   noise_sd  scaling noise_rho
+#> 1 run1    v1     ok 100.2592 0.04423482 0.04423482 noise_sd       0.3
+#> 2 run1    v2     ok 100.2564 0.04473766 0.04473766 noise_sd       0.3
+#> 3 run1    v3     ok 100.2542 0.04654673 0.04654673 noise_sd       0.3
+#> 4 run1    v4     ok 100.2518 0.05171876 0.05171876 noise_sd       0.3
+#> 5 run1    v5     ok 100.2556 0.05164993 0.05164993 noise_sd       0.3
+#> 6 run1    v6     ok 100.2505 0.04915651 0.04915651 noise_sd       0.3
+#>   n_observations
+#> 1            220
+#> 2            220
+#> 3            220
+#> 4            220
+#> 5            220
+#> 6            220
 dim(decon$activity$run1)
 #> [1] 220   6
 ```
 
-Here lambda is a fixed teaching value. It is not optimized for RPE
-recovery and should not be adopted as a study default. `lambda = NULL`
-explicitly requests GCV over `lambda_grid`; omitting lambda raises an
-error. GCV optimizes an observation-domain criterion, which is different
-from trial recovery. Compare prespecified settings in simulations
-reflecting your event timing, SNR, durations, and noise.
+Here `lambda = 0.1` is a fixed teaching value. It is not optimized for
+RPE recovery and should not be adopted as a study default. Passing
+`lambda = NULL` explicitly requests automatic prewhitened GCV tuning
+over `lambda_grid` (using `gcv_rule = "min"` or `"1se"`, and storing the
+selected value and GCV curve in `decon$settings$lambda` and
+`decon$settings$lambda_tuning`); omitting `lambda` entirely raises an
+error. Because GCV optimizes an observation-domain reconstruction
+criterion rather than trial-level slope recovery, compare prespecified
+settings in simulations reflecting your event timing, SNR, durations,
+and noise.
 
-`noise_sd` centers the input and divides by estimated measurement noise
-rather than total temporal SD. The scale table records the divisor and
+`noise_sd` centers the input and divides by a high-frequency
+second-difference estimate of measurement noise SD (adjusted for AR(1)
+autocorrelation) rather than total temporal SD. The scale table
+(`decon$scaling$run1`) records `center`, `scale`, `noise_sd`, and
 validity status. Activity matrices preserve the acquisition grid and
 carry timing attributes. Use `decon$activity` for continuous
 diagnostics; retain the **whole object** for epoch regression.
@@ -327,37 +341,47 @@ feedback_fit <- decon_epoch_regression(
   target_condition = "feedback", lags = seq(-2, 4, by = 1),
   source_model = "impulse", readout_kernel = "triangle", readout_width = 1.5 * tr,
   demix_other_events = TRUE, demix_target_trials = TRUE,
+  demix_within_trial = TRUE, weighting = "precision", whiten_panel = TRUE,
   restore_scale = TRUE, return_panel = TRUE
 )
 knitr::kable(feedback_fit$summary, digits = 3)
 ```
 
-| lag | term | mean_beta_raw | mean_beta_corrected | mean_r_raw | mean_r_demixed | mean_gain | n_voxels |
-|---:|:---|---:|---:|---:|---:|---:|---:|
-| -2 | rpe | 0.121 | 0.499 | 0.725 | 0.831 | 0.239 | 6 |
-| -1 | rpe | 0.165 | 0.683 | 0.841 | 0.917 | 0.239 | 6 |
-| 0 | rpe | 0.174 | 0.713 | 0.911 | 0.950 | 0.239 | 6 |
-| 1 | rpe | 0.143 | 0.570 | 0.938 | 0.937 | 0.237 | 6 |
-| 2 | rpe | 0.088 | 0.328 | 0.829 | 0.805 | 0.233 | 6 |
-| 3 | rpe | 0.032 | 0.097 | 0.351 | 0.347 | 0.229 | 6 |
-| 4 | rpe | -0.007 | -0.088 | -0.052 | -0.047 | 0.226 | 6 |
+| lag | term | mean_beta_raw | mean_beta_corrected | mean_beta_unweighted | mean_beta_weighted | mean_beta_gls | mean_r_raw | mean_r_demixed | mean_gain | mean_se_trial | mean_error_ac1 | n_voxels |
+|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| -2 | rpe | 0.121 | 0.188 | 0.188 | 0.188 | 0.188 | 0.725 | 0.354 | 0.239 | 0.176 | 0.042 | 6 |
+| -1 | rpe | 0.165 | 0.628 | 0.628 | 0.628 | 0.627 | 0.841 | 0.814 | 0.239 | 0.178 | 0.050 | 6 |
+| 0 | rpe | 0.174 | 0.700 | 0.700 | 0.700 | 0.697 | 0.911 | 0.872 | 0.239 | 0.179 | 0.057 | 6 |
+| 1 | rpe | 0.143 | 0.476 | 0.475 | 0.476 | 0.476 | 0.938 | 0.766 | 0.239 | 0.179 | 0.056 | 6 |
+| 2 | rpe | 0.088 | 0.142 | 0.141 | 0.142 | 0.145 | 0.829 | 0.279 | 0.239 | 0.179 | 0.051 | 6 |
+| 3 | rpe | 0.032 | -0.121 | -0.122 | -0.121 | -0.116 | 0.351 | -0.334 | 0.239 | 0.179 | 0.052 | 6 |
+| 4 | rpe | -0.007 | -0.114 | -0.114 | -0.114 | -0.115 | -0.052 | -0.253 | 0.239 | 0.180 | 0.057 | 6 |
 
-The function models non-target cue/decision contributions and the
-operator’s target-trial cross-talk. It then estimates covariate slopes
-after within-run centering. For multiple predictors, supply a data frame
-or matrix per run with consistent column names/order; do not add a
-constant intercept column to those centered predictors. Non-target
-events should remain in `events`, even though covariate rows refer only
-to feedback records.
+The function models non-target cue/decision contributions
+(`demix_other_events = TRUE`), the operator’s trial-to-trial cross-talk
+(`demix_target_trials = TRUE`), and within-trial multi-lag smearing
+across the requested `-2..+4 s` lag grid (`demix_within_trial = TRUE`).
+It also propagates the exact run-specific AR(1) observation noise
+covariance through the readout and unmixing operators to compute
+per-trial standard errors (`se_raw`, `se_demixed`), Empirical-Bayes
+stabilized inverse-variance precision weights (`precision_weight`),
+covariance-propagated sandwich standard errors (`se_weighted`), and
+ZCA-whitened GLS slopes (`beta_gls`, `se_gls`). For multiple predictors,
+supply a data frame or matrix per run with consistent column
+names/order; do not add a constant intercept column to those centered
+predictors. Non-target events should remain in `events`, even though
+covariate rows refer only to feedback records.
 
 `restore_scale = TRUE` reports effects in original input units under the
 unit-sum HRF convention. It reverses the scaling divisor; it does not
 make estimates physiologically calibrated or guarantee unbiased
 amplitudes. `beta_raw` is the uncorrected readout under this same
 inverse, not the historical Bush pipeline. `beta_corrected` includes
-model-based de-mixing and gain correction. Correlations in a
-multi-predictor result are marginal correlations with each predictor,
-not partial correlations.
+model-based de-mixing, gain correction, and (when
+`weighting = "precision"`, the default) Empirical-Bayes precision
+weighting; `beta_gls` applies full within-run ZCA whitening of the trial
+error covariance matrix. Correlations in a multi-predictor result are
+marginal correlations with each predictor, not partial correlations.
 
 ``` r
 
@@ -391,18 +415,22 @@ at_zero <- subset(feedback_fit$coefficients, lag == 0)
 knitr::kable(data.frame(
   voxel = at_zero$voxel,
   truth = true_beta[match(at_zero$voxel, voxel_ids)],
-  raw = at_zero$beta_raw, corrected = at_zero$beta_corrected
+  raw = at_zero$beta_raw,
+  corrected = at_zero$beta_corrected,
+  gls = at_zero$beta_gls,
+  se_weighted = at_zero$se_weighted,
+  se_gls = at_zero$se_gls
 ), digits = 3)
 ```
 
-| voxel | truth |   raw | corrected |
-|:------|------:|------:|----------:|
-| v1    |   0.5 | 0.109 |     0.473 |
-| v2    |   0.6 | 0.137 |     0.580 |
-| v3    |   0.7 | 0.156 |     0.654 |
-| v4    |   0.8 | 0.184 |     0.743 |
-| v5    |   0.9 | 0.210 |     0.842 |
-| v6    |   1.0 | 0.248 |     0.984 |
+| voxel | truth |   raw | corrected |   gls | se_weighted | se_gls |
+|:------|------:|------:|----------:|------:|------------:|-------:|
+| v1    |   0.5 | 0.109 |     0.463 | 0.461 |       0.048 |  0.049 |
+| v2    |   0.6 | 0.137 |     0.552 | 0.549 |       0.048 |  0.049 |
+| v3    |   0.7 | 0.156 |     0.639 | 0.634 |       0.044 |  0.045 |
+| v4    |   0.8 | 0.184 |     0.712 | 0.709 |       0.053 |  0.054 |
+| v5    |   0.9 | 0.210 |     0.867 | 0.864 |       0.044 |  0.045 |
+| v6    |   1.0 | 0.248 |     0.968 | 0.964 |       0.050 |  0.051 |
 
 ### Keep a fixed-HRF comparator
 
@@ -439,12 +467,12 @@ knitr::kable(comparison, digits = 3)
 
 | voxel | true_hrf_column | true_beta | fixed_hrf_beta | learned_hrf_beta |
 |:------|----------------:|----------:|---------------:|-----------------:|
-| v1    |               1 |       0.5 |          0.473 |            0.473 |
-| v2    |               1 |       0.6 |          0.580 |            0.580 |
-| v3    |               1 |       0.7 |          0.654 |            0.654 |
-| v4    |               2 |       0.8 |          0.734 |            0.743 |
-| v5    |               2 |       0.9 |          0.830 |            0.842 |
-| v6    |               2 |       1.0 |          0.967 |            0.984 |
+| v1    |               1 |       0.5 |          0.494 |            0.463 |
+| v2    |               1 |       0.6 |          0.611 |            0.552 |
+| v3    |               1 |       0.7 |          0.686 |            0.639 |
+| v4    |               2 |       0.8 |          0.778 |            0.712 |
+| v5    |               2 |       0.9 |          0.876 |            0.867 |
+| v6    |               2 |       1.0 |          1.025 |            0.968 |
 
 This is one noisy realization of a matched model. Exact truth recovery
 is not a pass criterion, and this example does not measure population
@@ -474,10 +502,10 @@ decision_fit <- decon_epoch_regression(
 knitr::kable(decision_fit$summary, digits = 3)
 ```
 
-| lag | term | mean_beta_raw | mean_beta_corrected | mean_r_raw | mean_r_demixed | mean_gain | n_voxels |
-|---:|:---|---:|---:|---:|---:|---:|---:|
-| 0 | value | 0.072 | 0.182 | 0.537 | 0.389 | 0.323 | 6 |
-| 1 | value | 0.056 | 0.141 | 0.360 | 0.350 | 0.323 | 6 |
+| lag | term | mean_beta_raw | mean_beta_corrected | mean_beta_unweighted | mean_beta_weighted | mean_beta_gls | mean_r_raw | mean_r_demixed | mean_gain | mean_se_trial | mean_error_ac1 | n_voxels |
+|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | value | 0.072 | 0.185 | 0.185 | 0.185 | 0.180 | 0.537 | 0.344 | 0.323 | 0.136 | 0.049 | 6 |
+| 1 | value | 0.056 | 0.138 | 0.138 | 0.138 | 0.136 | 0.360 | 0.233 | 0.323 | 0.138 | 0.057 | 6 |
 
 The known simulated decision-height slope is 0.35. Compare the table
 with that value: a duration-aware source does not by itself eliminate
@@ -512,28 +540,43 @@ panel$trial_id <- vapply(seq_len(nrow(panel)), function(j) {
   events[[panel$run[j]]]$trial_id[panel$event_index[j]]
 }, integer(1))
 head(panel[, c("id", "run", "trial", "event_index", "trial_id", "evt_time",
-               "voxel", "decon_raw", "decon_demixed", "rpe")])
+               "voxel", "decon_raw", "decon_demixed", "se_demixed",
+               "precision_weight", "error_ac1", "decon_demixed_whitened",
+               "rpe", "rpe_whitened")])
 #>      id  run trial event_index trial_id evt_time voxel  decon_raw decon_demixed
-#> 1 sim01 run1     1           3        1       -2    v1 0.40792799    0.86436719
-#> 2 sim01 run1     2           6        2       -2    v1 0.24845918    0.02894871
-#> 3 sim01 run1     3           9        3       -2    v1 0.49944383    1.49482651
-#> 4 sim01 run1     4          12        4       -2    v1 0.05110101    0.17603579
-#> 5 sim01 run1     5          15        5       -2    v1 0.32630153    0.72542841
-#> 6 sim01 run1     6          18        6       -2    v1 0.17730537    0.29134337
-#>          rpe
-#> 1  0.1181378
-#> 2 -0.3123133
-#> 3  1.8923639
-#> 4 -1.1696051
-#> 5 -0.4224070
-#> 6 -1.0995872
+#> 1 sim01 run1     1           3        1       -2    v1 0.40792799   -0.08798104
+#> 2 sim01 run1     2           6        2       -2    v1 0.24845918   -1.26477729
+#> 3 sim01 run1     3           9        3       -2    v1 0.49944383    0.26913662
+#> 4 sim01 run1     4          12        4       -2    v1 0.05110101   -0.58092203
+#> 5 sim01 run1     5          15        5       -2    v1 0.32630153    0.04084404
+#> 6 sim01 run1     6          18        6       -2    v1 0.17730537   -0.47538659
+#>   se_demixed precision_weight   error_ac1 decon_demixed_whitened        rpe
+#> 1  0.1734259        0.9925422  0.00000000            -0.08545096  0.1181378
+#> 2  0.1643144        1.0058441  0.09751308            -1.28384584 -0.3123133
+#> 3  0.1703535        0.9970680  0.06547193             0.27626585  1.8923639
+#> 4  0.1662414        1.0030615 -0.03049123            -0.57739081 -1.1696051
+#> 5  0.1685862        0.9996530  0.06061239             0.04341504 -0.4224070
+#> 6  0.1713055        0.9956699  0.04353783            -0.47450334 -1.0995872
+#>   rpe_whitened
+#> 1    0.1222088
+#> 2   -0.3112265
+#> 3    1.8818221
+#> 4   -1.1714825
+#> 5   -0.4054581
+#> 6   -1.0928183
 stopifnot(!anyDuplicated(panel[c("id", "run", "trial_id", "evt_time", "voxel")]),
-          all(is.finite(panel$decon_demixed)))
+          all(is.finite(panel$decon_demixed)),
+          all(is.finite(panel$precision_weight) & panel$precision_weight > 0))
 ```
 
 `run`, `trial`, `event_index`, `onset`, `evt_time`, and `voxel` describe
-each observation; `decon_raw` and `decon_demixed` contain its readouts.
-Covariate columns are included. `trial` is **not necessarily your
+each observation; `decon_raw` and `decon_demixed` contain its readouts;
+`se_raw`, `se_demixed`, `precision_weight`, and `error_ac1` capture the
+operator-propagated per-trial standard errors, Empirical-Bayes
+stabilized precision weights, and lag-1 trial error autocorrelation.
+Because `whiten_panel = TRUE` was requested, `decon_demixed_whitened`
+and `rpe_whitened` also provide within-run ZCA-decorrelated trial
+responses and centered covariates. `trial` is **not necessarily your
 original behavioral trial ID**. Join behavior through the preserved
 event-row mapping, then validate one-to-one identity at the intended
 grain. Add participant and session IDs explicitly before combining
@@ -551,6 +594,13 @@ descriptive; it is not a population analysis.
 workflow and retain one panel per participant, with ID/session and event
 mappings added as above. `participant_panels` below refers to those
 completed panels, not replications of this simulation.
+[`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md)
+now accepts `weights = "precision_weight"` to weight each trial by its
+normalized inverse-variance precision weight across all supported
+engines (`lme4`, `rstanarm`, and `jlmer`). Alternatively, when
+trial-to-trial error autocorrelation (`error_ac1`) is substantial in
+rapid designs, you can fit the ZCA-whitened panel columns
+(`decon_demixed_whitened ~ rpe_whitened`).
 
 ``` r
 
@@ -559,24 +609,33 @@ all_panels[, run_id := interaction(id, run, drop = TRUE)]
 all_panels[, rpe_within := rpe - mean(rpe), by = .(id, run)]
 stopifnot(data.table::uniqueN(all_panels$id) > 1L)
 
-# One model per voxel and prespecified lag; random effects need design-specific review.
+# Option A: Precision-weighted mixed model (propagates per-trial inverse-variance weights)
 group_results <- mixed_by(
   data = all_panels,
   model_formulae = list(rpe = decon_demixed ~ rpe_within +
                          (1 + rpe_within | id) + (1 | run_id)),
   split_on = c("voxel", "evt_time"),
+  weights = "precision_weight",
+  engine = "lme4", ncores = 1L
+)
+
+# Option B: Within-run ZCA-whitened mixed model (decorrelates and standardizes
+# within-run trial errors when whiten_panel = TRUE was used in decon_epoch_regression)
+group_results_whitened <- mixed_by(
+  data = all_panels,
+  model_formulae = list(rpe = decon_demixed_whitened ~ rpe_whitened +
+                         (0 + rpe_whitened | id)),
+  split_on = c("voxel", "evt_time"),
   engine = "lme4", ncores = 1L
 )
 ```
 
-This illustrates the package interface, not a fully validated
-inferential recipe. De-mixing induces unequal trial uncertainty and
-residual dependence; the panel currently provides no per-trial precision
-weights. Ordinary mixed-model standard errors do not automatically
-propagate HRF selection, regularization, behavioral-model uncertainty,
-or the full deconvolution covariance. Validate interval coverage/null
-behavior for the intended study or use a justified participant-level
-analysis/resampling procedure. Keep folds/runs/trials clustered within
+While `weights = "precision_weight"` and `whiten_panel = TRUE` propagate
+the operator-induced heteroskedasticity and within-run error covariance
+conditioned on the frozen HRF and penalty, mixed-model standard errors
+still condition on the selected HRF, regularization parameter, and
+behavioral model. Validate interval coverage and active-null behavior
+for the intended study design. Keep folds/runs/trials clustered within
 participants. Prespecify the lag/region family and its multiplicity
 correction; neither HRF evidence gates nor descriptive epoch p-values
 provide that correction. Do not treat voxels as independent participant
