@@ -61,7 +61,7 @@ per-trial operator precision weights and within-run error covariance.</p>
     <h2 id="ref-usage">Usage<a class="anchor" aria-label="anchor" href="#ref-usage"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">decon_epoch_regression</span><span class="op">(</span></span>
 <span>  <span class="va">deconvolution</span>,</span>
-<span>  <span class="va">covariates</span>,</span>
+<span>  covariates <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  events <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  target_condition <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  lags <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq</a></span><span class="op">(</span><span class="op">-</span><span class="fl">2</span>, <span class="fl">4</span>, by <span class="op">=</span> <span class="fl">1</span><span class="op">)</span>,</span>
@@ -78,6 +78,9 @@ per-trial operator precision weights and within-run error covariance.</p>
 <span>  trial_durations <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  duration_scale <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"rate"</span>, <span class="st">"integral"</span><span class="op">)</span>,</span>
 <span>  weighting <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"precision"</span>, <span class="st">"gls"</span>, <span class="st">"none"</span><span class="op">)</span>,</span>
+<span>  tau2_mode <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"auto"</span>, <span class="st">"residual"</span>, <span class="st">"marginal"</span><span class="op">)</span>,</span>
+<span>  aggregate_by_parcel <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  parcel_groups <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  whiten_panel <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  return_epochs <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  return_panel <span class="op">=</span> <span class="cn">FALSE</span></span>
@@ -93,9 +96,16 @@ per-trial operator precision weights and within-run error covariance.</p>
 
 
 <dt id="arg-covariates">covariates<a class="anchor" aria-label="anchor" href="#arg-covariates"></a></dt>
-<dd><p>Numeric vector, matrix, or data.frame of trial-level
-predictors for target trials (concatenated across runs or supplied as a
-run-named list matching <code>deconvolution$hrf_fit$run_ids</code>).</p></dd>
+<dd><p>Optional numeric vector, matrix, or data.frame of
+trial-level predictors for target trials (concatenated across runs or
+supplied as a run-named list matching <code>deconvolution$hrf_fit$run_ids</code>).
+When <code>NULL</code> (default), performs covariate-agnostic epoch readout,
+de-mixing, biological variance estimation (<code>tau2_mode = "marginal"</code>),
+Empirical-Bayes precision weighting, and optional within-run ZCA whitening
+(<code>whiten_panel = TRUE</code>), returning the trial panel (<code>return_panel</code>
+defaults to <code>TRUE</code> when <code>covariates = NULL</code>) for downstream
+two-stage <code><a href="mixed_by.html">mixed_by</a></code> behavioral modeling or inter-region
+connectivity (<code>R2 ~ R1_seed * x</code>).</p></dd>
 
 
 <dt id="arg-events">events<a class="anchor" aria-label="anchor" href="#arg-events"></a></dt>
@@ -223,6 +233,39 @@ or <code>"none"</code> (unweighted OLS). All three slope estimates
 standard errors are always included in <code>coefficients</code>.</p></dd>
 
 
+<dt id="arg-tau-mode">tau2_mode<a class="anchor" aria-label="anchor" href="#arg-tau-mode"></a></dt>
+<dd><p>Estimator for biological trial-to-trial variance
+\(\hat{\tau}^2_{\mathrm{bio}}\) used in Empirical-Bayes trial precision
+weights and within-run ZCA whitening: <code>"auto"</code> (default; uses
+<code>"marginal"</code> when <code>covariates = NULL</code> and an Empirical-Bayes
+blend of residual and marginal estimators when covariates are supplied),
+<code>"residual"</code> (method-of-moments estimator from OLS covariate regression
+residuals minus projected operator variance \(\mathrm{tr}((\mathbf{I}-\mathbf{P}_X)\boldsymbol{\Omega})\)),
+or <code>"marginal"</code> (covariate-agnostic estimator combining run-centered
+marginal variance, lag-1 trial difference variance, and robust MAD scale
+minus analytical operator variance expectations).</p></dd>
+
+
+<dt id="arg-aggregate-by-parcel">aggregate_by_parcel<a class="anchor" aria-label="anchor" href="#arg-aggregate-by-parcel"></a></dt>
+<dd><p>Logical; if <code>TRUE</code>, aggregates deconvolved
+signals across voxels within each spatial parcel (using inverse-variance
+voxel precision weights and empirical spatial noise correlation propagation)
+prior to Stage-2 epoch de-mixing and Stage-3 regression/ZCA whitening.
+Replaces voxel-by-voxel Stage-3/4 fitting with parcel-level inference while
+calibrating <code>se_demixed</code>, <code>tau2_bio</code>, <code>precision_weight</code>,
+and ZCA whitening directly on the high-SNR parcel series. Default:
+<code>FALSE</code>.</p></dd>
+
+
+<dt id="arg-parcel-groups">parcel_groups<a class="anchor" aria-label="anchor" href="#arg-parcel-groups"></a></dt>
+<dd><p>Optional character or factor vector of parcel/region
+labels for each voxel (either unnamed of length <code>n_voxels</code> or named by
+<code>voxel_ids</code>). Defaults to
+<code>deconvolution$hrf_fit$specification$spatial_groups</code> when
+<code>aggregate_by_parcel = TRUE</code>. Supplying a non-<code>NULL</code>
+<code>parcel_groups</code> automatically enables <code>aggregate_by_parcel = TRUE</code>.</p></dd>
+
+
 <dt id="arg-whiten-panel">whiten_panel<a class="anchor" aria-label="anchor" href="#arg-whiten-panel"></a></dt>
 <dd><p>Logical; if <code>TRUE</code> and <code>return_panel = TRUE</code>,
 adds within-run null-mode-damped, Bartlett-adaptive ZCA-whitened outcome
@@ -236,23 +279,25 @@ Default: <code>FALSE</code>.</p></dd>
 
 <dt id="arg-return-epochs">return_epochs<a class="anchor" aria-label="anchor" href="#arg-return-epochs"></a></dt>
 <dd><p>Logical; whether to include raw and de-mixed trial-by-voxel
-epoch matrices per lag. Default: <code>FALSE</code>.</p></dd>
+(or trial-by-parcel) epoch matrices per lag. Default: <code>FALSE</code>.</p></dd>
 
 
 <dt id="arg-return-panel">return_panel<a class="anchor" aria-label="anchor" href="#arg-return-panel"></a></dt>
 <dd><p>Logical; whether to return a tidy MEDUSA-compatible
 <code>data.table</code> (<code>panel</code>) with columns <code>run</code>, <code>trial</code>,
-<code>event_index</code>, <code>onset</code>, <code>evt_time</code>, <code>voxel</code>,
+<code>event_index</code>, <code>onset</code>, <code>evt_time</code>, <code>voxel</code> (and
+<code>parcel</code> when <code>aggregate_by_parcel = TRUE</code>),
 <code>decon_raw</code>, <code>decon_demixed</code>, <code>se_raw</code>, <code>se_demixed</code>,
 <code>precision_weight</code>, <code>precision_weight_op</code>,
-<code>precision_weight_raw</code>, <code>error_ac1</code>, and the covariate columns for
-downstream <code><a href="mixed_by.html">mixed_by()</a></code> modeling. Default: <code>FALSE</code>.</p></dd>
+<code>precision_weight_raw</code>, <code>error_ac1</code>, <code>tau2_bio</code>, and the
+covariate columns for downstream <code><a href="mixed_by.html">mixed_by()</a></code> modeling. Defaults to
+<code>TRUE</code> when <code>covariates = NULL</code> and <code>return_epochs = FALSE</code>.</p></dd>
 
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>A list with <code>coefficients</code> (per voxel, lag, and predictor term),
-  <code>summary</code> (averaged across usable voxels per lag and term), optional
+    <p>A list with <code>coefficients</code> (per voxel/parcel, lag, and predictor term),
+  <code>summary</code> (averaged across usable units per lag and term), optional
   <code>epochs</code>, optional <code>panel</code>, and <code>settings</code>.</p>
     </div>
     <div class="section level2">
@@ -297,10 +342,13 @@ downstream <code><a href="mixed_by.html">mixed_by()</a></code> modeling. Default
 <p>Across the 5-pillar MEDuSA Monte Carlo validation suite (amplitude recovery,
   temporal alignment, inter-region connectivity, factorial power surfaces, and
   biophysical Windkessel-Balloon + <code>fmrisim</code> scanner realism), the
-  recommended end-to-end configuration is:</p><ol><li><p><strong>Stage 0–1 (HRF Estimation):</strong> Use <code><a href="estimate_crossrun_hrf.html">estimate_crossrun_hrf</a></code>
-      with <code>noise_model = "ar1"</code>, <code>evidence = "calibrated"</code>, and
-      parcel labels in <code>spatial_groups</code> (which pools parcel evidence via
-      the Cauchy combination test <code>hrf_cauchy_p()</code>).</p></li>
+  recommended end-to-end configuration is:</p><ol><li><p><strong>Stage 0–1 (HRF Estimation):</strong> Use
+      <code>hrf_library(tr, preset = "medusa")</code> (0.5s peak-delay grid over
+      4–8s with dispersions 0.9, 1.0, 1.1; 27 candidates) and
+      <code><a href="estimate_crossrun_hrf.html">estimate_crossrun_hrf</a></code> with <code>noise_model = "ar1"</code>,
+      <code>evidence = "calibrated"</code>, <code>selection_mode = "soft_average"</code>
+      (evidence-weighted HRF kernel averaging across locally supported
+      shapes), and parcel labels in <code>spatial_groups</code>.</p></li>
 <li><p><strong>Stage 2 (Deconvolution):</strong> Use <code><a href="deconvolve_crossrun_hrf.html">deconvolve_crossrun_hrf</a></code>
       with <code>scaling = "noise_sd"</code> (AR(1) innovation noise SD rather than
       total <code>"zscore"</code> variance) and <code>penalty = "sobolev"</code>.</p></li>
@@ -308,8 +356,11 @@ downstream <code><a href="mixed_by.html">mixed_by()</a></code> modeling. Default
       <code>decon_epoch_regression(..., demix_other_events = TRUE,
       demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls",
       whiten_panel = TRUE, return_panel = TRUE)</code>. Enable
-      <code>demix_within_trial = TRUE</code> when estimating multi-lag waveforms
-      \(\beta(\tau)\), and set <code>source_model = "duration"</code>
+      <code>demix_within_trial = TRUE</code> with <code>lags</code> spaced at \(1\times\mathrm{TR}\)
+      when estimating multi-lag waveforms \(\beta(\tau)\) (if <code>lags</code> is
+      sampled finer than \(1\times\mathrm{TR}\), <code>within_trial_ridge</code> is
+      automatically scaled by \((\mathrm{TR}/\Delta\tau)^2\) to prevent sub-TR
+      collinearity amplification), and set <code>source_model = "duration"</code>
       (<code>duration_scale = "rate"</code>) when modeling variable-duration (RT)
       epochs.</p></li>
 <li><p><strong>Stage 4 (Group Mixed-Effects Inference):</strong> Pass both the

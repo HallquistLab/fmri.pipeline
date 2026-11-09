@@ -63,7 +63,7 @@
 <span>  operator_cache_mb <span class="op">=</span> <span class="fl">128</span>,</span>
 <span>  nuisance_mode <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  observation_mask <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  lambda_grid <span class="op">=</span> <span class="fl">10</span><span class="op">^</span><span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq</a></span><span class="op">(</span><span class="op">-</span><span class="fl">3</span>, <span class="fl">1.5</span>, length.out <span class="op">=</span> <span class="fl">12</span><span class="op">)</span>,</span>
+<span>  lambda_grid <span class="op">=</span> <span class="fl">10</span><span class="op">^</span><span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq</a></span><span class="op">(</span><span class="op">-</span><span class="fl">2</span>, <span class="fl">1</span>, length.out <span class="op">=</span> <span class="fl">16</span><span class="op">)</span>,</span>
 <span>  gcv_rule <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"min"</span>, <span class="st">"1se"</span><span class="op">)</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
@@ -82,9 +82,10 @@ the HRF fit. These should be the same preprocessed BOLD used for estimation.</p>
 
 
 <dt id="arg-lambda">lambda<a class="anchor" aria-label="anchor" href="#arg-lambda"></a></dt>
-<dd><p>Nonnegative regularization strength. If <code>NULL</code>, selected
-automatically from <code>lambda_grid</code> by prewhitened generalized
-cross-validation using <code>gcv_rule</code>.</p></dd>
+<dd><p>Nonnegative regularization strength. If <code>NULL</code> (the
+default for modern <code>ar1</code>/<code>calibrated</code> fits), selected
+automatically from <code>lambda_grid</code> by gain-calibrated, task-weighted
+adaptive prewhitened generalized cross-validation using <code>gcv_rule</code>.</p></dd>
 
 
 <dt id="arg-scaling">scaling<a class="anchor" aria-label="anchor" href="#arg-scaling"></a></dt>

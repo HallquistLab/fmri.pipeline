@@ -322,22 +322,48 @@ first, prespecified canonical kernel.</p>
 plausible shape by eye is insufficient: check support, fallback reasons,
 candidate scores, and stability across target runs. With only two runs,
 a fold has only one training run and cannot assess compatibility across
-training runs. Cross-fitting HRFs does not make the resulting folds
-independent observations for inference.</p>
+training runs; when only a single run is available
+(<code>length(bold) == 1L</code>), <code><a href="../reference/estimate_crossrun_hrf.html">estimate_crossrun_hrf()</a></code>
+automatically partitions usable observations into contiguous temporal
+sub-blocks (3 blocks for longer runs, 2 halves for shorter runs) scored
+against the full causal event design and pooled with cross-block
+compatibility testing while keeping the full continuous run intact for
+<code><a href="../reference/deconvolve_crossrun_hrf.html">deconvolve_crossrun_hrf()</a></code>. Cross-fitting HRFs does not make
+the resulting folds independent observations for inference.</p>
 <p><strong>Optional spatial borrowing recipe; not executed.</strong>
 <code>parcel_ids</code> must be a named vector, independently defined,
 with names exactly equal to the voxel column IDs. This is an alternative
 fit, not an extra smoothing step on <code>hrf_fit</code>.</p>
 <div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">parcel_fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/estimate_crossrun_hrf.html">estimate_crossrun_hrf</a></span><span class="op">(</span></span>
-<span>  <span class="va">bold</span>, <span class="va">events</span>, <span class="va">tr</span>, <span class="va">candidates</span>,</span>
-<span>  spatial_groups <span class="op">=</span> <span class="va">parcel_ids</span>, pooling <span class="op">=</span> <span class="st">"voxel"</span>, spatial_strength <span class="op">=</span> <span class="fl">0.02</span>,</span>
-<span>  amplitude_model <span class="op">=</span> <span class="st">"trial"</span>, noise_model <span class="op">=</span> <span class="st">"ar1"</span>, evidence <span class="op">=</span> <span class="st">"calibrated"</span></span>
+<code class="sourceCode R"><span><span class="va">medusa_candidates</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/hrf_library.html">hrf_library</a></span><span class="op">(</span><span class="va">tr</span>, preset <span class="op">=</span> <span class="st">"medusa"</span><span class="op">)</span></span>
+<span><span class="va">parcel_fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/estimate_crossrun_hrf.html">estimate_crossrun_hrf</a></span><span class="op">(</span></span>
+<span>  <span class="va">bold</span>, <span class="va">events</span>, <span class="va">tr</span>, <span class="va">medusa_candidates</span>,</span>
+<span>  spatial_groups <span class="op">=</span> <span class="va">parcel_ids</span>, pooling <span class="op">=</span> <span class="st">"parcel"</span>,</span>
+<span>  amplitude_model <span class="op">=</span> <span class="st">"trial"</span>, noise_model <span class="op">=</span> <span class="st">"ar1"</span>, evidence <span class="op">=</span> <span class="st">"calibrated"</span>,</span>
+<span>  selection_mode <span class="op">=</span> <span class="st">"soft_average"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
-<p>The strength above is an illustrative setting, not a validated
-universal recommendation. Hard parcel pooling
-(<code>pooling = "parcel"</code>) makes a stronger homogeneity
-assumption. Compare it with unpooled fits before adopting it.</p>
+<p>Here <code>preset = "medusa"</code> constructs the recommended
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.5</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">0.5\text{ s}</annotation></semantics></math>-spaced
+27-candidate grid (<code>peak_delays = seq(4.0, 8.0, by = 0.5)</code>,
+<code>dispersions = c(0.9, 1.0, 1.1)</code>), and
+<code>selection_mode = "soft_average"</code> computes a unit-sum
+Boltzmann-weighted composite HRF
+(<code>parcel_fit$selected_kernels</code>) shrunk toward
+<code>fallback_kernel</code> by Empirical-Bayes parcel departure
+confidence. In simulations with continuous sub-grid vascular delays and
+nonlinear Windkessel-Balloon hemodynamics, pairing
+<code>preset = "medusa"</code> with
+<code>selection_mode = "soft_average"</code> reduces HRF waveform RMSE
+by 8–22% and downstream neural latency error by 20–35% compared to
+discrete hard selection (<code>selection_mode = "hard"</code>), while
+avoiding the collinearity and
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>7</mn><mo>×</mo></mrow><annotation encoding="application/x-tex">7\times</annotation></semantics></math>
+runtime cost of
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.25</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">0.25\text{ s}</annotation></semantics></math>
+grids. Hard parcel pooling (<code>pooling = "parcel"</code>) shares one
+composite HRF per parcel; <code>pooling = "voxel"</code> with
+<code>spatial_strength = 0.02</code> blends voxel and parcel weight
+vectors via Empirical-Bayes concordance.</p>
 </div>
 <div class="section level2">
 <h2 id="recover-continuous-latent-activity">Recover continuous latent activity<a class="anchor" aria-label="anchor" href="#recover-continuous-latent-activity"></a>
@@ -365,17 +391,27 @@ assumption. Compare it with unpooled fits before adopting it.</p>
 <span><span class="co">#&gt; 6            220</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/dim.html" class="external-link">dim</a></span><span class="op">(</span><span class="va">decon</span><span class="op">$</span><span class="va">activity</span><span class="op">$</span><span class="va">run1</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1] 220   6</span></span></code></pre></div>
-<p>Here <code>lambda = 0.1</code> is a fixed teaching value. It is not
-optimized for RPE recovery and should not be adopted as a study default.
-Passing <code>lambda = NULL</code> explicitly requests automatic
-prewhitened GCV tuning over <code>lambda_grid</code> (using
-<code>gcv_rule = "min"</code> or <code>"1se"</code>, and storing the
-selected value and GCV curve in <code>decon$settings$lambda</code> and
-<code>decon$settings$lambda_tuning</code>); omitting <code>lambda</code>
-entirely raises an error. Because GCV optimizes an observation-domain
-reconstruction criterion rather than trial-level slope recovery, compare
-prespecified settings in simulations reflecting your event timing, SNR,
-durations, and noise.</p>
+<p>Here <code>lambda = 0.1</code> is a fixed teaching value. In modern
+(<code>ar1</code> / <code>calibrated</code>) fits,
+<code>lambda = NULL</code> is the default and automatically invokes
+gain-calibrated, task-weighted adaptive prewhitened GCV
+(<code>hrf_tune_decon_lambda()</code>) over
+<code>lambda_grid = 10^seq(-2, 1.0, length.out = 16)</code> (storing the
+selected scalar in <code>decon$settings$lambda</code> and the full
+diagnostic table—including <code>var_level</code>,
+<code>var_contrast</code>, <code>mtf_rel</code>,
+<code>gcv_adaptive</code>, and <code>snr_task</code>—in
+<code>decon$settings$lambda_tuning</code>). Unlike naive
+observation-space GCV across all voxels—which over-smooths event-related
+activity when null voxels are present or per-TR signal power is
+modest—adaptive prewhitened GCV filters to task-supported voxels/parcels
+from <code>hrf_fit$selections</code> and balances Stage-3 gain-restored
+level/contrast variance against the operator’s modulation transfer
+function, automatically adapting
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>λ</mi><annotation encoding="application/x-tex">\lambda</annotation></semantics></math>
+across fSNR regimes and acquisition TRs. For legacy (<code>ols</code> /
+<code>legacy</code>) fits, omitting <code>lambda</code> still raises an
+error unless <code>lambda = NULL</code> is passed explicitly.</p>
 <p><code>noise_sd</code> centers the input and divides by a
 high-frequency second-difference estimate of measurement noise SD
 (adjusted for AR(1) autocorrelation) rather than total temporal SD. The
@@ -473,17 +509,18 @@ isolated-impulse audit.</p>
 <colgroup>
 <col width="2%">
 <col width="2%">
-<col width="8%">
+<col width="7%">
+<col width="10%">
 <col width="11%">
-<col width="12%">
-<col width="11%">
-<col width="8%">
-<col width="6%">
-<col width="8%">
+<col width="10%">
+<col width="7%">
 <col width="5%">
 <col width="8%">
-<col width="8%">
+<col width="7%">
 <col width="5%">
+<col width="7%">
+<col width="8%">
+<col width="4%">
 </colgroup>
 <thead><tr class="header">
 <th align="right">lag</th>
@@ -495,6 +532,7 @@ isolated-impulse audit.</p>
 <th align="right">mean_beta_gls</th>
 <th align="right">mean_r_raw</th>
 <th align="right">mean_r_demixed</th>
+<th align="right">mean_tau2_bio</th>
 <th align="right">mean_gain</th>
 <th align="right">mean_se_trial</th>
 <th align="right">mean_error_ac1</th>
@@ -511,6 +549,7 @@ isolated-impulse audit.</p>
 <td align="right">0.188</td>
 <td align="right">0.725</td>
 <td align="right">0.354</td>
+<td align="right">0.218</td>
 <td align="right">0.239</td>
 <td align="right">0.176</td>
 <td align="right">0.042</td>
@@ -526,6 +565,7 @@ isolated-impulse audit.</p>
 <td align="right">0.628</td>
 <td align="right">0.841</td>
 <td align="right">0.814</td>
+<td align="right">0.276</td>
 <td align="right">0.239</td>
 <td align="right">0.178</td>
 <td align="right">0.050</td>
@@ -538,9 +578,10 @@ isolated-impulse audit.</p>
 <td align="right">0.700</td>
 <td align="right">0.700</td>
 <td align="right">0.700</td>
-<td align="right">0.699</td>
+<td align="right">0.700</td>
 <td align="right">0.911</td>
 <td align="right">0.872</td>
+<td align="right">0.274</td>
 <td align="right">0.239</td>
 <td align="right">0.179</td>
 <td align="right">0.057</td>
@@ -556,6 +597,7 @@ isolated-impulse audit.</p>
 <td align="right">0.476</td>
 <td align="right">0.938</td>
 <td align="right">0.766</td>
+<td align="right">0.203</td>
 <td align="right">0.239</td>
 <td align="right">0.179</td>
 <td align="right">0.056</td>
@@ -571,6 +613,7 @@ isolated-impulse audit.</p>
 <td align="right">0.143</td>
 <td align="right">0.829</td>
 <td align="right">0.279</td>
+<td align="right">0.200</td>
 <td align="right">0.239</td>
 <td align="right">0.179</td>
 <td align="right">0.051</td>
@@ -586,6 +629,7 @@ isolated-impulse audit.</p>
 <td align="right">-0.120</td>
 <td align="right">0.351</td>
 <td align="right">-0.334</td>
+<td align="right">0.073</td>
 <td align="right">0.239</td>
 <td align="right">0.179</td>
 <td align="right">0.052</td>
@@ -601,6 +645,7 @@ isolated-impulse audit.</p>
 <td align="right">-0.115</td>
 <td align="right">-0.052</td>
 <td align="right">-0.253</td>
+<td align="right">0.166</td>
 <td align="right">0.239</td>
 <td align="right">0.180</td>
 <td align="right">0.057</td>
@@ -631,11 +676,28 @@ stabilized inverse-variance precision weights
 (<code>precision_weight</code>), covariance-propagated sandwich standard
 errors (<code>se_weighted</code>), and null-mode-damped,
 Bartlett-adaptive ZCA-whitened GLS slopes (<code>beta_gls</code>,
-<code>se_gls</code>). For multiple predictors, supply a data frame or
-matrix per run with consistent column names/order; do not add a constant
-intercept column to those centered predictors. Non-target events should
-remain in <code>events</code>, even though covariate rows refer only to
-feedback records.</p>
+<code>se_gls</code>). When analyzing parcels or ROIs, setting
+<code>aggregate_by_parcel = TRUE</code> (using
+<code>parcel_groups</code> or the HRF fit’s <code>spatial_groups</code>)
+aggregates voxels by inverse measurement variance and propagates
+empirical within-parcel spatial noise correlation before Stage-3
+regression and ZCA whitening, calibrating <code>tau2_bio</code>,
+<code>precision_weight</code>, and <code>decon_demixed_whitened</code>
+directly on the high-SNR parcel series while reducing Stage-3/4 compute
+by
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>V</mi><mi>/</mi><mi>G</mi></mrow><annotation encoding="application/x-tex">V/G</annotation></semantics></math>.
+Furthermore, <code>covariates</code> can be omitted
+(<code>covariates = NULL</code>), in which case
+<code><a href="../reference/decon_epoch_regression.html">decon_epoch_regression()</a></code> uses covariate-agnostic marginal
+biological variance estimation (<code>tau2_mode = "marginal"</code>) and
+returns the de-mixed, precision-weighted, and ZCA-whitened trial panel
+(<code>return_panel = TRUE</code>) for two-stage <code><a href="../reference/mixed_by.html">mixed_by()</a></code>
+behavioral modeling or region-to-region connectivity
+(<code>R2 ~ R1_seed * x</code>). For multiple predictors, supply a data
+frame or matrix per run with consistent column names/order; do not add a
+constant intercept column to those centered predictors. Non-target
+events should remain in <code>events</code>, even though covariate rows
+refer only to feedback records.</p>
 <p><code>restore_scale = TRUE</code> reports effects in original input
 units under the unit-sum HRF convention. It reverses the scaling
 divisor; it does not make estimates physiologically calibrated or
@@ -703,8 +765,8 @@ independent temporal measurements.
 <td align="right">0.6</td>
 <td align="right">0.137</td>
 <td align="right">0.552</td>
-<td align="right">0.551</td>
-<td align="right">0.048</td>
+<td align="right">0.552</td>
+<td align="right">0.047</td>
 <td align="right">0.049</td>
 </tr>
 <tr class="odd">
@@ -712,7 +774,7 @@ independent temporal measurements.
 <td align="right">0.7</td>
 <td align="right">0.156</td>
 <td align="right">0.639</td>
-<td align="right">0.638</td>
+<td align="right">0.639</td>
 <td align="right">0.044</td>
 <td align="right">0.045</td>
 </tr>
@@ -721,7 +783,7 @@ independent temporal measurements.
 <td align="right">0.8</td>
 <td align="right">0.184</td>
 <td align="right">0.712</td>
-<td align="right">0.711</td>
+<td align="right">0.712</td>
 <td align="right">0.053</td>
 <td align="right">0.054</td>
 </tr>
@@ -730,18 +792,18 @@ independent temporal measurements.
 <td align="right">0.9</td>
 <td align="right">0.210</td>
 <td align="right">0.867</td>
-<td align="right">0.866</td>
+<td align="right">0.867</td>
 <td align="right">0.044</td>
-<td align="right">0.044</td>
+<td align="right">0.045</td>
 </tr>
 <tr class="even">
 <td align="left">v6</td>
 <td align="right">1.0</td>
 <td align="right">0.248</td>
-<td align="right">0.968</td>
-<td align="right">0.967</td>
+<td align="right">0.969</td>
+<td align="right">0.969</td>
 <td align="right">0.050</td>
-<td align="right">0.051</td>
+<td align="right">0.052</td>
 </tr>
 </tbody>
 </table>
@@ -795,36 +857,36 @@ units, and source model.</p>
 <td align="left">v2</td>
 <td align="right">1</td>
 <td align="right">0.6</td>
-<td align="right">0.611</td>
+<td align="right">0.610</td>
 <td align="right">0.552</td>
 </tr>
 <tr class="odd">
 <td align="left">v3</td>
 <td align="right">1</td>
 <td align="right">0.7</td>
-<td align="right">0.686</td>
+<td align="right">0.687</td>
 <td align="right">0.639</td>
 </tr>
 <tr class="even">
 <td align="left">v4</td>
 <td align="right">2</td>
 <td align="right">0.8</td>
-<td align="right">0.778</td>
+<td align="right">0.777</td>
 <td align="right">0.712</td>
 </tr>
 <tr class="odd">
 <td align="left">v5</td>
 <td align="right">2</td>
 <td align="right">0.9</td>
-<td align="right">0.876</td>
+<td align="right">0.880</td>
 <td align="right">0.867</td>
 </tr>
 <tr class="even">
 <td align="left">v6</td>
 <td align="right">2</td>
 <td align="right">1.0</td>
-<td align="right">1.025</td>
-<td align="right">0.968</td>
+<td align="right">1.026</td>
+<td align="right">0.969</td>
 </tr>
 </tbody>
 </table>
@@ -858,17 +920,18 @@ covaries with value.</p>
 <colgroup>
 <col width="2%">
 <col width="3%">
-<col width="8%">
+<col width="7%">
+<col width="10%">
 <col width="11%">
-<col width="12%">
-<col width="11%">
-<col width="8%">
-<col width="6%">
-<col width="8%">
+<col width="10%">
+<col width="7%">
 <col width="5%">
 <col width="8%">
-<col width="8%">
+<col width="7%">
 <col width="5%">
+<col width="7%">
+<col width="8%">
+<col width="4%">
 </colgroup>
 <thead><tr class="header">
 <th align="right">lag</th>
@@ -880,6 +943,7 @@ covaries with value.</p>
 <th align="right">mean_beta_gls</th>
 <th align="right">mean_r_raw</th>
 <th align="right">mean_r_demixed</th>
+<th align="right">mean_tau2_bio</th>
 <th align="right">mean_gain</th>
 <th align="right">mean_se_trial</th>
 <th align="right">mean_error_ac1</th>
@@ -893,9 +957,10 @@ covaries with value.</p>
 <td align="right">0.185</td>
 <td align="right">0.185</td>
 <td align="right">0.185</td>
-<td align="right">0.183</td>
+<td align="right">0.184</td>
 <td align="right">0.537</td>
 <td align="right">0.344</td>
+<td align="right">0.305</td>
 <td align="right">0.323</td>
 <td align="right">0.136</td>
 <td align="right">0.049</td>
@@ -908,9 +973,10 @@ covaries with value.</p>
 <td align="right">0.138</td>
 <td align="right">0.138</td>
 <td align="right">0.138</td>
-<td align="right">0.138</td>
+<td align="right">0.137</td>
 <td align="right">0.360</td>
 <td align="right">0.233</td>
+<td align="right">0.414</td>
 <td align="right">0.323</td>
 <td align="right">0.138</td>
 <td align="right">0.057</td>
@@ -961,19 +1027,19 @@ active-null simulations.</p>
 <span><span class="co">#&gt; 5 sim01 run1     5          15        5       -2    v1 0.32630153    0.04084404</span></span>
 <span><span class="co">#&gt; 6 sim01 run1     6          18        6       -2    v1 0.17730537   -0.47538659</span></span>
 <span><span class="co">#&gt;   se_demixed precision_weight   error_ac1 decon_demixed_whitened        rpe</span></span>
-<span><span class="co">#&gt; 1  0.1734259        0.9925422  0.00000000            -0.08695795  0.1181378</span></span>
-<span><span class="co">#&gt; 2  0.1643144        1.0058441  0.09751308            -1.27224402 -0.3123133</span></span>
-<span><span class="co">#&gt; 3  0.1703535        0.9970680  0.06547193             0.27193667  1.8923639</span></span>
-<span><span class="co">#&gt; 4  0.1662414        1.0030615 -0.03049123            -0.57970211 -1.1696051</span></span>
-<span><span class="co">#&gt; 5  0.1685862        0.9996530  0.06061239             0.04186698 -0.4224070</span></span>
-<span><span class="co">#&gt; 6  0.1713055        0.9956699  0.04353783            -0.47507428 -1.0995872</span></span>
+<span><span class="co">#&gt; 1  0.1734259        0.9927301  0.00000000            -0.08698254  0.1181378</span></span>
+<span><span class="co">#&gt; 2  0.1643144        1.0057036  0.09751308            -1.27205807 -0.3123133</span></span>
+<span><span class="co">#&gt; 3  0.1703535        0.9971452  0.06547193             0.27186754  1.8923639</span></span>
+<span><span class="co">#&gt; 4  0.1662414        1.0029904 -0.03049123            -0.57973490 -1.1696051</span></span>
+<span><span class="co">#&gt; 5  0.1685862        0.9996664  0.06061239             0.04184252 -0.4224070</span></span>
+<span><span class="co">#&gt; 6  0.1713055        0.9957814  0.04353783            -0.47508181 -1.0995872</span></span>
 <span><span class="co">#&gt;   rpe_whitened</span></span>
-<span><span class="co">#&gt; 1    0.1197465</span></span>
-<span><span class="co">#&gt; 2   -0.3120384</span></span>
-<span><span class="co">#&gt; 3    1.8885246</span></span>
-<span><span class="co">#&gt; 4   -1.1704039</span></span>
-<span><span class="co">#&gt; 5   -0.4157397</span></span>
-<span><span class="co">#&gt; 6   -1.0970118</span></span>
+<span><span class="co">#&gt; 1    0.1197067</span></span>
+<span><span class="co">#&gt; 2   -0.3120487</span></span>
+<span><span class="co">#&gt; 3    1.8886245</span></span>
+<span><span class="co">#&gt; 4   -1.1703844</span></span>
+<span><span class="co">#&gt; 5   -0.4159039</span></span>
+<span><span class="co">#&gt; 6   -1.0970759</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/stopifnot.html" class="external-link">stopifnot</a></span><span class="op">(</span><span class="op">!</span><span class="fu"><a href="https://rdrr.io/r/base/duplicated.html" class="external-link">anyDuplicated</a></span><span class="op">(</span><span class="va">panel</span><span class="op">[</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"id"</span>, <span class="st">"run"</span>, <span class="st">"trial_id"</span>, <span class="st">"evt_time"</span>, <span class="st">"voxel"</span><span class="op">)</span><span class="op">]</span><span class="op">)</span>,</span>
 <span>          <span class="fu"><a href="https://rdrr.io/r/base/all.html" class="external-link">all</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/is.finite.html" class="external-link">is.finite</a></span><span class="op">(</span><span class="va">panel</span><span class="op">$</span><span class="va">decon_demixed</span><span class="op">)</span><span class="op">)</span>,</span>
 <span>          <span class="fu"><a href="https://rdrr.io/r/base/all.html" class="external-link">all</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/is.finite.html" class="external-link">is.finite</a></span><span class="op">(</span><span class="va">panel</span><span class="op">$</span><span class="va">precision_weight</span><span class="op">)</span> <span class="op">&amp;</span> <span class="va">panel</span><span class="op">$</span><span class="va">precision_weight</span> <span class="op">&gt;</span> <span class="fl">0</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
@@ -1207,18 +1273,27 @@ studies:</p>
 <tbody>
 <tr class="odd">
 <td><strong>1. Cross-Run HRF Learning</strong></td>
-<td><code><a href="../reference/estimate_crossrun_hrf.html">estimate_crossrun_hrf()</a></code></td>
 <td>
-<code>noise_model = "ar1"</code>,
-<code>evidence = "calibrated"</code>,
+<code><a href="../reference/hrf_library.html">hrf_library()</a></code> +
+<code><a href="../reference/estimate_crossrun_hrf.html">estimate_crossrun_hrf()</a></code>
+</td>
+<td>
+<code>hrf_library(tr, preset = "medusa")</code>
+(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.5</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">0.5\text{ s}</annotation></semantics></math>
+delay grid,
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>K</mi><mo>=</mo><mn>27</mn></mrow><annotation encoding="application/x-tex">K=27</annotation></semantics></math>);
+<code>noise_model = "ar1"</code>, <code>evidence = "calibrated"</code>,
+<code>selection_mode = "soft_average"</code>,
 <code>spatial_groups = parcel_ids</code>,
 <code>pooling = "parcel"</code> (or <code>"voxel"</code> with
 <code>spatial_strength = 0.02</code>)</td>
-<td>Prevents regional vascular HRF differences
-(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo>≥</mo><mn>1.5</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">\ge 1.5\text{ s}</annotation></semantics></math>)
-from inverting within-trial neural peak ordering or causing
-false-positive lagged connectivity; uses Cauchy parcel evidence pooling
-(<code>hrf_cauchy_p()</code>).</td>
+<td>Interpolates sub-grid vascular delays and nonlinear Balloon
+hemodynamics via Empirical-Bayes Boltzmann kernel averaging
+(<code>selection_mode = "soft_average"</code>), reducing HRF RMSE by
+8–22% and neural latency error by 20–35% over hard selection without the
+runtime cost of
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.25</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">0.25\text{ s}</annotation></semantics></math>
+grids.</td>
 </tr>
 <tr class="even">
 <td><strong>2. Continuous Deconvolution</strong></td>
@@ -1255,9 +1330,15 @@ per-trial target gain via 2nd-order Tikhonov inversion.</td>
 <td>Same as 3a + <code>demix_within_trial = TRUE</code>
 (<code>within_trial_ridge = 0.06</code>) across
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo>≥</mo><mn>3</mn></mrow><annotation encoding="application/x-tex">\ge 3</annotation></semantics></math>
-lags</td>
+lags spaced at
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>1</mn><mo>×</mo><mtext mathvariant="normal">TR</mtext></mrow><annotation encoding="application/x-tex">1\times\text{TR}</annotation></semantics></math>
+</td>
 <td>Sharpens within-trial temporal waveform profiles across lags by
-inverting the lag-by-lag point-spread matrix.</td>
+inverting the lag-by-lag point-spread matrix (automatically scales
+<code>within_trial_ridge</code> by
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><mtext mathvariant="normal">TR</mtext><mi>/</mi><mi mathvariant="normal">Δ</mi><mi>τ</mi><msup><mo stretchy="false" form="postfix">)</mo><mn>2</mn></msup></mrow><annotation encoding="application/x-tex">(\text{TR}/\Delta\tau)^2</annotation></semantics></math>
+if <code>lags</code> is sampled finer than
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>1</mn><mo>×</mo><mtext mathvariant="normal">TR</mtext></mrow><annotation encoding="application/x-tex">1\times\text{TR}</annotation></semantics></math>).</td>
 </tr>
 <tr class="odd">
 <td><strong>3c. Variable-Duration (RT) Epochs</strong></td>

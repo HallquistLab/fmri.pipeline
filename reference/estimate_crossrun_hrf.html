@@ -75,7 +75,8 @@
 <span>  evidence_alpha <span class="op">=</span> <span class="fl">0.05</span>,</span>
 <span>  canonical_strength <span class="op">=</span> <span class="fl">0.01</span>,</span>
 <span>  spatial_coords <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  spatial_fwhm <span class="op">=</span> <span class="cn">NULL</span></span>
+<span>  spatial_fwhm <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  selection_mode <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"hard"</span>, <span class="st">"soft_average"</span><span class="op">)</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -207,17 +208,34 @@ used for local Gaussian-weighted anchor pooling.</p></dd>
 <dd><p>Optional numeric spatial Gaussian FWHM (in coordinate
 units) for local anchor pooling.</p></dd>
 
+
+<dt id="arg-selection-mode">selection_mode<a class="anchor" aria-label="anchor" href="#arg-selection-mode"></a></dt>
+<dd><p>Selection rule for HRF shapes per fold: <code>"hard"</code>
+(default; discrete selection of a single best library candidate) or
+<code>"soft_average"</code> (spread-normalized local Boltzmann evidence-weighted
+averaging over the top locally compatible candidates, shrunk toward
+<code>fallback_kernel</code> by Empirical-Bayes departure confidence).</p></dd>
+
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>An object of class crossrun_hrf with normalized kernels, per-target-run
-  selections and training manifests, parcel anchors, run status/design summaries,
-  optional candidate scores, voxel/run IDs, and frozen settings.</p>
+  selections, candidate weight matrices (<code>kernel_weights</code>), unit-sum
+  composite HRF kernels (<code>selected_kernels</code>), training manifests, parcel
+  anchors, run status/design summaries, optional candidate scores, voxel/run
+  IDs, and frozen settings.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p>Each target run is excluded from its own HRF selection, including
-  parcel anchors and fallback decisions. Training fits have run-specific
+    <p>When multiple runs are supplied, each target run is excluded from
+  its own HRF selection, including parcel anchors and fallback decisions.
+  When only a single run is supplied (<code>length(bold) == 1L</code>), usable
+  observations are partitioned into contiguous temporal sub-blocks (3 blocks
+  for longer runs, 2 halves for shorter runs) that are scored against the
+  full causal event design using full-run AR(1) covariance estimates and
+  pooled across sub-blocks with cross-block compatibility testing, while
+  returning a single-run <code>crossrun_hrf</code> object for full-run deconvolution.
+  Training fits have run-specific
   condition or event amplitudes and nuisance coefficients, with one shared
   candidate HRF across conditions. They do not fit unrestricted trial
   timecourses or use RPE.

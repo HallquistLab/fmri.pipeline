@@ -11,7 +11,7 @@ error covariance.
 ``` r
 decon_epoch_regression(
   deconvolution,
-  covariates,
+  covariates = NULL,
   events = NULL,
   target_condition = NULL,
   lags = seq(-2, 4, by = 1),
@@ -28,6 +28,9 @@ decon_epoch_regression(
   trial_durations = NULL,
   duration_scale = c("rate", "integral"),
   weighting = c("precision", "gls", "none"),
+  tau2_mode = c("auto", "residual", "marginal"),
+  aggregate_by_parcel = FALSE,
+  parcel_groups = NULL,
   whiten_panel = FALSE,
   return_epochs = FALSE,
   return_panel = FALSE
@@ -43,9 +46,17 @@ decon_epoch_regression(
 
 - covariates:
 
-  Numeric vector, matrix, or data.frame of trial-level predictors for
-  target trials (concatenated across runs or supplied as a run-named
-  list matching `deconvolution$hrf_fit$run_ids`).
+  Optional numeric vector, matrix, or data.frame of trial-level
+  predictors for target trials (concatenated across runs or supplied as
+  a run-named list matching `deconvolution$hrf_fit$run_ids`). When
+  `NULL` (default), performs covariate-agnostic epoch readout,
+  de-mixing, biological variance estimation (`tau2_mode = "marginal"`),
+  Empirical-Bayes precision weighting, and optional within-run ZCA
+  whitening (`whiten_panel = TRUE`), returning the trial panel
+  (`return_panel` defaults to `TRUE` when `covariates = NULL`) for
+  downstream two-stage
+  [`mixed_by`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md)
+  behavioral modeling or inter-region connectivity (`R2 ~ R1_seed * x`).
 
 - events:
 
@@ -173,6 +184,38 @@ decon_epoch_regression(
   (`beta_unweighted`, `beta_weighted`, `beta_gls`) and their standard
   errors are always included in `coefficients`.
 
+- tau2_mode:
+
+  Estimator for biological trial-to-trial variance
+  \\\hat{\tau}^2\_{\mathrm{bio}}\\ used in Empirical-Bayes trial
+  precision weights and within-run ZCA whitening: `"auto"` (default;
+  uses `"marginal"` when `covariates = NULL` and an Empirical-Bayes
+  blend of residual and marginal estimators when covariates are
+  supplied), `"residual"` (method-of-moments estimator from OLS
+  covariate regression residuals minus projected operator variance
+  \\\mathrm{tr}((\mathbf{I}-\mathbf{P}\_X)\boldsymbol{\Omega})\\), or
+  `"marginal"` (covariate-agnostic estimator combining run-centered
+  marginal variance, lag-1 trial difference variance, and robust MAD
+  scale minus analytical operator variance expectations).
+
+- aggregate_by_parcel:
+
+  Logical; if `TRUE`, aggregates deconvolved signals across voxels
+  within each spatial parcel (using inverse-variance voxel precision
+  weights and empirical spatial noise correlation propagation) prior to
+  Stage-2 epoch de-mixing and Stage-3 regression/ZCA whitening. Replaces
+  voxel-by-voxel Stage-3/4 fitting with parcel-level inference while
+  calibrating `se_demixed`, `tau2_bio`, `precision_weight`, and ZCA
+  whitening directly on the high-SNR parcel series. Default: `FALSE`.
+
+- parcel_groups:
+
+  Optional character or factor vector of parcel/region labels for each
+  voxel (either unnamed of length `n_voxels` or named by `voxel_ids`).
+  Defaults to `deconvolution$hrf_fit$specification$spatial_groups` when
+  `aggregate_by_parcel = TRUE`. Supplying a non-`NULL` `parcel_groups`
+  automatically enables `aggregate_by_parcel = TRUE`.
+
 - whiten_panel:
 
   Logical; if `TRUE` and `return_panel = TRUE`, adds within-run
@@ -185,24 +228,25 @@ decon_epoch_regression(
 
 - return_epochs:
 
-  Logical; whether to include raw and de-mixed trial-by-voxel epoch
-  matrices per lag. Default: `FALSE`.
+  Logical; whether to include raw and de-mixed trial-by-voxel (or
+  trial-by-parcel) epoch matrices per lag. Default: `FALSE`.
 
 - return_panel:
 
   Logical; whether to return a tidy MEDUSA-compatible `data.table`
   (`panel`) with columns `run`, `trial`, `event_index`, `onset`,
-  `evt_time`, `voxel`, `decon_raw`, `decon_demixed`, `se_raw`,
-  `se_demixed`, `precision_weight`, `precision_weight_op`,
-  `precision_weight_raw`, `error_ac1`, and the covariate columns for
-  downstream
+  `evt_time`, `voxel` (and `parcel` when `aggregate_by_parcel = TRUE`),
+  `decon_raw`, `decon_demixed`, `se_raw`, `se_demixed`,
+  `precision_weight`, `precision_weight_op`, `precision_weight_raw`,
+  `error_ac1`, `tau2_bio`, and the covariate columns for downstream
   [`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md)
-  modeling. Default: `FALSE`.
+  modeling. Defaults to `TRUE` when `covariates = NULL` and
+  `return_epochs = FALSE`.
 
 ## Value
 
-A list with `coefficients` (per voxel, lag, and predictor term),
-`summary` (averaged across usable voxels per lag and term), optional
+A list with `coefficients` (per voxel/parcel, lag, and predictor term),
+`summary` (averaged across usable units per lag and term), optional
 `epochs`, optional `panel`, and `settings`.
 
 ## Details
@@ -257,10 +301,13 @@ surfaces, and biophysical Windkessel-Balloon + `fmrisim` scanner
 realism), the recommended end-to-end configuration is:
 
 1.  **Stage 0–1 (HRF Estimation):** Use
+    `hrf_library(tr, preset = "medusa")` (0.5s peak-delay grid over 4–8s
+    with dispersions 0.9, 1.0, 1.1; 27 candidates) and
     [`estimate_crossrun_hrf`](https://hallquistlab.github.io/fmri.pipeline/reference/estimate_crossrun_hrf.md)
-    with `noise_model = "ar1"`, `evidence = "calibrated"`, and parcel
-    labels in `spatial_groups` (which pools parcel evidence via the
-    Cauchy combination test `hrf_cauchy_p()`).
+    with `noise_model = "ar1"`, `evidence = "calibrated"`,
+    `selection_mode = "soft_average"` (evidence-weighted HRF kernel
+    averaging across locally supported shapes), and parcel labels in
+    `spatial_groups`.
 
 2.  **Stage 2 (Deconvolution):** Use
     [`deconvolve_crossrun_hrf`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_crossrun_hrf.md)
@@ -269,8 +316,12 @@ realism), the recommended end-to-end configuration is:
 
 3.  **Stage 3 (Epoch De-Mixing & Whitening):** Use
     `decon_epoch_regression(..., demix_other_events = TRUE, demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls", whiten_panel = TRUE, return_panel = TRUE)`.
-    Enable `demix_within_trial = TRUE` when estimating multi-lag
-    waveforms \\\beta(\tau)\\, and set `source_model = "duration"`
+    Enable `demix_within_trial = TRUE` with `lags` spaced at
+    \\1\times\mathrm{TR}\\ when estimating multi-lag waveforms
+    \\\beta(\tau)\\ (if `lags` is sampled finer than
+    \\1\times\mathrm{TR}\\, `within_trial_ridge` is automatically scaled
+    by \\(\mathrm{TR}/\Delta\tau)^2\\ to prevent sub-TR collinearity
+    amplification), and set `source_model = "duration"`
     (`duration_scale = "rate"`) when modeling variable-duration (RT)
     epochs.
 

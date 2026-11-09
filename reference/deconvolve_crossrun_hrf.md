@@ -18,7 +18,7 @@ deconvolve_crossrun_hrf(
   operator_cache_mb = 128,
   nuisance_mode = NULL,
   observation_mask = NULL,
-  lambda_grid = 10^seq(-3, 1.5, length.out = 12),
+  lambda_grid = 10^seq(-2, 1, length.out = 16),
   gcv_rule = c("min", "1se")
 )
 ```
@@ -37,9 +37,10 @@ deconvolve_crossrun_hrf(
 
 - lambda:
 
-  Nonnegative regularization strength. If `NULL`, selected automatically
-  from `lambda_grid` by prewhitened generalized cross-validation using
-  `gcv_rule`.
+  Nonnegative regularization strength. If `NULL` (the default for modern
+  `ar1`/`calibrated` fits), selected automatically from `lambda_grid` by
+  gain-calibrated, task-weighted adaptive prewhitened generalized
+  cross-validation using `gcv_rule`.
 
 - scaling:
 

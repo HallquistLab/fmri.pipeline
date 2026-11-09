@@ -31,7 +31,8 @@ estimate_crossrun_hrf(
   evidence_alpha = 0.05,
   canonical_strength = 0.01,
   spatial_coords = NULL,
-  spatial_fwhm = NULL
+  spatial_fwhm = NULL,
+  selection_mode = c("hard", "soft_average")
 )
 ```
 
@@ -167,50 +168,65 @@ estimate_crossrun_hrf(
   Optional numeric spatial Gaussian FWHM (in coordinate units) for local
   anchor pooling.
 
+- selection_mode:
+
+  Selection rule for HRF shapes per fold: `"hard"` (default; discrete
+  selection of a single best library candidate) or `"soft_average"`
+  (spread-normalized local Boltzmann evidence-weighted averaging over
+  the top locally compatible candidates, shrunk toward `fallback_kernel`
+  by Empirical-Bayes departure confidence).
+
 ## Value
 
 An object of class crossrun_hrf with normalized kernels, per-target-run
-selections and training manifests, parcel anchors, run status/design
-summaries, optional candidate scores, voxel/run IDs, and frozen
-settings.
+selections, candidate weight matrices (`kernel_weights`), unit-sum
+composite HRF kernels (`selected_kernels`), training manifests, parcel
+anchors, run status/design summaries, optional candidate scores,
+voxel/run IDs, and frozen settings.
 
 ## Details
 
-Each target run is excluded from its own HRF selection, including parcel
-anchors and fallback decisions. Training fits have run-specific
-condition or event amplitudes and nuisance coefficients, with one shared
-candidate HRF across conditions. They do not fit unrestricted trial
-timecourses or use RPE. Native SVD projections are shared across voxel
-blocks. Scores are adjusted partial R-squared after removing nuisance,
-averaged equally across usable training runs. Parcel scores average
-these voxel scores equally, retaining voxel-specific amplitudes rather
-than averaging BOLD first. In voxel mode, selection maximizes score
-minus spatial_strength times normalized squared distance to the reliable
-parcel anchor. Weak/insufficient voxel fits fall back to a reliable
-parcel anchor, then the prespecified fallback kernel. This is a discrete
-shape penalty, not Bayesian posterior inference, a local adjacency
-prior, or spatial smoothing of neural activity. Library, thresholds,
-parcels, and penalty must be fixed externally or tuned within training
-data. Calibrated mode additionally penalizes distance from the
-prespecified shape. The legacy gate accepted null free-event fits in
-colored-noise simulations. Calibrated mode tests task support,
-departures from the prespecified shape using pairwise encompassing
-models, and compatibility with every usable training run. Fisher
-combination uses independent runs; Bonferroni corrections account for
-candidate comparisons. Unsupported or inconsistent shapes fall back.
-Parcel anchors are admitted either when at least min_parcel_voxels
-voxels are individually supported or when the parcel-level
-Cauchy-combined p-value (hrf_cauchy_p(), valid under arbitrary spatial
-correlation within a parcel) passes the candidate-corrected evidence
-threshold. Run compatibility cannot be assessed with a single training
-run. There is no access to target-run vascular shape or guarantee of
-transfer to that run. AR covariance is estimated per run using a fixed
-event-amplitude mean model and, when residual degrees of freedom allow,
-its first two temporal derivatives. Noise likelihood profiles are
-pooled, not the BOLD signals. All whitening uses the original
-acquisition clock, including gaps. No automatic nested tuning or
-physiological amplitude calibration is included.
-Nonfinite/constant/nuisance-only voxel runs are omitted; observation
-masks are common across voxels. Candidate task ranks must match within a
-run and leave residual degrees of freedom, otherwise that run cannot
-inform HRF selection.
+When multiple runs are supplied, each target run is excluded from its
+own HRF selection, including parcel anchors and fallback decisions. When
+only a single run is supplied (`length(bold) == 1L`), usable
+observations are partitioned into contiguous temporal sub-blocks (3
+blocks for longer runs, 2 halves for shorter runs) that are scored
+against the full causal event design using full-run AR(1) covariance
+estimates and pooled across sub-blocks with cross-block compatibility
+testing, while returning a single-run `crossrun_hrf` object for full-run
+deconvolution. Training fits have run-specific condition or event
+amplitudes and nuisance coefficients, with one shared candidate HRF
+across conditions. They do not fit unrestricted trial timecourses or use
+RPE. Native SVD projections are shared across voxel blocks. Scores are
+adjusted partial R-squared after removing nuisance, averaged equally
+across usable training runs. Parcel scores average these voxel scores
+equally, retaining voxel-specific amplitudes rather than averaging BOLD
+first. In voxel mode, selection maximizes score minus spatial_strength
+times normalized squared distance to the reliable parcel anchor.
+Weak/insufficient voxel fits fall back to a reliable parcel anchor, then
+the prespecified fallback kernel. This is a discrete shape penalty, not
+Bayesian posterior inference, a local adjacency prior, or spatial
+smoothing of neural activity. Library, thresholds, parcels, and penalty
+must be fixed externally or tuned within training data. Calibrated mode
+additionally penalizes distance from the prespecified shape. The legacy
+gate accepted null free-event fits in colored-noise simulations.
+Calibrated mode tests task support, departures from the prespecified
+shape using pairwise encompassing models, and compatibility with every
+usable training run. Fisher combination uses independent runs;
+Bonferroni corrections account for candidate comparisons. Unsupported or
+inconsistent shapes fall back. Parcel anchors are admitted either when
+at least min_parcel_voxels voxels are individually supported or when the
+parcel-level Cauchy-combined p-value (hrf_cauchy_p(), valid under
+arbitrary spatial correlation within a parcel) passes the
+candidate-corrected evidence threshold. Run compatibility cannot be
+assessed with a single training run. There is no access to target-run
+vascular shape or guarantee of transfer to that run. AR covariance is
+estimated per run using a fixed event-amplitude mean model and, when
+residual degrees of freedom allow, its first two temporal derivatives.
+Noise likelihood profiles are pooled, not the BOLD signals. All
+whitening uses the original acquisition clock, including gaps. No
+automatic nested tuning or physiological amplitude calibration is
+included. Nonfinite/constant/nuisance-only voxel runs are omitted;
+observation masks are common across voxels. Candidate task ranks must
+match within a run and leave residual degrees of freedom, otherwise that
+run cannot inform HRF selection.
