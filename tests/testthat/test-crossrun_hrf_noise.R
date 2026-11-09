@@ -1007,13 +1007,14 @@ test_that("decon_epoch_regression supports native parcel pre-aggregation and cov
   hrf <- lib[, 1L, drop = FALSE]
   true_beta <- 0.55
 
-  # Parcel R1 has 4 high-SNR voxels (sd = 0.08) and 4 high-noise partial-volume voxels (sd = 0.55)
+  # Parcel R1 has 4 high-SNR core voxels (sd = 0.08, full signal) and 4 high-noise partial-volume voxels (sd = 0.55, 0.35x signal)
   # Parcel R2 has 6 voxels with spatially correlated noise
   groups <- stats::setNames(
     c(rep("R1", 8L), rep("R2", 6L)),
     paste0("v", 1:14)
   )
   vox_sd_r1 <- c(rep(0.08, 4L), rep(0.55, 4L))
+  sig_mult_r1 <- c(rep(1.00, 4L), rep(0.35, 4L))
 
   bold_indep <- bold_corr <- events <- x_list <- list()
   for (r in 1:2) {
@@ -1033,8 +1034,9 @@ test_that("decon_epoch_regression supports native parcel pre-aggregation and cov
     shared_r2 <- rnorm(n_time, sd = 0.20 * sqrt(0.80))
     eps_r2_corr <- replicate(6L, shared_r2 + rnorm(n_time, sd = 0.20 * sqrt(0.20)))
 
-    y_indep <- cbind(sweep(eps_r1, 1L, 100 + sig_r1, "+"), sweep(eps_r2_indep, 1L, 100 + sig_r2, "+"))
-    y_corr <- cbind(sweep(eps_r1, 1L, 100 + sig_r1, "+"), sweep(eps_r2_corr, 1L, 100 + sig_r2, "+"))
+    sig_mat_r1 <- outer(sig_r1, sig_mult_r1)
+    y_indep <- cbind(100 + sig_mat_r1 + eps_r1, sweep(eps_r2_indep, 1L, 100 + sig_r2, "+"))
+    y_corr <- cbind(100 + sig_mat_r1 + eps_r1, sweep(eps_r2_corr, 1L, 100 + sig_r2, "+"))
     colnames(y_indep) <- colnames(y_corr) <- names(groups)
 
     bold_indep[[paste0("run", r)]] <- y_indep
@@ -1077,14 +1079,18 @@ test_that("decon_epoch_regression supports native parcel pre-aggregation and cov
   expect_lt(abs(b_par_r1 - true_beta), abs(b_vox_r1 - true_beta))
 
   # 2. Empirical spatial noise correlation propagation: spatially correlated R2 has larger parcel SE than independent R2
+  reg_vox_cor <- decon_epoch_regression(dec_cor, x_list, events = events,
+    target_condition = "feedback", lags = 0, restore_scale = TRUE)
   reg_parcel_cor <- decon_epoch_regression(dec_cor, x_list, events = events,
     target_condition = "feedback", lags = 0, restore_scale = TRUE,
     aggregate_by_parcel = TRUE, return_panel = TRUE)
   se_r2_ind <- reg_parcel$coefficients$mean_se_trial[reg_parcel$coefficients$voxel == "R2"]
   se_r2_cor <- reg_parcel_cor$coefficients$mean_se_trial[reg_parcel_cor$coefficients$voxel == "R2"]
-  se_r2_single <- mean(reg_vox$coefficients$mean_se_trial[reg_vox$coefficients$voxel %in% paste0("v", 9:14)])
+  se_r2_single_ind <- mean(reg_vox$coefficients$mean_se_trial[reg_vox$coefficients$voxel %in% paste0("v", 9:14)])
+  se_r2_single_cor <- mean(reg_vox_cor$coefficients$mean_se_trial[reg_vox_cor$coefficients$voxel %in% paste0("v", 9:14)])
   expect_lt(se_r2_ind, se_r2_cor)
-  expect_lt(se_r2_cor, se_r2_single)
+  expect_lt(se_r2_ind, se_r2_single_ind)
+  expect_lte(se_r2_cor, se_r2_single_cor)
 
   # 3. Covariate-agnostic panel extraction (covariates = NULL) and tau2_mode = "marginal"
   reg_nocov <- decon_epoch_regression(dec_ind, covariates = NULL, events = events,

@@ -960,11 +960,11 @@ decon_epoch_regression <- function(
         } else {
           D2_vox <- diff(act_r[rows, v_ok, drop = FALSE], differences = 2L)
           d2_p <- as.numeric(D2_vox %*% u_g)
-          sd_d2_v <- apply(D2_vox, 2L, stats::sd, na.rm = TRUE)
-          sd_d2_p <- stats::sd(d2_p, na.rm = TRUE)
-          denom_d2 <- sum(u_g * sd_d2_v)
-          if (is.finite(sd_d2_p) && is.finite(denom_d2) && denom_d2 > 1e-12) {
-            r_emp <- (sd_d2_p / denom_d2)^2
+          mad_d2_v <- apply(D2_vox, 2L, stats::mad, na.rm = TRUE)
+          mad_d2_p <- stats::mad(d2_p, na.rm = TRUE)
+          denom_d2 <- sum(u_g * mad_d2_v)
+          if (is.finite(mad_d2_p) && is.finite(denom_d2) && denom_d2 > 1e-12) {
+            r_emp <- (mad_d2_p / denom_d2)^2
             s2_eff_g <- min(s2_ceil, max(s2_indep, r_emp * s2_ceil))
           } else {
             s2_eff_g <- s2_indep
