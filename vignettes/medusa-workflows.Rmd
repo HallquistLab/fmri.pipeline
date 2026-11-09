@@ -256,7 +256,7 @@ comparison <- data.frame(
 knitr::kable(comparison, digits = 3)
 ```
 
-This is one noisy realization of a matched model. Exact truth recovery is not a pass criterion, and this example does not measure population power or false-positive control. Hold the HRF/inverse fixed when comparing raw and corrected estimates, then vary assumptions separately. The longer [technical review](medusa_deconvolution_review_prs_42_53.html) and repository validation scripts examine additional recovery targets and model violations.
+This is one noisy realization of a matched model. Exact truth recovery is not a pass criterion, and this example does not measure population power or false-positive control. Hold the HRF/inverse fixed when comparing raw and corrected estimates, then vary assumptions separately. The longer [technical review](https://github.com/HallquistLab/fmri.pipeline/blob/master/medusa_deconvolution_review_prs_42_53.qmd) and repository validation scripts examine additional recovery targets and model violations.
 
 # Model a decision interval using its actual duration
 
@@ -428,4 +428,4 @@ The default file algorithm remains `"bush2011"`, with z-scored input and bounded
 5. Inspect retained trial counts, gains, boundary effects, and sensitivity to penalties, lambda, and readout width. Small gains imply potentially unstable correction.
 6. Carry participant/session IDs and appropriate dependence into group inference. Report settings and software revision with saved objects.
 
-The [technical review](medusa_deconvolution_review_prs_42_53.html) supplies deeper equations and demonstrations. The [primer's reading guide](medusa-concepts.html#reading) connects each choice to neuroscience and statistics precedents.
+The [technical review](https://github.com/HallquistLab/fmri.pipeline/blob/master/medusa_deconvolution_review_prs_42_53.qmd) supplies deeper equations and demonstrations. The [primer's reading guide](medusa-concepts.html#reading) connects each choice to neuroscience and statistics precedents.
