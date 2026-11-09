@@ -997,3 +997,109 @@ test_that("single-run HRF estimation pools contiguous temporal sub-blocks and pr
   expect_equal(fit_short$selections$run1$kernel_index, rep(idx_can, 4L))
   expect_equal(fit_short$selections$run1$voxel_evidence, rep("insufficient_training", 4L))
 })
+
+test_that("decon_epoch_regression supports native parcel pre-aggregation and covariate-agnostic precision weights", {
+  set.seed(202642)
+  tr <- 1.0
+  n_time <- 180L
+  n_trials <- 24L
+  lib <- hrf_library(tr, peak_delays = c(5.0, 6.0), dispersions = 1.0, undershoot_ratios = 6)
+  hrf <- lib[, 1L, drop = FALSE]
+  true_beta <- 0.55
+
+  # Parcel R1 has 4 high-SNR voxels (sd = 0.08) and 4 high-noise partial-volume voxels (sd = 0.55)
+  # Parcel R2 has 6 voxels with spatially correlated noise
+  groups <- stats::setNames(
+    c(rep("R1", 8L), rep("R2", 6L)),
+    paste0("v", 1:14)
+  )
+  vox_sd_r1 <- c(rep(0.08, 4L), rep(0.55, 4L))
+
+  bold_indep <- bold_corr <- events <- x_list <- list()
+  for (r in 1:2) {
+    t_ev <- cumsum(c(6, runif(n_trials - 1L, 4.5, 8.0)))
+    x <- as.numeric(scale(rnorm(n_trials)))
+    bio_jit <- rnorm(n_trials, sd = 0.25)
+    amps_r1 <- 1.0 + true_beta * x + bio_jit
+    amps_r2 <- 0.8 + 0.35 * amps_r1 + rnorm(n_trials, sd = 0.20)
+
+    des <- hrf_event_design_cpp(n_time, tr, 0, t_ev, rep(0, n_trials),
+      seq_len(n_trials), n_trials, hrf)[[1L]]
+    sig_r1 <- as.numeric(des %*% amps_r1)
+    sig_r2 <- as.numeric(des %*% amps_r2)
+
+    eps_r1 <- vapply(vox_sd_r1, function(s) rnorm(n_time, sd = s), numeric(n_time))
+    eps_r2_indep <- replicate(6L, rnorm(n_time, sd = 0.20))
+    shared_r2 <- rnorm(n_time, sd = 0.20 * sqrt(0.80))
+    eps_r2_corr <- replicate(6L, shared_r2 + rnorm(n_time, sd = 0.20 * sqrt(0.20)))
+
+    y_indep <- cbind(sweep(eps_r1, 1L, 100 + sig_r1, "+"), sweep(eps_r2_indep, 1L, 100 + sig_r2, "+"))
+    y_corr <- cbind(sweep(eps_r1, 1L, 100 + sig_r1, "+"), sweep(eps_r2_corr, 1L, 100 + sig_r2, "+"))
+    colnames(y_indep) <- colnames(y_corr) <- names(groups)
+
+    bold_indep[[paste0("run", r)]] <- y_indep
+    bold_corr[[paste0("run", r)]] <- y_corr
+    events[[paste0("run", r)]] <- data.frame(onset = t_ev, duration = 0, condition = "feedback")
+    x_list[[paste0("run", r)]] <- data.frame(x = x)
+  }
+
+  fit_ind <- estimate_crossrun_hrf(bold_indep, events, tr, lib,
+    spatial_groups = groups, pooling = "parcel", noise_model = "ar1", evidence = "calibrated")
+  dec_ind <- deconvolve_crossrun_hrf(bold_indep, fit_ind, lambda = 0.6, scaling = "noise_sd", penalty = "sobolev")
+
+  fit_cor <- estimate_crossrun_hrf(bold_corr, events, tr, lib,
+    spatial_groups = groups, pooling = "parcel", noise_model = "ar1", evidence = "calibrated")
+  dec_cor <- deconvolve_crossrun_hrf(bold_corr, fit_cor, lambda = 0.6, scaling = "noise_sd", penalty = "sobolev")
+
+  # 1. Native parcel pre-aggregation downweights noisy voxels and beats unweighted post-hoc voxel averaging
+  reg_vox <- decon_epoch_regression(dec_ind, x_list, events = events,
+    target_condition = "feedback", lags = 0, restore_scale = TRUE,
+    weighting = "gls", whiten_panel = TRUE, return_panel = TRUE)
+  reg_parcel <- decon_epoch_regression(dec_ind, x_list, events = events,
+    target_condition = "feedback", lags = 0, restore_scale = TRUE,
+    weighting = "gls", aggregate_by_parcel = TRUE, whiten_panel = TRUE, return_panel = TRUE)
+
+  expect_true(reg_parcel$settings$aggregate_by_parcel)
+  expect_equal( reg_parcel$coefficients$voxel, c("R1", "R2") )
+  expect_equal( reg_parcel$coefficients$parcel, c("R1", "R2") )
+  expect_true("parcel" %in% names(reg_parcel$panel))
+  expect_equal(nrow(reg_parcel$panel), 2L * 2L * n_trials)
+
+  # Clean voxels (1:4) receive much higher weight than noisy voxels (5:8) in R1
+  w_r1 <- reg_parcel$parcel_weights$R1
+  expect_gt(mean(w_r1[1:4]), 10 * mean(w_r1[5:8]))
+
+  b_vox_r1 <- mean(reg_vox$coefficients$beta_corrected[reg_vox$coefficients$voxel %in% paste0("v", 1:8)])
+  se_vox_r1 <- mean(reg_vox$coefficients$se_corrected[reg_vox$coefficients$voxel %in% paste0("v", 1:8)])
+  b_par_r1 <- reg_parcel$coefficients$beta_corrected[reg_parcel$coefficients$voxel == "R1"]
+  se_par_r1 <- reg_parcel$coefficients$se_corrected[reg_parcel$coefficients$voxel == "R1"]
+  expect_lt(se_par_r1, 0.50 * se_vox_r1)
+  expect_lt(abs(b_par_r1 - true_beta), abs(b_vox_r1 - true_beta))
+
+  # 2. Empirical spatial noise correlation propagation: spatially correlated R2 has larger parcel SE than independent R2
+  reg_parcel_cor <- decon_epoch_regression(dec_cor, x_list, events = events,
+    target_condition = "feedback", lags = 0, restore_scale = TRUE,
+    aggregate_by_parcel = TRUE, return_panel = TRUE)
+  se_r2_ind <- reg_parcel$coefficients$mean_se_trial[reg_parcel$coefficients$voxel == "R2"]
+  se_r2_cor <- reg_parcel_cor$coefficients$mean_se_trial[reg_parcel_cor$coefficients$voxel == "R2"]
+  se_r2_single <- mean(reg_vox$coefficients$mean_se_trial[reg_vox$coefficients$voxel %in% paste0("v", 9:14)])
+  expect_lt(se_r2_ind, se_r2_cor)
+  expect_lt(se_r2_cor, se_r2_single)
+
+  # 3. Covariate-agnostic panel extraction (covariates = NULL) and tau2_mode = "marginal"
+  reg_nocov <- decon_epoch_regression(dec_ind, covariates = NULL, events = events,
+    target_condition = "feedback", lags = 0, restore_scale = TRUE,
+    aggregate_by_parcel = TRUE, whiten_panel = TRUE)
+  reg_marg <- decon_epoch_regression(dec_ind, x_list, events = events,
+    target_condition = "feedback", lags = 0, restore_scale = TRUE,
+    tau2_mode = "marginal", aggregate_by_parcel = TRUE, whiten_panel = TRUE, return_panel = TRUE)
+
+  expect_true(is.data.frame(reg_nocov$panel))
+  expect_equal(reg_nocov$settings$tau2_mode, "marginal")
+  expect_true(all(c("decon_demixed", "decon_demixed_whitened", "precision_weight", "tau2_bio") %in% names(reg_nocov$panel)))
+  expect_true(all(is.finite(reg_nocov$panel$decon_demixed_whitened)))
+  expect_true(all(reg_nocov$coefficients$tau2_bio > 0))
+  # Marginal tau2_bio and precision weights are strictly invariant to whether covariates are supplied
+  expect_equal(reg_nocov$coefficients$tau2_bio, reg_marg$coefficients$tau2_bio, tolerance = 1e-12)
+  expect_equal(reg_nocov$panel$precision_weight, reg_marg$panel$precision_weight, tolerance = 1e-12)
+})
