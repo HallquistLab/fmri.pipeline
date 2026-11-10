@@ -72,9 +72,11 @@ Imports:
 Suggests:
     bayestestR,
     brms,
+    geigen,
     JuliaCall,
     knitr,
     pkgload,
+    repair,
     rmarkdown,
     rstanarm,
     testthat (>= 3.0.0),

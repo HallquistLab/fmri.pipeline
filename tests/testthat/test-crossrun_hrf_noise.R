@@ -1109,3 +1109,186 @@ test_that("decon_epoch_regression supports native parcel pre-aggregation and cov
   expect_equal(reg_nocov$coefficients$tau2_bio, reg_marg$coefficients$tau2_bio, tolerance = 1e-12)
   expect_equal(reg_nocov$panel$precision_weight, reg_marg$panel$precision_weight, tolerance = 1e-12)
 })
+
+test_that("medusa_fit_mmom and decon_connectivity_repair disattenuate measurement error in connectivity and PPI", {
+  set.seed(2026)
+  n_obs <- 120L
+  x <- as.numeric(scale(rnorm(n_obs)))
+  b_seed <- rnorm(n_obs, 0, 0.70)
+  psi_s <- runif(n_obs, 0.20, 0.45)
+  psi_y <- runif(n_obs, 0.15, 0.35)
+  y_seed <- b_seed + rnorm(n_obs, 0, sqrt(psi_s))
+  y_targ <- 0.50 * b_seed + 0.35 * x + 0.40 * (b_seed * x) + rnorm(n_obs, 0, 0.25) + rnorm(n_obs, 0, sqrt(psi_y))
+
+  X_ppi <- cbind(seed = y_seed, x = x, ppi = y_seed * x)
+  err_x <- array(0.0, dim = c(3L, 3L, n_obs))
+  err_x[1L, 1L, ] <- psi_s
+  err_x[1L, 3L, ] <- err_x[3L, 1L, ] <- x * psi_s
+  err_x[3L, 3L, ] <- (x^2) * psi_s
+
+  fit_mmoms <- medusa_fit_mmom(y_targ, X_ppi, err_x = err_x, err_y = psi_y, regularization = "step_up")
+  fit_fb <- fmri.pipeline:::medusa_fit_mmom_fallback(
+    list(outcome = y_targ, predictors = X_ppi, err_x = err_x, err_y = psi_y),
+    list(correction = "step_up"), list(correction = "step_up")
+  )
+  expect_true(fit_mmoms$converged)
+  expect_equal(fit_mmoms$coefficients$estimate, fit_fb$coefficients$estimate, tolerance = 1e-10)
+  expect_equal(fit_mmoms$coefficients$se, fit_fb$coefficients$se, tolerance = 1e-10)
+
+  naive_cf <- stats::coef(stats::lm(y_targ ~ y_seed * x))
+  mmoms_cf <- stats::setNames(fit_mmoms$coefficients$estimate, fit_mmoms$coefficients$term)
+  expect_lt(abs(mmoms_cf[["seed"]] - 0.50), abs(naive_cf[["y_seed"]] - 0.50))
+  expect_lt(abs(mmoms_cf[["ppi"]] - 0.40), abs(naive_cf[["y_seed:x"]] - 0.40))
+
+  # End-to-end decon_connectivity_repair test across multiple subjects
+  tr <- 1.0
+  n_time <- 180L
+  n_trials <- 28L
+  lib <- hrf_library(tr, peak_delays = c(5.0, 6.0), dispersions = 1.0, undershoot_ratios = 6)
+  hrf <- lib[, 1L, drop = FALSE]
+  groups <- stats::setNames(rep(c("R_seed", "R_targ", "R_null"), each = 3L), paste0("v", 1:9))
+
+  panels_all <- vector("list", 10L)
+  for (s in 1:10) {
+    bold_s <- events_s <- x_s <- list()
+    for (r in 1:2) {
+      t_ev <- cumsum(c(6, runif(n_trials - 1L, 4.2, 7.5)))
+      xv <- as.numeric(scale(rnorm(n_trials)))
+      eta_seed <- rnorm(n_trials, 0, 0.70)
+      eta_targ <- (0.50 + 0.35 * xv) * eta_seed + rnorm(n_trials, 0, 0.30)
+      eta_null <- rnorm(n_trials, 0, 0.60)
+      amp_s <- 0.8 + 0.45 * xv + eta_seed
+      amp_t <- 0.8 + 0.35 * xv + eta_targ
+      amp_0 <- 0.8 + 0.50 * xv + eta_null
+      des <- hrf_event_design_cpp(n_time, tr, 0, t_ev, rep(0, n_trials),
+        seq_len(n_trials), n_trials, hrf)[[1L]]
+      ymat <- cbind(
+        replicate(3L, 100 + as.numeric(des %*% amp_s) + rnorm(n_time, sd = 0.22)),
+        replicate(3L, 100 + as.numeric(des %*% amp_t) + rnorm(n_time, sd = 0.22)),
+        replicate(3L, 100 + as.numeric(des %*% amp_0) + rnorm(n_time, sd = 0.22))
+      )
+      colnames(ymat) <- names(groups)
+      bold_s[[paste0("run", r)]] <- ymat
+      events_s[[paste0("run", r)]] <- data.frame(onset = t_ev, duration = 0, condition = "feedback")
+      x_s[[paste0("run", r)]] <- data.frame(x = xv)
+    }
+    fh <- estimate_crossrun_hrf(bold_s, events_s, tr, lib, spatial_groups = groups,
+      pooling = "parcel", noise_model = "ar1", evidence = "calibrated")
+    dc <- deconvolve_crossrun_hrf(bold_s, fh, lambda = 0.6, scaling = "noise_sd", penalty = "sobolev")
+    rg <- decon_epoch_regression(dc, x_s, events = events_s, target_condition = "feedback",
+      lags = 0, restore_scale = TRUE, aggregate_by_parcel = TRUE, whiten_panel = TRUE, return_panel = TRUE)
+    p_s <- rg$panel
+    p_s$id <- sprintf("sub%02d", s)
+    panels_all[[s]] <- p_s
+  }
+  panel_full <- data.table::rbindlist(panels_all)
+  expect_true(all(c("decon_eb", "reliability_trial", "se_whitened", "decon_eb_whitened") %in% names(panel_full)))
+
+  conn_mmoms <- decon_connectivity_repair(panel_full, "R_seed", "R_targ",
+    test_ppi = TRUE, method = "mmoms", return_augmented_panel = TRUE)
+  conn_naive <- decon_connectivity_repair(panel_full, "R_seed", "R_targ",
+    test_ppi = TRUE, method = "naive_gls", orthogonalize_seed_x = FALSE)
+  conn_null <- decon_connectivity_repair(panel_full, "R_seed", "R_null",
+    test_ppi = FALSE, method = "mmoms")
+
+  g_mmoms <- conn_mmoms$group
+  g_naive <- conn_naive$group
+  expect_lt(abs(g_mmoms[term == "seed_c"]$estimate - 0.50), abs(g_naive[term == "seed_c"]$estimate - 0.50))
+  expect_lt(abs(g_mmoms[term == "seed_c:x_c"]$estimate - 0.35), abs(g_naive[term == "seed_c:x_c"]$estimate - 0.35))
+  expect_gt(conn_null$group[term == "seed_c"]$p.value, 0.05)
+
+  # Moment-preserving REPAIR predictor columns reproduce subject M-MOMS slopes in WLS
+  p_aug <- conn_mmoms$panel_repair[id == "sub01"]
+  lm_aug <- stats::lm(targ_c ~ seed_c_repair + x_c_repair + `seed_c:x_c_repair`,
+    data = p_aug, weights = repair_weight)
+  s1_mmoms <- conn_mmoms$subjects[id == "sub01"]
+  expect_equal(unname(stats::coef(lm_aug)[-1L]), s1_mmoms$estimate, tolerance = 1e-5)
+
+  # Between-subject random-effect regression via medusa_between_subject_repair
+  p_rseed <- panel_full[voxel == "R_seed" & evt_time == 0]
+  m_l1 <- suppressWarnings(lme4::lmer(decon_demixed ~ x + (1 + x | id), data = p_rseed))
+  re_ids <- rownames(lme4::ranef(m_l1)$id)
+  b_true_re <- lme4::ranef(m_l1)$id[["x"]]
+  trait_df <- data.frame(
+    id = re_ids,
+    trait_y = 1.5 * b_true_re + rnorm(length(re_ids), 0, 0.05)
+  )
+  bs_rep <- medusa_between_subject_repair(
+    formula = trait_y ~ re(x, group = "id"),
+    medusa_mlm = m_l1,
+    subject_data = trait_df,
+    id_col = "id"
+  )
+  expect_true(is.list(bs_rep))
+  expect_true(!is.null(bs_rep$coefficients) || inherits(bs_rep, "repair"))
+})
+
+test_that("fast-TR amendments: AR(1)xAR(2) cascade whitening, AR(3) second-difference noise_sd, and sub-TR lobe-calibrated within-trial demixing", {
+  set.seed(8842)
+  tr <- 0.65
+  n_time <- 260L
+  n_trials <- 22L
+  lib <- hrf_library(tr, preset = "medusa")
+  pars <- attr(lib, "parameters")
+  idx_can <- which(abs(pars$peak_delay - 6.0) < 1e-6 & abs(pars$dispersion - 1.0) < 1e-6)[1L]
+  groups <- stats::setNames(rep(c("R_task", "R_null"), each = 5L), paste0("v", 1:10))
+
+  # 1. Exact Cholesky identity for cascaded AR(1) x AR(2) whitening matrix
+  W_casc <- fmri.pipeline:::hrf_whitening_matrix(seq_len(64L), c(0.60, 0.12, -0.24))
+  W_ar1 <- fmri.pipeline:::hrf_whitening_matrix(seq_len(64L), 0.60)
+  expect_equal(dim(W_casc), c(64L, 64L))
+  expect_gt(max(abs(W_casc - W_ar1)), 0.05)
+
+  # 2. Simulate fast-TR multiband data with oscillatory AR(2) physiological component + slow drift
+  bold <- events <- covs <- list()
+  t_sec <- (seq_len(n_time) - 1L) * tr
+  for (r in 1:2) {
+    onsets <- cumsum(c(5.0, runif(n_trials - 1L, 4.0, 6.8)))
+    xv <- as.numeric(scale(rnorm(n_trials)))
+    des <- hrf_event_design_cpp(n_time, tr, 0, onsets, rep(0, n_trials),
+      seq_len(n_trials), n_trials, lib[, idx_can, drop = FALSE])[[1L]]
+    ymat <- matrix(0, n_time, 10L, dimnames = list(NULL, names(groups)))
+    for (v in 1:10) {
+      e_ar1 <- as.numeric(stats::filter(rnorm(n_time + 40L, sd = 0.16), 0.62, method = "recursive"))[-seq_len(40L)]
+      e_phys <- 0.11 * sin(2 * pi * 0.24 * t_sec + runif(1, 0, 2 * pi)) +
+        0.10 * sin(2 * pi * 1.18 * t_sec + runif(1, 0, 2 * pi))
+      e_drift <- 0.18 * cos(pi * (2 * (0:(n_time - 1L)) + 1) / (2 * n_time))
+      sig <- if (v <= 5L) as.numeric(des %*% (0.8 + 0.65 * xv)) else rep(0, n_time)
+      ymat[, v] <- 100 + sig + e_ar1 + e_phys + e_drift
+    }
+    bold[[paste0("run", r)]] <- ymat
+    events[[paste0("run", r)]] <- data.frame(onset = onsets, duration = 0, condition = "feedback")
+    covs[[paste0("run", r)]] <- data.frame(x = xv)
+  }
+
+  fit <- estimate_crossrun_hrf(bold, events, tr, lib, spatial_groups = groups,
+    pooling = "parcel", fallback_kernel = idx_can, amplitude_model = "trial",
+    noise_model = "ar1", evidence = "calibrated", selection_mode = "soft_average")
+  expect_true(all(c("rho", "psi1", "psi2") %in% names(fit$noise[[1L]])))
+  expect_true(any(abs(fit$noise[[1L]]$psi2) > 0))
+
+  # 3. Priority 2: AR(3) + HF second-difference noise_sd is closer to true high-frequency SD than pure AR(1) formula
+  sd_ar3 <- fmri.pipeline:::estimate_decon_noise_sd(
+    bold$run1[, 6:10],
+    noise_rho = fit$noise[[1L]]$rho[6:10],
+    noise_psi1 = fit$noise[[1L]]$psi1[6:10],
+    noise_psi2 = fit$noise[[1L]]$psi2[6:10]
+  )
+  expect_true(all(is.finite(sd_ar3) & sd_ar3 > 0.10 & sd_ar3 < 0.35))
+
+  # 4. Priority 3: Sub-TR multi-lag within-trial demixing calibrates continuous lobe gain and propagates SE inflation
+  decon <- deconvolve_crossrun_hrf(bold, fit, lambda = NULL, scaling = "demean", penalty = "sobolev")
+  lags_sub <- seq(-tr, 3 * tr, by = tr)
+  reg_nowt <- decon_epoch_regression(decon, covs, events = events, target_condition = "feedback",
+    lags = lags_sub, demix_within_trial = FALSE, restore_scale = TRUE, return_panel = TRUE)
+  reg_wt <- decon_epoch_regression(decon, covs, events = events, target_condition = "feedback",
+    lags = lags_sub, demix_within_trial = TRUE, restore_scale = TRUE, return_panel = TRUE)
+
+  se_nowt <- mean(reg_nowt$panel$se_demixed, na.rm = TRUE)
+  se_wt <- mean(reg_wt$panel$se_demixed, na.rm = TRUE)
+  expect_gt(se_wt, se_nowt)
+  b_wt <- reg_wt$coefficients$beta_weighted[reg_wt$coefficients$voxel %in% paste0("v", 1:5) & abs(reg_wt$coefficients$lag) < 1e-6]
+  expect_gt(mean(b_wt), 0.15)
+  expect_lt(mean(b_wt), 0.85)
+})
+

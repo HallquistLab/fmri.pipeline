@@ -188,9 +188,9 @@ covariate columns for downstream \code{mixed_by()} modeling. Defaults to
 \code{TRUE} when \code{covariates = NULL} and \code{return_epochs = FALSE}.}
 }
 \value{
-A list with \code{coefficients} (per voxel/parcel, lag, and predictor term),
-  \code{summary} (averaged across usable units per lag and term), optional
-  \code{epochs}, optional \code{panel}, and \code{settings}.
+A list with \code{coefficients} (per voxel/parcel, lag, and predictor
+  term), \code{summary} (averaged across usable units per lag and term),
+  optional \code{epochs}, optional \code{panel}, and \code{settings}.
 }
 \description{
 Estimate trial-by-trial correlations and regression slopes across epoch lags
@@ -250,17 +250,19 @@ per-trial operator precision weights and within-run error covariance.
       (evidence-weighted HRF kernel averaging across locally supported
       shapes), and parcel labels in \code{spatial_groups}.
     \item \strong{Stage 2 (Deconvolution):} Use \code{\link{deconvolve_crossrun_hrf}}
-      with \code{scaling = "noise_sd"} (AR(1) innovation noise SD rather than
-      total \code{"zscore"} variance) and \code{penalty = "sobolev"}.
-    \item \strong{Stage 3 (Epoch De-Mixing & Whitening):} Use
+      with \code{lambda = NULL} (adaptive prewhitened GCV tuning),
+      \code{scaling = "noise_sd"} (AR(1) innovation noise SD rather than
+      total \code{"zscore"} variance), and \code{penalty = "sobolev"}.
+    \item \strong{Stage 3 (Epoch De-Mixing, Parcel Pre-Aggregation & Whitening):} Use
       \code{decon_epoch_regression(..., demix_other_events = TRUE,
       demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls",
-      whiten_panel = TRUE, return_panel = TRUE)}. Enable
-      \code{demix_within_trial = TRUE} with \code{lags} spaced at \eqn{1\times\mathrm{TR}}
-      when estimating multi-lag waveforms \eqn{\beta(\tau)} (if \code{lags} is
-      sampled finer than \eqn{1\times\mathrm{TR}}, \code{within_trial_ridge} is
-      automatically scaled by \eqn{(\mathrm{TR}/\Delta\tau)^2} to prevent sub-TR
-      collinearity amplification), and set \code{source_model = "duration"}
+      aggregate_by_parcel = TRUE, whiten_panel = TRUE, return_panel = TRUE)}.
+      Enable \code{demix_within_trial = TRUE} with \code{lags} spaced at
+      \eqn{1\times\mathrm{TR}} when estimating multi-lag waveforms \eqn{\beta(\tau)}
+      (if \code{lags} is sampled finer than \eqn{1\times\mathrm{TR}},
+      \code{within_trial_ridge} is automatically scaled by
+      \eqn{(\mathrm{TR}/\Delta\tau)^2} to prevent sub-TR collinearity
+      amplification), and set \code{source_model = "duration"}
       (\code{duration_scale = "rate"}) when modeling variable-duration (RT)
       epochs.
     \item \strong{Stage 4 (Group Mixed-Effects Inference):} Pass both the

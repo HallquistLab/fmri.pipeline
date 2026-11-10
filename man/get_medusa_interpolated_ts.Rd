@@ -72,11 +72,12 @@ to the acquisition TR. Explicit invalid rows always block interpolation;
 this tolerance only permits wider brackets across deleted rows.}
 
 \item{readout_kernel}{Readout kernel applied at each output grid time:
-\code{"linear"} (default), \code{"boxcar"}, \code{"triangle"}, or
-\code{"gaussian"}.}
+\code{"linear"} (default two-point bracket interpolation), \code{"boxcar"},
+\code{"triangle"}, or \code{"gaussian"} local window integration within each
+contiguous uncensored segment.}
 
 \item{readout_width}{Full window width (in seconds) for non-linear
-\code{readout_kernel} modes.}
+\code{readout_kernel} modes. Defaults to \code{1.5 * max_gap}.}
 }
 \description{
 front-end function for taking a list of windowed time series by mask value, interpolating them onto a time grid,

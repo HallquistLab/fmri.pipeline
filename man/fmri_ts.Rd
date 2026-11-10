@@ -80,14 +80,18 @@ R6 class representing a multivariate time series object for fMRI analysis
 \if{html}{\out{<a id="method-fmri_ts-get_events"></a>}}
 \if{latex}{\out{\hypertarget{method-fmri_ts-get_events}{}}}
 \subsection{\code{fmri_ts$get_events()}}{
-  Get a copy of event data, optionally restoring original variable names.
+  Get a copy of the event data, optionally with original names
   \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
     \preformatted{fmri_ts$get_events(orig_names = FALSE)}
+    \if{html}{\out{</div>}}
   }
   \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
     \describe{
-      \item{\code{orig_names}}{Whether to restore the input variable names.}
+      \item{\code{orig_names}}{Whether to restore the input variable names}
     }
+    \if{html}{\out{</div>}}
   }
 }
 

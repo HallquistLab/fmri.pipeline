@@ -234,10 +234,15 @@ hrf_single_run_subblocks <- function(run_name, y, ev, tr, offset, kernels,
 
       block_comp <- FALSE
       if (!is.null(design_b) && length(rows_b) >= 6L) {
-        for (rho in unique(noise_r$rho)) {
-          indices <- which(noise_r$rho == rho)
-          part <- hrf_score_run_cpp(y[, indices, drop = FALSE], design_b, z, rows_b,
-            as.integer(batch_size), rho = rho, evidence = evidence == "calibrated",
+        psi1_r <- if ("psi1" %in% names(noise_r)) noise_r$psi1 else rep(0, nrow(noise_r))
+        psi2_r <- if ("psi2" %in% names(noise_r)) noise_r$psi2 else rep(0, nrow(noise_r))
+        ar_keys_b <- paste(noise_r$rho, psi1_r, psi2_r, sep = ":")
+        for (ak in unique(ar_keys_b)) {
+          indices <- which(ar_keys_b == ak)
+          idx1 <- indices[1L]
+          ar_vec <- c(noise_r$rho[idx1], psi1_r[idx1], psi2_r[idx1])
+          part <- hrf_score_run_ar(y[, indices, drop = FALSE], design_b, z, rows_b,
+            as.integer(batch_size), ar_vec = ar_vec, evidence = evidence == "calibrated",
             fallback_index = as.integer(fallback_kernel))
           res_b$scores[, indices] <- part$scores
           res_b$signal_status[indices] <- part$signal_status
@@ -506,11 +511,17 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     if (evidence == "calibrated") for (field in c("task_p", "fallback_p", "incompatible_p"))
       result[[field]] <- matrix(NA_real_, ncol(kernels), ncol(y))
     manifest <- list()
-    for (rho in unique(noise[[r]]$rho)) {
-      indices <- which(noise[[r]]$rho == rho)
+    psi1_r <- if ("psi1" %in% names(noise[[r]])) noise[[r]]$psi1 else rep(0, nrow(noise[[r]]))
+    psi2_r <- if ("psi2" %in% names(noise[[r]])) noise[[r]]$psi2 else rep(0, nrow(noise[[r]]))
+    ar_keys_r <- paste(noise[[r]]$rho, psi1_r, psi2_r, sep = ":")
+    for (ak in unique(ar_keys_r)) {
+      indices <- which(ar_keys_r == ak)
+      idx1 <- indices[1L]
+      rho <- noise[[r]]$rho[idx1]
+      ar_vec <- c(rho, psi1_r[idx1], psi2_r[idx1])
       part <- if (sum(mask) >= 3L) {
-        hrf_score_run_cpp(y[, indices, drop = FALSE], design, z, which(mask),
-          as.integer(batch_size), rho = rho, evidence = evidence == "calibrated",
+        hrf_score_run_ar(y[, indices, drop = FALSE], design, z, which(mask),
+          as.integer(batch_size), ar_vec = ar_vec, evidence = evidence == "calibrated",
           fallback_index = as.integer(fallback_kernel))
       } else list(scores = matrix(NA_real_, ncol(kernels), length(indices)),
         signal_status = rep("insufficient_observations", length(indices)),
@@ -1053,10 +1064,13 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
     for (key in unique(strata[status == "ok"])) {
       columns <- which(strata == key & status == "ok")
       ar <- rho[columns[1L]]
+      ar_op <- if (!is.null(strat$get_ar)) strat$get_ar(columns[1L]) else ar
+      ar_psi1 <- if (!is.null(strat$psi1)) strat$psi1[columns[1L]] else 0.0
+      ar_psi2 <- if (!is.null(strat$psi2)) strat$psi2[columns[1L]] else 0.0
       k_vec <- as.numeric(strat$get_kernel(columns[1L]))
       if (backend != "wiener") {
         if (exists(key, envir = operators, inherits = FALSE)) operator <- get(key, envir = operators) else {
-          operator <- hrf_inverse_operator(n, k_vec, rows, ar, z, settings)
+          operator <- hrf_inverse_operator(n, k_vec, rows, ar_op, z, settings)
           bytes <- as.numeric(utils::object.size(operator))
           if (bytes <= operator_cache_mb * 1024^2) {
             while (length(cache_keys) && cache_bytes + bytes > operator_cache_mb * 1024^2) {
@@ -1069,7 +1083,13 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
         }
       }
       for (indices in split(columns, ceiling(seq_along(columns) / batch_size))) {
-        scaled <- scale_decon_input(y[rows, indices, drop = FALSE], scaling = scaling, noise_rho = ar)
+        scaled <- scale_decon_input(
+          y[rows, indices, drop = FALSE],
+          scaling = scaling,
+          noise_rho = ar,
+          noise_psi1 = ar_psi1,
+          noise_psi2 = ar_psi2
+        )
         out[, indices] <- if (backend == "wiener") {
           fit_input <- rbind(scaled$y, matrix(0, tail_padding, length(indices)))
           deconvolve_reglin(fit_input, k_vec, lambda = lambda,
@@ -1079,7 +1099,12 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
         noise_sds[indices] <- if (identical(scaling, "noise_sd")) {
           scaled$scale
         } else {
-          estimate_decon_noise_sd(y[rows, indices, drop = FALSE], noise_rho = ar)
+          estimate_decon_noise_sd(
+            y[rows, indices, drop = FALSE],
+            noise_rho = ar,
+            noise_psi1 = ar_psi1,
+            noise_psi2 = ar_psi2
+          )
         }
       }
     }

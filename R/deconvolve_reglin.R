@@ -13,9 +13,9 @@
 #' @param penalty regularization penalty: \code{"diff2"} for smooth second
 #'   differences, \code{"diff1"} for smooth first differences, \code{"ridge"}
 #'   for amplitude shrinkage, \code{"matern1"} for a damped first-order
-#'   Matérn/Ornstein-Uhlenbeck penalty (\code{0.10 * I + 0.90 * D1'D1}), or
+#'   Matérn/Ornstein-Uhlenbeck penalty (\code{0.10 * I + 0.90 * crossprod(D1)}), or
 #'   \code{"sobolev"} for a critically damped second-order Sobolev penalty
-#'   (\code{0.05 * I + 0.45 * D1'D1 + 0.50 * D2'D2}) that suppresses negative
+#'   (\code{0.05 * I + 0.45 * crossprod(D1) + 0.50 * crossprod(D2)}) that suppresses negative
 #'   sidelobe ringing and stabilizes low frequencies.
 #' @param kernel_grid optional list or matrix of candidate HRF kernels. If
 #'   supplied, \code{kernel} and \code{hrf_lags} are ignored for tuning.
@@ -508,8 +508,10 @@ resolve_decon_scaling <- function(scaling = NULL, normalize = TRUE, demean = TRU
 
 # Estimate marginal observation noise SD from second differences, where smooth
 # HRF-convolved task signal has negligible energy (< 0.5% of ||h||_2^2).
-# Under AR(1) noise with lag-1 correlation rho, Var(Delta^2 e_t) = 2*(1-rho)*(3-rho)*sigma_e^2.
-estimate_decon_noise_sd <- function(y, noise_rho = NULL) {
+# Under general stationary noise with lag-1/2 autocorrelations (gamma_1, gamma_2),
+# Var(Delta^2 e_t) = (6 - 8*gamma_1 + 2*gamma_2)*sigma_e^2 (reducing to
+# 2*(1-rho)*(3-rho)*sigma_e^2 under pure AR(1) where gamma_2 = rho^2).
+estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, noise_psi2 = NULL) {
   y <- as.matrix(y)
   n <- nrow(y)
   p <- ncol(y)
@@ -532,29 +534,85 @@ estimate_decon_noise_sd <- function(y, noise_rho = NULL) {
   }
   s2 <- rob_scale(d2)
   if (!is.null(noise_rho)) {
+    ar_casc <- attr(noise_rho, "ar_cascade")
+    if (!is.null(ar_casc) && is.null(noise_psi1) && is.null(noise_psi2) && length(ar_casc) >= 3L) {
+      noise_psi1 <- ar_casc[2L]
+      noise_psi2 <- ar_casc[3L]
+    }
     rho_vec <- rep_len(as.numeric(noise_rho), p)
   } else {
     rho_vec <- rep(NA_real_, p)
   }
+  psi1_vec <- if (!is.null(noise_psi1)) rep_len(as.numeric(noise_psi1), p) else rep(0.0, p)
+  psi2_vec <- if (!is.null(noise_psi2)) rep_len(as.numeric(noise_psi2), p) else rep(0.0, p)
+  psi1_vec[!is.finite(psi1_vec)] <- 0.0
+  psi2_vec[!is.finite(psi2_vec)] <- 0.0
+  r2_d2_fallback <- rep(0.0, p)
   need_rho <- !is.finite(rho_vec)
   if (any(need_rho)) {
-    # Estimate AR(1) rho purely from the lag-1 autocorrelation r1 of Delta^2 y,
+    # Estimate AR(1) rho purely from the lag-1/2 autocorrelations of Delta^2 y,
     # where smooth HRF task signal is annihilated: r1 = -(4 - 3*rho + rho^2) / (2*(3 - rho)).
-    rho_est <- vapply(which(need_rho), function(j) {
+    idx_need <- which(need_rho)
+    rho_est <- numeric(length(idx_need))
+    for (k in seq_along(idx_need)) {
+      j <- idx_need[k]
       col <- d2[, j]
-      if (length(col) < 4L || any(!is.finite(col)) || stats::sd(col) <= .Machine$double.eps) return(0)
+      if (length(col) < 4L || any(!is.finite(col)) || stats::sd(col) <= .Machine$double.eps) {
+        rho_est[k] <- 0.0
+        next
+      }
       r1 <- stats::cor(col[-length(col)], col[-1L])
-      if (!is.finite(r1)) return(0)
-      r1 <- min(max(r1, -2 / 3), -0.46)
-      b <- 3 + 2 * r1
-      c_val <- 4 + 6 * r1
+      if (!is.finite(r1)) {
+        rho_est[k] <- 0.0
+        next
+      }
+      r2 <- if (length(col) >= 6L) {
+        stats::cor(col[1:(length(col) - 2L)], col[3:length(col)])
+      } else {
+        0.0
+      }
+      if (!is.finite(r2)) r2 <- 0.0
+      r2_d2_fallback[j] <- r2
+      r1_eff <- min(max(r1 + 0.75 * min(0.0, r2), -2 / 3), -0.46)
+      b <- 3 + 2 * r1_eff
+      c_val <- 4 + 6 * r1_eff
       disc <- max(0, b * b - 4 * c_val)
-      0.5 * (b - sqrt(disc))
-    }, numeric(1L))
+      rho_est[k] <- 0.5 * (b - sqrt(disc))
+    }
     rho_vec[need_rho] <- pmin(pmax(rho_est, 0), 0.90)
   }
   rho_vec <- pmin(pmax(rho_vec, -0.90), 0.95)
-  denom <- sqrt(pmax(2 * (1 - rho_vec) * (3 - rho_vec), .Machine$double.eps))
+  phi1 <- rho_vec + psi1_vec
+  phi2 <- psi2_vec - rho_vec * psi1_vec
+  phi3 <- -rho_vec * psi2_vec
+  gamma1 <- (phi1 + phi2 * phi3) / pmax(1.0 - phi2 - phi1 * phi3 - phi3^2, 0.05)
+  gamma1 <- pmin(pmax(gamma1, -0.90), 0.95)
+  gamma2 <- phi2 + (phi1 + phi3) * gamma1 + 1.5 * pmin(0.0, r2_d2_fallback)
+  gamma3 <- phi1 * gamma2 + phi2 * gamma1 + phi3
+
+  if (!any(need_rho) && n >= 200L) {
+    r1_d2_emp <- vapply(seq_len(p), function(j) {
+      col <- d2[, j]
+      if (length(col) < 6L || any(!is.finite(col)) || stats::sd(col) <= .Machine$double.eps) return(NA_real_)
+      stats::cor(col[-length(col)], col[-1L])
+    }, numeric(1L))
+    r1_med <- stats::median(r1_d2_emp, na.rm = TRUE)
+    if (is.finite(r1_med)) {
+      r1_d2_ar3 <- (-4.0 + 7.0 * gamma1 - 4.0 * gamma2 + gamma3) / pmax(6.0 - 8.0 * gamma1 + 2.0 * gamma2, 0.1)
+      r1_d2_ar1 <- -(4.0 - 3.0 * gamma1 + gamma1^2) / (2.0 * (3.0 - gamma1))
+      r1_adj <- pmin(pmax(r1_med - (r1_d2_ar3 - r1_d2_ar1), -2.0 / 3.0), -0.46)
+      b_q <- 3.0 + 2.0 * r1_adj
+      c_q <- 4.0 + 6.0 * r1_adj
+      disc_q <- pmax(0.0, b_q * b_q - 4.0 * c_q)
+      rho_hf <- pmin(pmax(0.5 * (b_q - sqrt(disc_q)), 0.0), 0.90)
+      excess_lf <- pmax(0.0, gamma1 - rho_hf)
+      gamma1_eff <- gamma1 - 0.75 * excess_lf
+      gamma2 <- gamma2 - (gamma1^2 - gamma1_eff^2)
+      gamma1 <- gamma1_eff
+    }
+  }
+
+  denom <- sqrt(pmax(6.0 - 8.0 * gamma1 + 2.0 * gamma2, .Machine$double.eps))
   divisor <- s2 / denom
   divisor[!is.finite(divisor) | divisor <= .Machine$double.eps] <- 1
   as.numeric(divisor)
@@ -562,7 +620,15 @@ estimate_decon_noise_sd <- function(y, noise_rho = NULL) {
 
 # Record the actual transform y_scaled = (y - center) / scale. Scaling is
 # independent of the inverse operator; it does not remove regularization bias.
-scale_decon_input <- function(y, normalize = TRUE, demean = TRUE, scaling = NULL, noise_rho = NULL) {
+scale_decon_input <- function(
+  y,
+  normalize = TRUE,
+  demean = TRUE,
+  scaling = NULL,
+  noise_rho = NULL,
+  noise_psi1 = NULL,
+  noise_psi2 = NULL
+) {
   scaling <- resolve_decon_scaling(scaling, normalize, demean)
   center <- if (scaling == "none") rep(0, ncol(y)) else colMeans(y)
   divisor <- rep(1, ncol(y))
@@ -570,7 +636,12 @@ scale_decon_input <- function(y, normalize = TRUE, demean = TRUE, scaling = NULL
     divisor <- apply(y, 2L, stats::sd)
     divisor[!is.finite(divisor) | divisor <= .Machine$double.eps] <- 1
   } else if (scaling == "noise_sd") {
-    divisor <- estimate_decon_noise_sd(y, noise_rho = noise_rho)
+    divisor <- estimate_decon_noise_sd(
+      y,
+      noise_rho = noise_rho,
+      noise_psi1 = noise_psi1,
+      noise_psi2 = noise_psi2
+    )
   } else if (scaling == "psc") {
     spread <- apply(y, 2L, stats::sd)
     if (any(!is.finite(center) | center <= sqrt(.Machine$double.eps) * spread)) {
