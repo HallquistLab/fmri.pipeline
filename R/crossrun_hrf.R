@@ -136,9 +136,11 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
     part_ic <- hrf_score_run_cpp(y, des_ic, z, which(mask), as.integer(batch_size),
       rho = rho_ref, evidence = FALSE, fallback_index = as.integer(fallback_kernel))
     if (isTRUE(part_ic$comparable)) {
-      fb_scores <- part_ic$scores[fallback_kernel, ]
+      max_scores <- apply(part_ic$scores, 2L, function(col) {
+        if (any(is.finite(col))) max(col, na.rm = TRUE) else NA_real_
+      })
       mean_scores <- colMeans(part_ic$scores, na.rm = TRUE)
-      voxel_val <- 0.5 * fb_scores + 0.5 * mean_scores
+      voxel_val <- 0.65 * max_scores + 0.35 * mean_scores
       val <- if (any(is.finite(voxel_val))) mean(voxel_val, na.rm = TRUE) else -Inf
       if (is.finite(val) && val > best_val) {
         best_val <- val

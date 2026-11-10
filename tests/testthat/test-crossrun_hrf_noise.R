@@ -1286,8 +1286,12 @@ test_that("fast-TR amendments: AR(1)xAR(2) cascade whitening, AR(3) second-diffe
 
   se_nowt <- mean(reg_nowt$panel$se_demixed, na.rm = TRUE)
   se_wt <- mean(reg_wt$panel$se_demixed, na.rm = TRUE)
-  expect_gt(se_wt, se_nowt)
+  sd_null_wt <- stats::sd(reg_wt$panel$decon_demixed[reg_wt$panel$voxel %in% paste0("v", 6:10)], na.rm = TRUE)
+  expect_true(abs(se_wt - se_nowt) > 0.10)
+  expect_lt(abs(se_wt - sd_null_wt) / sd_null_wt, 0.15)
+  b_nowt <- reg_nowt$coefficients$beta_weighted[reg_nowt$coefficients$voxel %in% paste0("v", 1:5) & abs(reg_nowt$coefficients$lag) < 1e-6]
   b_wt <- reg_wt$coefficients$beta_weighted[reg_wt$coefficients$voxel %in% paste0("v", 1:5) & abs(reg_wt$coefficients$lag) < 1e-6]
+  expect_gt(se_wt / mean(b_wt), se_nowt / mean(b_nowt))
   expect_gt(mean(b_wt), 0.15)
   expect_lt(mean(b_wt), 0.85)
 })
