@@ -5,16 +5,39 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
   ids <- colnames(y)
   labels <- if (is.null(groups)) rep("run", ncol(y)) else unname(groups)
   if (!is.null(fixed_rho)) return(data.frame(voxel = ids, group = labels,
-    rho = rep(unname(fixed_rho), length(ids)), method = "supplied", n_voxels = NA_integer_))
+    rho = rep(unname(fixed_rho), length(ids)), psi1 = 0, psi2 = 0,
+    method = "supplied", n_voxels = NA_integer_))
   if (sum(mask) < 12L) return(data.frame(voxel = ids, group = labels,
-    rho = 0, method = "insufficient_noise_df", n_voxels = 0L))
+    rho = 0, psi1 = 0, psi2 = 0, method = "insufficient_noise_df", n_voxels = 0L))
   # Free event amplitudes keep trial variation out of the covariance estimate.
-  # Derivatives allow modest shape mismatch, when residual df permit them.
+  # Condition-level derivatives allow modest shape mismatch without consuming
+  # 2 * M_events degrees of freedom, and a low-frequency DCT-II basis (< 1/128 Hz)
+  # prevents nonlinear scanner drift from biasing rho toward the upper boundary.
+  n_obs <- nrow(y)
   durations <- if (is.null(events$duration)) rep(0, nrow(events)) else events$duration
-  x <- hrf_event_design_cpp(nrow(y), tr, offset, events$onset, durations,
+  x <- hrf_event_design_cpp(n_obs, tr, offset, events$onset, durations,
     seq_len(nrow(events)), nrow(events), kernels[, fallback, drop = FALSE])[[1L]]
-  derivative <- function(a) rbind(a[2:nrow(a), , drop = FALSE], 0) - rbind(0, a[1:(nrow(a) - 1L), , drop = FALSE])
-  augmented <- cbind(z, x, derivative(x), derivative(derivative(x)))
+  cond_levels <- unique(events$condition)
+  cond_ids <- match(events$condition, cond_levels)
+  x_cond <- if (length(cond_levels) > 0L) {
+    hrf_event_design_cpp(n_obs, tr, offset, events$onset, durations,
+      cond_ids, length(cond_levels), kernels[, fallback, drop = FALSE])[[1L]]
+  } else {
+    matrix(0, n_obs, 0L)
+  }
+  derivative <- function(a) {
+    if (ncol(a) == 0L || nrow(a) < 2L) return(a)
+    rbind(a[2:nrow(a), , drop = FALSE], 0) - rbind(0, a[1:(nrow(a) - 1L), , drop = FALSE])
+  }
+  z_dct <- z
+  if (n_obs * tr >= 96 && sum(mask) >= 40L) {
+    n_cos <- max(2L, min(6L, as.integer(floor(2 * n_obs * tr / 128.0))))
+    t_idx <- seq(0, n_obs - 1L)
+    dct_cols <- vapply(seq_len(n_cos), function(k) {
+      cos(pi * (2 * t_idx + 1) * k / (2 * n_obs))
+    }, numeric(n_obs))
+    z_dct <- cbind(z, dct_cols)
+  }
   # A rank check is preferable to a column-count check for repeated events.
   rank <- function(a) {
     a <- a[mask, , drop = FALSE]
@@ -22,12 +45,30 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
     s <- svd(sweep(a, 2L, norm, "/"), nu = 0, nv = 0)$d
     if (length(s) && s[1L] > 0) sum(s > 1e-8 * s[1L]) else 0L
   }
-  mean_design <- if (sum(mask) - rank(augmented) >= 20L) augmented else cbind(z, x)
-  if (sum(mask) - rank(mean_design) < 10L) return(data.frame(voxel = ids, group = labels,
-    rho = 0, method = "insufficient_noise_df", n_voxels = 0L))
-  profiles <- hrf_noise_profile_cpp(y, mean_design, which(mask), rho_grid, as.integer(batch_size))
-  out <- data.frame(voxel = ids, group = labels, rho = 0,
+  aug_trial_cond <- cbind(z_dct, x, derivative(x_cond), derivative(derivative(x_cond)))
+  aug_trial <- cbind(z_dct, x)
+  aug_cond <- cbind(z_dct, x_cond, derivative(x_cond), derivative(derivative(x_cond)))
+  n_mask <- sum(mask)
+  min_df_full <- max(36L, as.integer(0.68 * n_mask))
+  mean_design <- if (n_mask - rank(aug_trial_cond) >= min_df_full) {
+    aug_trial_cond
+  } else if (n_mask - rank(aug_trial) >= min_df_full) {
+    aug_trial
+  } else if (n_mask - rank(cbind(z, x)) >= 20L) {
+    cbind(z, x)
+  } else if (n_mask - rank(aug_cond) >= 20L) {
+    aug_cond
+  } else {
+    cbind(z, x)
+  }
+  if (n_mask - rank(mean_design) < 10L) return(data.frame(voxel = ids, group = labels,
+    rho = 0, psi1 = 0, psi2 = 0, method = "insufficient_noise_df", n_voxels = 0L))
+  rows <- which(mask)
+  profiles <- hrf_noise_profile_cpp(y, mean_design, rows, rho_grid, as.integer(batch_size))
+  out <- data.frame(voxel = ids, group = labels, rho = 0, psi1 = 0, psi2 = 0,
     method = "insufficient_noise_voxels", n_voxels = 0L)
+  p1_idx <- which(diff(rows) == 1L)
+  p2_idx <- if (length(rows) >= 3L) which((rows[3:length(rows)] - rows[1:(length(rows) - 2L)]) == 2L) else integer(0)
   for (g in unique(labels)) {
     index <- which(labels == g)
     usable <- index[colSums(is.finite(profiles[, index, drop = FALSE])) == length(rho_grid)]
@@ -35,8 +76,61 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
     # Pool likelihood PROFILES, not BOLD signals. This regularizes covariance
     # without canceling signed neural responses or assuming independent voxels
     # for significance testing. A group with no data does not borrow other groups.
-    best <- which.min(rowMeans(profiles[, usable, drop = FALSE]))
-    out$rho[index] <- rho_grid[best]
+    prof_g <- rowMeans(profiles[, usable, drop = FALSE])
+    best <- which.min(prof_g)
+    rho_hat <- rho_grid[best]
+    if (best > 1L && best < length(rho_grid) && length(rho_grid) >= 5L) {
+      x1 <- rho_grid[best - 1L]; x2 <- rho_grid[best]; x3 <- rho_grid[best + 1L]
+      y1 <- prof_g[best - 1L]; y2 <- prof_g[best]; y3 <- prof_g[best + 1L]
+      d1 <- x2 - x1; d2 <- x3 - x2
+      if (d1 > 0 && d2 > 0) {
+        g1 <- (y2 - y1) / d1; g2 <- (y3 - y2) / d2
+        if (is.finite(g1) && is.finite(g2) && (g2 - g1) > 1e-12) {
+          rho_interp <- x2 - (d1 * g2 + d2 * g1) / (2 * (g2 - g1))
+          rho_hat <- round(min(max(rho_interp, x1), x3), 4L)
+        }
+      }
+    }
+    psi1_hat <- 0.0
+    psi2_hat <- 0.0
+    if (length(rows) >= 48L && length(p1_idx) >= 24L && length(p2_idx) >= 24L) {
+      w1 <- hrf_whitening_matrix(rows, rho_hat)
+      wz <- w1 %*% mean_design[rows, , drop = FALSE]
+      norm_z <- sqrt(colSums(wz^2)); norm_z[norm_z == 0] <- 1
+      sv <- svd(sweep(wz, 2L, norm_z, "/"), nv = 0)
+      rk <- if (length(sv$d) && sv$d[1L] > 0) sum(sv$d > 1e-8 * sv$d[1L]) else 0L
+      df_res <- length(rows) - rk
+      if (df_res >= 20L) {
+        q_des <- if (rk > 0L) sv$u[, seq_len(rk), drop = FALSE] else matrix(0, length(rows), 0L)
+        wy <- w1 %*% y[rows, usable, drop = FALSE]
+        res1 <- if (rk > 0L) wy - q_des %*% crossprod(q_des, wy) else wy
+        v_norms <- sqrt(colSums(res1^2))
+        ok_v <- is.finite(v_norms) & v_norms > 1e-10
+        if (any(ok_v)) {
+          res1_n <- sweep(res1[, ok_v, drop = FALSE], 2L, v_norms[ok_v], "/")
+          b1 <- if (rk > 0L) (-sum(q_des[p1_idx + 1L, , drop = FALSE] * q_des[p1_idx, , drop = FALSE])) / df_res else 0.0
+          b2 <- if (rk > 0L) (-sum(q_des[p2_idx + 2L, , drop = FALSE] * q_des[p2_idx, , drop = FALSE])) / df_res else 0.0
+          r1 <- mean(colSums(res1_n[p1_idx + 1L, , drop = FALSE] * res1_n[p1_idx, , drop = FALSE])) - b1
+          r2 <- mean(colSums(res1_n[p2_idx + 2L, , drop = FALSE] * res1_n[p2_idx, , drop = FALSE])) - b2
+          r1 <- min(max(r1, -0.80), 0.80)
+          r2 <- min(max(r2, -0.80), 0.80)
+          k1 <- r1
+          k2 <- min(max((r2 - r1 * r1) / max(1.0 - r1 * r1, 0.10), -0.80), 0.80)
+          k_norm2 <- k1 * k1 + k2 * k2
+          tau_pacf <- max(0.065, 0.90 / sqrt(max(1.0, df_res)))
+          if (is.finite(k_norm2) && k_norm2 > tau_pacf * tau_pacf) {
+            shrink_eb <- max(0.0, 1.0 - (tau_pacf * tau_pacf) / k_norm2)
+            k1_s <- min(max(shrink_eb * k1, -0.70), 0.70)
+            k2_s <- min(max(shrink_eb * k2, -0.70), 0.70)
+            psi2_hat <- round(k2_s, 4L)
+            psi1_hat <- round(k1_s * (1.0 - psi2_hat), 4L)
+          }
+        }
+      }
+    }
+    out$rho[index] <- rho_hat
+    out$psi1[index] <- psi1_hat
+    out$psi2[index] <- psi2_hat
     out$method[index] <- if (best %in% c(1L, length(rho_grid))) "pooled_reml_grid_boundary" else "pooled_reml"
     out$n_voxels[index] <- length(usable)
   }
@@ -296,15 +390,34 @@ hrf_soft_boltzmann_weights <- function(scores_vec, kernel_cos, dist_fb,
 # vectors and returns their unit-sum composite HRF kernel.
 hrf_stratum_kernels <- function(hrf_fit, r) {
   selected <- hrf_fit$selections[[r]]$kernel_index
-  rho <- if (is.null(hrf_fit$noise)) rep(0, length(selected)) else hrf_fit$noise[[r]]$rho
+  noise_r <- if (is.null(hrf_fit$noise)) NULL else hrf_fit$noise[[r]]
+  rho <- if (is.null(noise_r)) rep(0, length(selected)) else noise_r$rho
+  psi1 <- if (!is.null(noise_r) && "psi1" %in% names(noise_r)) noise_r$psi1 else rep(0, length(selected))
+  psi2 <- if (!is.null(noise_r) && "psi2" %in% names(noise_r)) noise_r$psi2 else rep(0, length(selected))
+  psi_sfx <- ifelse(
+    abs(psi1) > 1e-10 | abs(psi2) > 1e-10,
+    paste0(":", sprintf("%.6g", psi1), ":", sprintf("%.6g", psi2)),
+    ""
+  )
+  get_ar <- function(voxel_idx) {
+    idx <- voxel_idx[1L]
+    if (abs(psi1[idx]) > 1e-10 || abs(psi2[idx]) > 1e-10) {
+      c(rho[idx], psi1[idx], psi2[idx])
+    } else {
+      rho[idx]
+    }
+  }
   is_soft <- identical(hrf_fit$settings$selection_mode, "soft_average") &&
     !is.null(hrf_fit$selected_kernels) && !is.null(hrf_fit$selected_kernels[[r]])
   if (!is_soft) {
-    keys <- paste(selected, sprintf("%.17g", rho), sep = ":")
+    keys <- paste0(paste(selected, sprintf("%.17g", rho), sep = ":"), psi_sfx)
     get_kernel <- function(voxel_idx) {
       hrf_fit$kernels[, selected[voxel_idx], drop = FALSE]
     }
-    return(list(keys = keys, rho = rho, selected = selected, is_soft = FALSE, get_kernel = get_kernel))
+    return(list(
+      keys = keys, rho = rho, psi1 = psi1, psi2 = psi2,
+      selected = selected, is_soft = FALSE, get_kernel = get_kernel, get_ar = get_ar
+    ))
   }
   w_mat <- if (!is.null(hrf_fit$kernel_weights) && !is.null(hrf_fit$kernel_weights[[r]])) {
     hrf_fit$kernel_weights[[r]]
@@ -312,37 +425,102 @@ hrf_stratum_kernels <- function(hrf_fit, r) {
     hrf_fit$selected_kernels[[r]]
   }
   w_sig <- apply(round(w_mat, 4L), 2L, paste, collapse = ",")
-  keys <- paste(w_sig, sprintf("%.17g", rho), sep = ":")
+  keys <- paste0(paste(w_sig, sprintf("%.17g", rho), sep = ":"), psi_sfx)
   sel_k_mat <- hrf_fit$selected_kernels[[r]]
   get_kernel <- function(voxel_idx) {
     sel_k_mat[, voxel_idx, drop = FALSE]
   }
-  list(keys = keys, rho = rho, selected = selected, is_soft = TRUE, get_kernel = get_kernel)
+  list(
+    keys = keys, rho = rho, psi1 = psi1, psi2 = psi2,
+    selected = selected, is_soft = TRUE, get_kernel = get_kernel, get_ar = get_ar
+  )
 }
 
-# Construct the exact gap-aware AR(1) Cholesky whitening matrix W on observed
-# acquisition indices `rows`. When censoring creates a gap of d = rows[i] - rows[i-1]
-# TRs between consecutive usable observations, the lag-d correlation is rho^d
-# and the accumulated innovation variance is (1 - rho^(2d)) / (1 - rho^2),
-# ensuring whitening remains exact across scrub/censor gaps.
+# Construct the exact gap-aware AR(1) or cascaded AR(1)xAR(2) Cholesky whitening
+# matrix W on observed acquisition indices `rows`. When censoring creates a gap
+# of d = rows[i] - rows[i-1] TRs between consecutive usable observations, the
+# lag-d correlation is rho^d and the accumulated innovation variance is
+# (1 - rho^(2d)) / (1 - rho^2), ensuring whitening remains exact across scrub/censor
+# gaps. When higher-order cascade coefficients psi = (psi1, psi2) are supplied
+# via `rho = c(rho1, psi1, psi2)`, applies the exact gap-aware Levinson-Durbin
+# AR(2) Cholesky factor L_AR2(psi1, psi2) to the AR(1)-whitened rows.
 hrf_whitening_matrix <- function(rows, rho) {
   m <- length(rows)
   w <- diag(m)
-  if (rho == 0) return(w)
-  w[1L, 1L] <- sqrt(1 - rho^2)
-  for (i in seq.int(2L, m)) {
-    a <- rho^(rows[i] - rows[i - 1L])
-    multiplier <- sqrt((1 - rho^2) / (1 - a^2))
-    w[i, i] <- multiplier; w[i, i - 1L] <- -a * multiplier
+  if (!length(rho) || m <= 1L) return(w)
+  rho1 <- rho[1L]
+  psi1 <- if (length(rho) >= 2L) rho[2L] else 0.0
+  psi2 <- if (length(rho) >= 3L) rho[3L] else 0.0
+  if (is.finite(rho1) && rho1 != 0) {
+    w[1L, 1L] <- sqrt(1 - rho1^2)
+    for (i in seq.int(2L, m)) {
+      a <- rho1^(rows[i] - rows[i - 1L])
+      multiplier <- sqrt((1 - rho1^2) / (1 - a^2))
+      w[i, i] <- multiplier; w[i, i - 1L] <- -a * multiplier
+    }
+  }
+  if (m >= 2L && ((is.finite(psi1) && abs(psi1) > 1e-10) || (is.finite(psi2) && abs(psi2) > 1e-10))) {
+    psi2 <- min(max(psi2, -0.85), 0.85)
+    k1 <- min(max(psi1 / max(1.0 - psi2, 1e-6), -0.85), 0.85)
+    s1 <- sqrt(max(1.0 - k1 * k1, 1e-8))
+    s2 <- sqrt(max((1.0 - k1 * k1) * (1.0 - psi2 * psi2), 1e-8))
+    for (i in seq.int(m, 2L, by = -1L)) {
+      if (i >= 3L && (rows[i] - rows[i - 1L] == 1L) && (rows[i - 1L] - rows[i - 2L] == 1L)) {
+        w[i, ] <- (w[i, ] - psi1 * w[i - 1L, ] - psi2 * w[i - 2L, ]) / s2
+      } else if (rows[i] - rows[i - 1L] == 1L) {
+        w[i, ] <- (w[i, ] - k1 * w[i - 1L, ]) / s1
+      }
+    }
   }
   w
 }
 
+hrf_score_run_ar <- function(y_sub, design, z, rows, batch_size, ar_vec,
+    evidence = FALSE, fallback_index = 1L) {
+  rho1 <- if (length(ar_vec)) ar_vec[1L] else 0.0
+  has_psi <- length(ar_vec) >= 2L && any(is.finite(ar_vec[-1L]) & abs(ar_vec[-1L]) > 1e-10)
+  if (!has_psi || length(rows) < 3L) {
+    return(hrf_score_run_cpp(y_sub, design, z, rows, as.integer(batch_size),
+      rho = rho1, evidence = evidence, fallback_index = as.integer(fallback_index)))
+  }
+  w_mat <- hrf_whitening_matrix(rows, ar_vec)
+  m <- length(rows)
+  w_int <- as.numeric(w_mat %*% rep(1.0, m))
+  m_wint <- mean(w_int)
+  y_r <- y_sub[rows, , drop = FALSE]
+  ok_col <- colSums(!is.finite(y_r)) == 0L
+  if (any(ok_col)) {
+    y_ok <- y_r[, ok_col, drop = FALSE]
+    y_ok_c <- sweep(y_ok, 2L, colMeans(y_ok), "-")
+    sd_ok <- sqrt(colSums(y_ok_c^2))
+    non_const <- sd_ok > 0
+    if (any(non_const)) {
+      wy <- w_mat %*% y_ok_c[, non_const, drop = FALSE]
+      if (abs(m_wint) > 1e-12) {
+        wy <- wy - outer(w_int / m_wint, colMeans(wy))
+      }
+      y_ok[, non_const] <- wy
+    }
+    y_r[, ok_col] <- y_ok
+  }
+  y_w <- y_sub
+  y_w[rows, ] <- y_r
+  z_w <- z
+  if (ncol(z_w) > 0L) z_w[rows, ] <- w_mat %*% z[rows, , drop = FALSE]
+  des_w <- lapply(design, function(d) {
+    d[rows, ] <- w_mat %*% d[rows, , drop = FALSE]
+    d
+  })
+  hrf_score_run_cpp(y_w, des_w, z_w, rows, as.integer(batch_size),
+    rho = 0.0, evidence = evidence, fallback_index = as.integer(fallback_index))
+}
+
 hrf_inverse_operator <- function(n, kernel, rows, rho, nuisance, settings) {
-  if (settings$backend == "cpp") return(hrf_inverse_operator_cpp(as.integer(n), kernel,
-    rows, rho, nuisance, settings$lambda, settings$penalty, settings$ridge_floor,
+  has_psi <- length(rho) >= 2L && any(is.finite(rho[-1L]) & abs(rho[-1L]) > 1e-10)
+  if (settings$backend == "cpp" && !has_psi) return(hrf_inverse_operator_cpp(as.integer(n), kernel,
+    rows, rho[1L], nuisance, settings$lambda, settings$penalty, settings$ridge_floor,
     as.integer(settings$tail_padding)))
-  # Independent R reference for the exact same masked, nuisance-adjusted GLS.
+  # Exact masked, nuisance-adjusted GLS reference (used for backend = "r" and cascaded AR(p) whitening).
   measured <- length(rows)
   all_rows <- c(rows, if (settings$tail_padding) n + seq_len(settings$tail_padding))
   h <- decon_convolution_matrix(n + settings$tail_padding, kernel)[all_rows, , drop = FALSE]
@@ -487,14 +665,34 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
       hrf_fit$kernels[, k_mode]
     }
 
-    rho_t <- if (is.null(hrf_fit$noise) || is.null(hrf_fit$noise[[r_tune]])) {
+    noise_rt <- if (is.null(hrf_fit$noise)) NULL else hrf_fit$noise[[r_tune]]
+    rho_t <- if (is.null(noise_rt)) {
       0.0
     } else {
-      stats::median(hrf_fit$noise[[r_tune]]$rho[active_cols], na.rm = TRUE)
+      stats::median(noise_rt$rho[active_cols], na.rm = TRUE)
     }
     if (!is.finite(rho_t)) rho_t <- 0.0
+    psi1_t <- if (!is.null(noise_rt) && "psi1" %in% names(noise_rt)) {
+      stats::median(noise_rt$psi1[active_cols], na.rm = TRUE)
+    } else {
+      0.0
+    }
+    psi2_t <- if (!is.null(noise_rt) && "psi2" %in% names(noise_rt)) {
+      stats::median(noise_rt$psi2[active_cols], na.rm = TRUE)
+    } else {
+      0.0
+    }
+    if (!is.finite(psi1_t)) psi1_t <- 0.0
+    if (!is.finite(psi2_t)) psi2_t <- 0.0
+    ar_t <- if (abs(psi1_t) > 1e-10 || abs(psi2_t) > 1e-10) c(rho_t, psi1_t, psi2_t) else rho_t
 
-    sc_vox <- scale_decon_input(y_t[rows_t, active_cols, drop = FALSE], scaling = scaling, noise_rho = rho_t)$y
+    sc_vox <- scale_decon_input(
+      y_t[rows_t, active_cols, drop = FALSE],
+      scaling = scaling,
+      noise_rho = rho_t,
+      noise_psi1 = psi1_t,
+      noise_psi2 = psi2_t
+    )$y
     y_tune <- sc_vox
     groups_all <- hrf_fit$specification$spatial_groups
     if (!is.null(groups_all) && length(groups_all) == n_vox) {
@@ -514,7 +712,13 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
       }
       if (length(parcel_cols)) {
         p_mat <- do.call(cbind, parcel_cols)
-        p_scaled <- scale_decon_input(p_mat, scaling = "noise_sd", noise_rho = rho_t)$y
+        p_scaled <- scale_decon_input(
+          p_mat,
+          scaling = "noise_sd",
+          noise_rho = rho_t,
+          noise_psi1 = psi1_t,
+          noise_psi2 = psi2_t
+        )$y
         y_tune <- cbind(p_scaled, sc_vox[, seq_len(min(32L, ncol(sc_vox))), drop = FALSE])
       }
     }
@@ -552,7 +756,7 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
     t1 <- min(n_win, t0 + 1L)
 
     h_full <- decon_convolution_matrix(n_win, k_tune)[seq_len(n_win), , drop = FALSE]
-    w_win <- hrf_whitening_matrix(seq_len(n_win), rho_t)
+    w_win <- hrf_whitening_matrix(seq_len(n_win), ar_t)
     wh <- w_win %*% h_full
     hth <- crossprod(wh)
     p_pen <- decon_penalty_crossprod(ncol(wh), penalty)

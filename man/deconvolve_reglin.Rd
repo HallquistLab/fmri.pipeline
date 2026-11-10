@@ -41,10 +41,12 @@ or a numeric vector.}
 \code{lambda} is \code{NULL}.}
 
 \item{penalty}{regularization penalty: \code{"diff2"} for smooth second
-differences, \code{"diff1"} for smooth first differences, \code{"ridge"} for
-amplitude shrinkage, \code{"matern1"} for a damped first-order Matérn
-penalty, or \code{"sobolev"} for a critically damped second-order Sobolev
-penalty.}
+differences, \code{"diff1"} for smooth first differences, \code{"ridge"}
+for amplitude shrinkage, \code{"matern1"} for a damped first-order
+Matérn/Ornstein-Uhlenbeck penalty (\code{0.10 * I + 0.90 * crossprod(D1)}), or
+\code{"sobolev"} for a critically damped second-order Sobolev penalty
+(\code{0.05 * I + 0.45 * crossprod(D1) + 0.50 * crossprod(D2)}) that suppresses negative
+sidelobe ringing and stabilizes low frequencies.}
 
 \item{kernel_grid}{optional list or matrix of candidate HRF kernels. If
 supplied, \code{kernel} and \code{hrf_lags} are ignored for tuning.}
@@ -96,10 +98,13 @@ mean GCV candidate. \code{"1se"} selects the largest lambda whose mean GCV
 is within one standard error of the minimum. The standard error is computed
 across signal columns for \code{tune_by = "global"}.}
 
-
 \item{scaling}{Explicit input scaling: \code{"zscore"}, \code{"noise_sd"},
-\code{"demean"}, \code{"none"}, or \code{"psc"} (percent signal change). When
-supplied, overrides \code{normalize} and \code{demean}. Otherwise those flags retain
+\code{"demean"}, \code{"none"}, or \code{"psc"} (percent signal change).
+\code{"noise_sd"} centers each signal and divides by a high-frequency
+second-difference estimate of observation noise SD (adjusted for AR(1)
+autocorrelation when available), standardizing SNR without conflating
+neural task variance with noise variance. When supplied,
+overrides \code{normalize} and \code{demean}. Otherwise those flags retain
 their existing behavior; the default is z-scoring.}
 }
 \value{
@@ -112,35 +117,34 @@ inverse convolution problem for one or more BOLD signals.
 }
 \details{
 Constant signals and signals containing nonfinite observations are
-excluded from fitting and tuning. Their activity columns are returned as
-\code{NA}; diagnostics include a per-column \code{signal_status} vector
-(\code{"ok"}, \code{"constant"}, or \code{"nonfinite"}). Partial missingness
-excludes the entire signal; observations are not interpolated or deleted.
+  excluded from fitting and tuning. Their activity columns are returned as
+  \code{NA}; diagnostics include a per-column \code{signal_status} vector
+  (\code{"ok"}, \code{"constant"}, or \code{"nonfinite"}). Partial missingness
+  excludes the entire signal; observations are not interpolated or deleted.
+  Z-scoring remains the default and is recommended for standardized within-run
+  trial responses. For fixed HRF/regularization, the linear inverse is homogeneous
+  in its input: rescaling the observations rescales activity without changing the
+  conditioning of the inverse matrix. Without z-scoring, global GCV gives signals
+  with larger variance more weight. Demeaning retains input units; \code{"none"}
+  retains offsets too and is mainly useful for already-centered data or simulations.
+  Percent signal change uses \code{100 * (y - mean(y)) / mean(y)} and requires a
+  positive baseline well away from zero. It is unsuitable for zero-mean residuals.
+  No scaling choice removes HRF uncertainty or regularization-induced attenuation.
 
-Z-scoring remains the default and is recommended for standardized within-run
-trial responses. For fixed HRF/regularization, the linear inverse is homogeneous
-in its input: rescaling the observations rescales activity without changing the
-conditioning of the inverse matrix. Without z-scoring, global GCV gives signals
-with larger variance more weight. Demeaning retains input units; \code{"none"}
-retains offsets too and is mainly useful for already-centered data or simulations.
-Percent signal change uses \code{100 * (y - mean(y)) / mean(y)} and requires a
-positive baseline well away from zero. It is unsuitable for zero-mean residuals.
-No scaling choice removes HRF uncertainty or regularization-induced attenuation.
+  Scaling is applied once. The matrix attributes \code{scaled:center},
+  \code{scaled:scale}, and \code{scaling} record the actual BOLD transformation
+  \code{(y - center) / scale}; diagnostics expose the same values. With
+  \code{scaling = "none"}, the recorded center is zero. The activity scale depends
+  on this transformation and the unit-sum HRF; it is not a calibrated physiological
+  neural-amplitude scale. The removed BOLD mean is not an identified neural baseline.
 
-Scaling is applied once. The matrix attributes \code{scaled:center},
-\code{scaled:scale}, and \code{scaling} record the actual BOLD transformation
-\code{(y - center) / scale}; diagnostics expose the same values. With
-\code{scaling = "none"}, the recorded center is zero. The activity scale depends
-on this transformation and the unit-sum HRF; it is not a calibrated physiological
-neural-amplitude scale. The removed BOLD mean is not an identified neural baseline.
-
-Scalar Wiener GCV uses the exact trace of the finite observed smoother, including
-zero extension, latent truncation, and the implemented filtered HRF when whitening.
-This trace is conditional on preprocessing and the AR(1) coefficient; it does not
-include derivatives of estimated preprocessing/noise parameters. Adaptive PSD
-shrinkage requires a fixed lambda and a single HRF. Its diagnostics label the
-filter trace \code{conditional_fixed_psd} and return missing GCV values, because
-the trace holding spectra fixed is not the degrees of freedom of the full
-nonlinear, data-adaptive estimator. Scalar diagnostics use
-\code{df_method = "finite_observation_trace"}.
+  Scalar Wiener GCV uses the exact trace of the finite observed smoother, including
+  zero extension, latent truncation, and the implemented filtered HRF when whitening.
+  This trace is conditional on preprocessing and the AR(1) coefficient; it does not
+  include derivatives of estimated preprocessing/noise parameters. Adaptive PSD
+  shrinkage requires a fixed lambda and a single HRF. Its diagnostics label the
+  filter trace \code{conditional_fixed_psd} and return missing GCV values, because
+  the trace holding spectra fixed is not the degrees of freedom of the full
+  nonlinear, data-adaptive estimator. Scalar diagnostics use
+  \code{df_method = "finite_observation_trace"}.
 }

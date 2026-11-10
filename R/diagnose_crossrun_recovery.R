@@ -105,8 +105,9 @@ diagnose_crossrun_recovery <- function(deconvolution, events = NULL, lags = 0,
       stratum = keys, usable = valid)
     for (key in unique(keys[valid])) {
       voxels <- which(keys == key & valid); k <- selected[voxels[1L]]; ar <- rho[voxels[1L]]
+      ar_op <- if (!is.null(strat$get_ar)) strat$get_ar(voxels[1L]) else ar
       hrf_k <- strat$get_kernel(voxels[1L])
-      operator <- hrf_inverse_operator(n, as.numeric(hrf_k), rows, ar, z, settings)
+      operator <- hrf_inverse_operator(n, as.numeric(hrf_k), rows, ar_op, z, settings)
       readout_operator <- readout %*% operator
       source <- if (is.null(sources)) hrf_k else sources
       designs <- hrf_event_design_cpp(n, tr, offset, ev$onset, duration, seq_len(m), m, source)
@@ -282,18 +283,58 @@ compute_ar1_operator_cov <- function(B, rows, rho, center_obs = TRUE) {
   } else {
     B
   }
-  if (!is.finite(rho) || abs(rho) < 1e-10 || m == 1L) {
+  rho1 <- if (length(rho)) rho[1L] else 0.0
+  psi1 <- if (length(rho) >= 2L) rho[2L] else 0.0
+  psi2 <- if (length(rho) >= 3L) rho[3L] else 0.0
+  has_ar1 <- is.finite(rho1) && abs(rho1) >= 1e-10
+  has_ar2 <- m >= 2L && ((is.finite(psi1) && abs(psi1) >= 1e-10) || (is.finite(psi2) && abs(psi2) >= 1e-10))
+  if ((!has_ar1 && !has_ar2) || m == 1L) {
     return(tcrossprod(B_eff))
   }
   Bt <- t(B_eff)
-  V <- matrix(0, m, M)
-  V[m, ] <- Bt[m, ]
-  a_vec <- c(0, rho^(rows[-1L] - rows[-m]))
-  for (i in (m - 1L):1L) {
-    V[i, ] <- Bt[i, ] + a_vec[i + 1L] * V[i + 1L, ]
+  if (has_ar1) {
+    V <- matrix(0, m, M)
+    V[m, ] <- Bt[m, ]
+    a_vec <- c(0, rho1^(rows[-1L] - rows[-m]))
+    for (i in (m - 1L):1L) {
+      V[i, ] <- Bt[i, ] + a_vec[i + 1L] * V[i + 1L, ]
+    }
+    s_vec <- sqrt(pmax(0, 1 - a_vec * a_vec))
+    U <- sweep(V, 1L, s_vec, "*")
+  } else {
+    U <- Bt
   }
-  s_vec <- sqrt(pmax(0, 1 - a_vec * a_vec))
-  U <- sweep(V, 1L, s_vec, "*")
+  if (has_ar2) {
+    psi2 <- min(max(psi2, -0.85), 0.85)
+    k1 <- min(max(psi1 / max(1.0 - psi2, 1e-6), -0.85), 0.85)
+    s1 <- sqrt(max(1.0 - k1 * k1, 1e-8))
+    s2 <- sqrt(max((1.0 - k1 * k1) * (1.0 - psi2 * psi2), 1e-8))
+    c1_vec <- numeric(m)
+    c2_vec <- numeric(m)
+    sp_vec <- rep(1.0, m)
+    for (i in 2:m) {
+      if (i >= 3L && (rows[i] - rows[i - 1L] == 1L) && (rows[i - 1L] - rows[i - 2L] == 1L)) {
+        c1_vec[i] <- psi1
+        c2_vec[i] <- psi2
+        sp_vec[i] <- s2
+      } else if (rows[i] - rows[i - 1L] == 1L) {
+        c1_vec[i] <- k1
+        sp_vec[i] <- s1
+      }
+    }
+    W_v <- matrix(0, m, M)
+    for (i in m:1L) {
+      acc <- U[i, ]
+      if (i + 1L <= m && c1_vec[i + 1L] != 0) acc <- acc + c1_vec[i + 1L] * W_v[i + 1L, ]
+      if (i + 2L <= m && c2_vec[i + 2L] != 0) acc <- acc + c2_vec[i + 2L] * W_v[i + 2L, ]
+      W_v[i, ] <- acc
+    }
+    # Normalize by stationary marginal SD of the cascaded AR(1)xAR(2) process so unit diagonal is preserved
+    r1_ar2 <- k1
+    r2_ar2 <- psi1 * r1_ar2 + psi2
+    var_cascade <- max(1.0 + 2.0 * rho1 * r1_ar2 + 2.0 * (rho1^2) * r2_ar2, 0.15)
+    U <- sweep(W_v, 1L, sp_vec / sqrt(var_cascade), "*")
+  }
   crossprod(U)
 }
 
@@ -841,12 +882,17 @@ decon_epoch_regression <- function(
   total_trials <- sum(target_counts)
   raw_epochs <- demixed_epochs <- se_raw_epochs <- se_demixed_epochs <- vector("list", n_lags)
   pw_epochs <- pw_op_epochs <- pw_raw_epochs <- error_ac1_epochs <- tau2_bio_epochs <- vector("list", n_lags)
-  whitened_y_epochs <- if (isTRUE(whiten_panel)) vector("list", n_lags) else NULL
+  rel_epochs <- eb_y_epochs <- vector("list", n_lags)
+  whitened_y_epochs <- se_whitened_epochs <- eb_whitened_y_epochs <- if (isTRUE(whiten_panel)) vector("list", n_lags) else NULL
   whitened_x_epochs <- if (isTRUE(whiten_panel) && n_terms > 0L) vector("list", n_lags) else NULL
   V_demix_blocks <- vector("list", n_lags)
   lag_names <- sprintf("lag_%g", lags)
   names(raw_epochs) <- names(demixed_epochs) <- names(se_raw_epochs) <- names(se_demixed_epochs) <- lag_names
   names(pw_epochs) <- names(pw_op_epochs) <- names(pw_raw_epochs) <- names(error_ac1_epochs) <- names(tau2_bio_epochs) <- lag_names
+  names(rel_epochs) <- names(eb_y_epochs) <- lag_names
+  if (isTRUE(whiten_panel)) {
+    names(whitened_y_epochs) <- names(se_whitened_epochs) <- names(eb_whitened_y_epochs) <- lag_names
+  }
   names(V_demix_blocks) <- lag_names
   for (li in seq_len(n_lags)) {
     na_mat <- matrix(NA_real_, total_trials, n_units, dimnames = list(NULL, unit_ids))
@@ -859,8 +905,12 @@ decon_epoch_regression <- function(
     pw_raw_epochs[[li]] <- na_mat
     error_ac1_epochs[[li]] <- na_mat
     tau2_bio_epochs[[li]] <- na_mat
+    rel_epochs[[li]] <- na_mat
+    eb_y_epochs[[li]] <- na_mat
     if (isTRUE(whiten_panel)) {
       whitened_y_epochs[[li]] <- na_mat
+      se_whitened_epochs[[li]] <- na_mat
+      eb_whitened_y_epochs[[li]] <- na_mat
       if (n_terms > 0L) {
         whitened_x_epochs[[li]] <- stats::setNames(
           replicate(n_terms, na_mat, simplify = FALSE),
@@ -941,6 +991,7 @@ decon_epoch_regression <- function(
       rho_parcel <- rep(0.0, n_units)
       keys_parcel <- character(n_units)
       kernels_parcel <- vector("list", n_units)
+      ar_parcel <- vector("list", n_units)
 
       for (g in seq_len(n_units)) {
         vox_g <- parcel_vox_list[[g]]
@@ -977,15 +1028,19 @@ decon_epoch_regression <- function(
           keys_parcel[g] <- u_keys[1L]
           rho_parcel[g] <- rho[v_ok[1L]]
           kernels_parcel[[g]] <- strat$get_kernel(v_ok[1L])
+          ar_parcel[[g]] <- if (!is.null(strat$get_ar)) strat$get_ar(v_ok[1L]) else rho[v_ok[1L]]
         } else {
           rho_g <- sum(u_g * rho[v_ok])
+          psi1_g <- if (!is.null(strat$psi1)) sum(u_g * strat$psi1[v_ok]) else 0.0
+          psi2_g <- if (!is.null(strat$psi2)) sum(u_g * strat$psi2[v_ok]) else 0.0
           k_mat <- vapply(v_ok, function(vi) as.numeric(strat$get_kernel(vi)), numeric(nrow(fit$kernels)))
           k_g <- as.numeric(k_mat %*% u_g)
-          k_norm <- sqrt(sum(k_g^2))
-          if (is.finite(k_norm) && k_norm > 0) k_g <- k_g / k_norm
+          k_sum <- sum(k_g)
+          if (is.finite(k_sum) && abs(k_sum) > 1e-6) k_g <- k_g / k_sum
           rho_parcel[g] <- rho_g
           kernels_parcel[[g]] <- matrix(k_g, ncol = 1L)
           keys_parcel[g] <- paste0("parcel_", unit_ids[g], ":", round(rho_g, 6))
+          ar_parcel[[g]] <- if (abs(psi1_g) > 1e-10 || abs(psi2_g) > 1e-10) c(rho_g, psi1_g, psi2_g) else rho_g
         }
       }
       act_r <- act_parcel_r
@@ -994,8 +1049,10 @@ decon_epoch_regression <- function(
       rho <- rho_parcel
       keys <- keys_parcel
       get_unit_kernel <- function(idx) kernels_parcel[[idx]]
+      get_unit_ar <- function(idx) ar_parcel[[idx]]
     } else {
       get_unit_kernel <- strat$get_kernel
+      get_unit_ar <- if (!is.null(strat$get_ar)) strat$get_ar else function(idx) rho[idx]
     }
     stratum_map[[r]] <- keys
     sig_eff_mat[r, ] <- sig_eff_r
@@ -1038,7 +1095,7 @@ decon_epoch_regression <- function(
 
     for (key in unique(keys[valid])) {
       voxels <- which(keys == key & valid)
-      ar <- rho[voxels[1L]]
+      ar <- get_unit_ar(voxels[1L])
       hrf_k <- get_unit_kernel(voxels[1L])
       operator <- hrf_inverse_operator(n, hrf_k[, 1L], rows, ar, z, settings)
 
@@ -1243,7 +1300,7 @@ decon_epoch_regression <- function(
             C_sym <- 0.5 * (C_lag + t(C_lag))
             dt_lag <- if (n_lags > 1L) min(diff(sort(unique(lags)))) else tr
             dt_ref <- max(tr, 1.0)
-            sub_tr_ratio <- if (is.finite(dt_lag) && dt_lag > 0 && dt_lag < 0.85 * dt_ref) {
+            sub_tr_ratio <- if (is.finite(dt_lag) && dt_lag > 0 && dt_lag < dt_ref) {
               (dt_ref / max(dt_lag, 0.1 * dt_ref))^2
             } else {
               1.0
@@ -1256,8 +1313,28 @@ decon_epoch_regression <- function(
             neumann_wt <- 0.6 / sub_tr_ratio
             W_1 <- solve(crossprod(C_sym) + eff_wt_ridge * diag(n_lags), t(C_sym))
             W_sym <- W_1 + neumann_wt * W_1 %*% (diag(n_lags) - C_sym %*% W_1)
-            diag_gain <- pmax(diag(W_sym %*% C_sym), gain_floor)
+            R_mat <- W_sym %*% C_sym
+            diag_base <- pmax(diag(R_mat), gain_floor)
+            W_lag_unit <- sweep(W_sym, 1L, diag_base, "/")
+            if (is.finite(dt_lag) && dt_lag > 0 && dt_lag < dt_ref) {
+              # Under sub-second lag spacing, single-lag recovery normalizes each lag by
+              # its 1-bin impulse gain while smooth neural waveforms span a continuous
+              # reference lobe (~0.72s). Scale W_lag by the interior reference-lobe gain
+              # ratio so multi-lag de-mixing sharpens resolution without inflating waveform
+              # amplitude or distorting boundary-lag correlation.
+              sigma_lobe <- 0.72 * sqrt(max(0.0, 1.0 - (dt_lag / dt_ref)^2))
+              lag_dist <- abs(outer(lags, lags, "-"))
+              L_lobe <- exp(-0.5 * (lag_dist / max(sigma_lobe, 1e-6))^2)
+              lobe_ratios <- rowSums(R_mat * L_lobe) / diag_base
+              mid_idx <- if (n_lags >= 3L) seq.int(2L, n_lags - 1L) else seq_len(n_lags)
+              lobe_scale <- max(1.0, stats::median(lobe_ratios[mid_idx], na.rm = TRUE))
+              diag_gain <- diag_base * lobe_scale
+            } else {
+              diag_gain <- diag_base
+            }
             W_lag <- sweep(W_sym, 1L, diag_gain, "/")
+            var_infl_wt <- pmax(1.0, diag(W_lag_unit %*% C_sym %*% t(W_lag_unit)))
+            se_infl_wt <- sqrt(var_infl_wt)
 
             idx_common <- which(ok_common)
             Y_common_old <- lapply(seq_len(n_lags), function(li) {
@@ -1272,6 +1349,8 @@ decon_epoch_regression <- function(
                 }
               }
               demixed_epochs[[l1]][row_span[idx_common], voxels] <- Y_new_l1
+              ok_sub_l1 <- ok_common[ok_tau_list[[l1]]]
+              B_demix_list[[l1]][ok_sub_l1, ] <- se_infl_wt[l1] * B_demix_list[[l1]][ok_sub_l1, , drop = FALSE]
             }
           }
         }
@@ -1508,11 +1587,22 @@ decon_epoch_regression <- function(
       if (any(ok_s_dem)) {
         w_eb_all <- 1 / (tau2_eff + s2_dem_v[ok_s_dem])
         pw_epochs[[li]][ok_s_dem, vi] <- w_eb_all / mean(w_eb_all)
+        rel_epochs[[li]][ok_s_dem, vi] <- tau2_eff / (tau2_eff + s2_dem_v[ok_s_dem])
       } else {
         pw_epochs[[li]][ok_v, vi] <- 1
+        rel_epochs[[li]][ok_v, vi] <- 1
       }
       w_v_all <- pw_epochs[[li]][, vi]
       w_v_all[!is.finite(w_v_all) | w_v_all <= 0] <- 1
+      rel_v_all <- rel_epochs[[li]][, vi]
+      rel_v_all[!is.finite(rel_v_all) | rel_v_all < 0] <- 1
+      for (r in seq_len(n_runs)) {
+        rs_ok <- rs_ok_list[[r]]
+        if (!length(rs_ok)) next
+        yr_raw <- demixed_epochs[[li]][rs_ok, vi]
+        mu_r <- mean(yr_raw)
+        eb_y_epochs[[li]][rs_ok, vi] <- mu_r + rel_v_all[rs_ok] * (yr_raw - mu_r)
+      }
 
       if (n_terms == 0L) {
         if (isTRUE(whiten_panel)) {
@@ -1527,7 +1617,12 @@ decon_epoch_regression <- function(
             Sigma_tot_r <- Omega_r + diag(tau2_zca, m_r)
             Phi_r <- compute_zca_whitening_matrix(Sigma_tot_r, eig_floor = 0.05, offdiag_scale = 0.85)
             yr_zca <- as.numeric(Phi_r %*% yr_cent)
+            s2_zca_r <- pmax(0, rowSums((Phi_r %*% Omega_r) * Phi_r))
+            se_zca_r <- sqrt(s2_zca_r)
+            rel_zca_r <- tau2_eff / (tau2_eff + s2_zca_r)
             whitened_y_epochs[[li]][rs_ok, vi] <- mean(yr_raw) + yr_zca
+            se_whitened_epochs[[li]][rs_ok, vi] <- se_zca_r
+            eb_whitened_y_epochs[[li]][rs_ok, vi] <- mean(yr_raw) + rel_zca_r * yr_zca
           }
         }
         row_k <- row_k + 1L
@@ -1600,7 +1695,12 @@ decon_epoch_regression <- function(
         yr_zca <- as.numeric(Phi_r %*% yr_cent)
         Xr_zca <- Phi_r %*% Xr_cent
         if (isTRUE(whiten_panel)) {
+          s2_zca_r <- pmax(0, rowSums((Phi_r %*% Omega_r) * Phi_r))
+          se_zca_r <- sqrt(s2_zca_r)
+          rel_zca_r <- tau2_eff / (tau2_eff + s2_zca_r)
           whitened_y_epochs[[li]][rs_ok, vi] <- mean(yr_raw) + yr_zca
+          se_whitened_epochs[[li]][rs_ok, vi] <- se_zca_r
+          eb_whitened_y_epochs[[li]][rs_ok, vi] <- mean(yr_raw) + rel_zca_r * yr_zca
           for (ti in seq_len(n_terms)) {
             whitened_x_epochs[[li]][[ti]][rs_ok, vi] <- mean(Xr_raw[, ti]) + Xr_zca[, ti]
           }
@@ -1759,8 +1859,10 @@ decon_epoch_regression <- function(
         voxel = rep(unit_ids, each = total_trials),
         decon_raw = as.numeric(raw_epochs[[li]]),
         decon_demixed = as.numeric(demixed_epochs[[li]]),
+        decon_eb = as.numeric(eb_y_epochs[[li]]),
         se_raw = as.numeric(se_raw_epochs[[li]]),
         se_demixed = as.numeric(se_demixed_epochs[[li]]),
+        reliability_trial = as.numeric(rel_epochs[[li]]),
         precision_weight = as.numeric(pw_epochs[[li]]),
         precision_weight_op = as.numeric(pw_op_epochs[[li]]),
         precision_weight_raw = as.numeric(pw_raw_epochs[[li]]),
@@ -1777,6 +1879,8 @@ decon_epoch_regression <- function(
       }
       if (isTRUE(whiten_panel)) {
         base_meta[["decon_demixed_whitened"]] <- as.numeric(whitened_y_epochs[[li]])
+        base_meta[["se_whitened"]] <- as.numeric(se_whitened_epochs[[li]])
+        base_meta[["decon_eb_whitened"]] <- as.numeric(eb_whitened_y_epochs[[li]])
         if (n_terms > 0L) {
           for (ti in seq_len(n_terms)) {
             cn_w <- paste0(term_names[ti], "_whitened")
@@ -1796,12 +1900,17 @@ decon_epoch_regression <- function(
       list(
         raw = raw_epochs,
         demixed = demixed_epochs,
+        eb = eb_y_epochs,
         se_raw = se_raw_epochs,
         se_demixed = se_demixed_epochs,
+        reliability_trial = rel_epochs,
         precision_weight = pw_epochs,
         precision_weight_op = pw_op_epochs,
         error_ac1 = error_ac1_epochs,
-        tau2_bio = tau2_bio_epochs
+        tau2_bio = tau2_bio_epochs,
+        whitened = whitened_y_epochs,
+        se_whitened = se_whitened_epochs,
+        eb_whitened = eb_whitened_y_epochs
       )
     } else NULL,
     panel = panel_dt,
@@ -1827,3 +1936,994 @@ decon_epoch_regression <- function(
     )
   )
 }
+
+# Smallest finite real generalized eigenvalue solving det(M - lambda * Psi) = 0
+# over the error-prone subspace (projecting out error-free zero columns of Psi via Schur complement).
+medusa_smallest_det_root <- function(M, Psi) {
+  if (requireNamespace("geigen", quietly = TRUE)) {
+    roots <- tryCatch(
+      geigen::geigen(M, Psi, symmetric = FALSE, only.values = TRUE)$values,
+      error = function(e) NULL
+    )
+    if (!is.null(roots)) {
+      if (is.complex(roots)) {
+        sc <- suppressWarnings(max(abs(roots), na.rm = TRUE))
+        if (!is.finite(sc)) sc <- 1
+        roots <- ifelse(abs(Im(roots)) <= sqrt(.Machine$double.eps) * max(1, sc), Re(roots), NA_real_)
+      }
+      roots <- roots[is.finite(roots)]
+      if (length(roots)) return(min(roots))
+    }
+  }
+  d_psi <- diag(Psi)
+  E_idx <- which(is.finite(d_psi) & d_psi > 1e-14)
+  if (!length(E_idx)) return(NA_real_)
+  F_idx <- setdiff(seq_len(nrow(M)), E_idx)
+  M_EF <- if (length(F_idx)) {
+    M_FF <- M[F_idx, F_idx, drop = FALSE]
+    M[E_idx, E_idx, drop = FALSE] -
+      M[E_idx, F_idx, drop = FALSE] %*% solve(M_FF + 1e-12 * diag(length(F_idx)), M[F_idx, E_idx, drop = FALSE])
+  } else {
+    M[E_idx, E_idx, drop = FALSE]
+  }
+  Psi_EE <- 0.5 * (Psi[E_idx, E_idx, drop = FALSE] + t(Psi[E_idx, E_idx, drop = FALSE]))
+  eig_P <- eigen(Psi_EE, symmetric = TRUE)
+  pos <- eig_P$values > 1e-12 * max(1, max(eig_P$values))
+  if (!any(pos)) return(NA_real_)
+  U_pos <- eig_P$vectors[, pos, drop = FALSE]
+  d_inv_half <- 1 / sqrt(eig_P$values[pos])
+  H <- sweep(sweep(crossprod(U_pos, M_EF %*% U_pos), 1L, d_inv_half, "*"), 2L, d_inv_half, "*")
+  H <- 0.5 * (H + t(H))
+  vals <- eigen(H, symmetric = TRUE, only.values = TRUE)$values
+  vals <- vals[is.finite(vals)]
+  if (length(vals)) min(vals) else NA_real_
+}
+
+medusa_mmom_correction <- function(lambda, nobs, alpha) {
+  if (is.finite(lambda) && lambda <= 1 + 1 / nobs) {
+    lambda - (1 + alpha) / nobs
+  } else {
+    1 - alpha / nobs
+  }
+}
+
+# Built-in fallback implementation of Vig & Hallquist (2026) M-MOM / M-MOMS
+# matching repair::fit_mmom() when the external `repair` package is not installed.
+medusa_fit_mmom_fallback <- function(
+  data_list,
+  preliminary_moment_control = list(correction = "step_up", alpha = NULL),
+  final_moment_control = list(correction = "step_up", alpha = NULL)
+) {
+  y <- as.numeric(data_list$outcome)
+  X_pred <- as.matrix(data_list$predictors)
+  storage.mode(X_pred) <- "double"
+  nobs <- length(y)
+  q <- ncol(X_pred)
+  p <- q + 1L
+  if (is.null(colnames(X_pred))) colnames(X_pred) <- paste0("x", seq_len(q))
+  design <- cbind(`(Intercept)` = 1.0, X_pred)
+  pred_idx <- 2L:p
+  err_x <- data_list$err_x
+  err_y <- if (is.null(data_list$err_y)) rep(0.0, nobs) else as.numeric(data_list$err_y)
+  err_xy <- if (is.null(data_list$err_xy)) matrix(0.0, nobs, q) else as.matrix(data_list$err_xy)
+
+  alpha_min <- q + 2.0
+  norm_ctrl <- function(ctrl) {
+    corr <- if (is.null(ctrl$correction)) "minimum" else ctrl$correction
+    alp <- if (corr == "custom" && !is.null(ctrl$alpha)) as.numeric(ctrl$alpha) else alpha_min
+    list(correction = corr, alpha = alp)
+  }
+  c_pre <- norm_ctrl(preliminary_moment_control)
+  c_fin <- norm_ctrl(final_moment_control)
+
+  sum_err_x <- function(w) {
+    out <- matrix(0.0, q, q)
+    for (i in seq_len(nobs)) {
+      out <- out + w[i] * err_x[, , i]
+    }
+    0.5 * (out + t(out))
+  }
+  build_err_moment <- function(ex_sum, ey_sum, exy_sum_design) {
+    em <- matrix(0.0, p + 1L, p + 1L)
+    em[1L, 1L] <- ey_sum
+    em[1L, 2L:(p + 1L)] <- exy_sum_design
+    em[2L:(p + 1L), 1L] <- exy_sum_design
+    em[2L:(p + 1L), 2L:(p + 1L)] <- ex_sum
+    em
+  }
+
+  ex_sum_1 <- sum_err_x(rep(1.0, nobs))
+  err_cov_design_1 <- matrix(0.0, p, p)
+  err_cov_design_1[pred_idx, pred_idx] <- ex_sum_1
+  exy_sum_1 <- c(0.0, colSums(err_xy))
+  err_mom_1 <- build_err_moment(err_cov_design_1, sum(err_y), exy_sum_1)
+  obs_mom_1 <- crossprod(cbind(y, design))
+  lam_1 <- medusa_smallest_det_root(obs_mom_1, err_mom_1)
+  des_mom_1 <- crossprod(design)
+  out_mom_1 <- as.numeric(crossprod(design, y))
+
+  eval_fixed <- function(alpha_1, corr_1, alpha_2, corr_2) {
+    c1 <- if (identical(corr_1, "none") || max(abs(err_mom_1)) <= .Machine$double.eps) {
+      1.0
+    } else {
+      max(0.0, medusa_mmom_correction(lam_1, nobs, alpha_1))
+    }
+    S1_x <- des_mom_1 - c1 * err_cov_design_1
+    s1_xy <- out_mom_1 - c1 * exy_sum_1
+    coef0 <- tryCatch(as.numeric(qr.solve(S1_x, s1_xy)), error = function(e) NULL)
+    if (is.null(coef0) || any(!is.finite(coef0))) {
+      return(list(converged = FALSE, S1_x = S1_x, c1 = c1, lam_1 = lam_1))
+    }
+    names(coef0) <- colnames(design)
+    g0_pred <- coef0[pred_idx]
+    err_resid_var <- numeric(nobs)
+    for (i in seq_len(nobs)) {
+      err_resid_var[i] <- err_y[i] - 2.0 * sum(g0_pred * err_xy[i, ]) +
+        as.numeric(crossprod(g0_pred, err_x[, , i] %*% g0_pred))
+    }
+    err_resid_var <- pmax(0.0, err_resid_var)
+    resid1 <- y - as.numeric(design %*% coef0)
+    sigma2_eps <- if (is.finite(lam_1) && lam_1 < 1.0) {
+      0.0
+    } else {
+      max(0.0, sum(resid1^2) / max(1L, nobs - p) - mean(err_resid_var))
+    }
+    case_var <- sigma2_eps + err_resid_var
+    if (any(!is.finite(case_var)) || any(case_var <= sqrt(.Machine$double.eps))) {
+      return(list(converged = FALSE, S1_x = S1_x, c1 = c1, lam_1 = lam_1))
+    }
+    w_case <- 1.0 / case_var
+    w_des <- design * sqrt(w_case)
+    w_out <- y * sqrt(w_case)
+    w_mom <- crossprod(cbind(w_out, w_des))
+    ex_sum_2 <- sum_err_x(w_case)
+    err_cov_design_2 <- matrix(0.0, p, p)
+    err_cov_design_2[pred_idx, pred_idx] <- ex_sum_2
+    exy_sum_2 <- c(0.0, colSums(err_xy * w_case))
+    err_mom_2 <- build_err_moment(err_cov_design_2, sum(w_case * err_y), exy_sum_2)
+    lam_2 <- medusa_smallest_det_root(w_mom, err_mom_2)
+    c2 <- if (identical(corr_2, "none") || max(abs(err_mom_2)) <= .Machine$double.eps) {
+      1.0
+    } else {
+      max(0.0, medusa_mmom_correction(lam_2, nobs, alpha_2))
+    }
+    corr_mom_2 <- w_mom - c2 * err_mom_2
+    S2_x <- corr_mom_2[2L:(p + 1L), 2L:(p + 1L), drop = FALSE]
+    s2_xy <- corr_mom_2[2L:(p + 1L), 1L]
+    coef2 <- tryCatch(as.numeric(qr.solve(S2_x, s2_xy)), error = function(e) NULL)
+    if (is.null(coef2) || any(!is.finite(coef2))) {
+      return(list(converged = FALSE, S1_x = S1_x, S2_x = S2_x, c1 = c1, c2 = c2, lam_1 = lam_1, lam_2 = lam_2))
+    }
+    names(coef2) <- colnames(design)
+    bread_inv <- tryCatch(qr.solve(S2_x / nobs, diag(p)), error = function(e) NULL)
+    if (is.null(bread_inv) || any(!is.finite(bread_inv))) {
+      return(list(converged = FALSE, S1_x = S1_x, S2_x = S2_x, c1 = c1, c2 = c2, lam_1 = lam_1, lam_2 = lam_2))
+    }
+    tilde_cp <- matrix(0.0, p, p)
+    for (i in seq_len(nobs)) {
+      om_i <- c(0.0, err_xy[i, ] - as.numeric(err_x[, , i] %*% g0_pred))
+      tilde_cp <- tilde_cp + (w_case[i]^2) * tcrossprod(om_i)
+    }
+    meat <- crossprod(w_des) + tilde_cp
+    vcov_mat <- 0.5 * ((bread_inv %*% meat %*% bread_inv) / (nobs^2) +
+      t((bread_inv %*% meat %*% bread_inv) / (nobs^2)))
+    dimnames(vcov_mat) <- list(colnames(design), colnames(design))
+    if (any(!is.finite(diag(vcov_mat))) || any(diag(vcov_mat) < 0)) {
+      return(list(converged = FALSE, S1_x = S1_x, S2_x = S2_x, c1 = c1, c2 = c2, lam_1 = lam_1, lam_2 = lam_2))
+    }
+    se_vec <- sqrt(diag(vcov_mat))
+    z_vec <- coef2 / se_vec
+    p_vec <- 2.0 * stats::pnorm(abs(z_vec), lower.tail = FALSE)
+    coef_df <- data.frame(
+      term = colnames(design),
+      estimate = coef2,
+      se = se_vec,
+      zstat = z_vec,
+      pval = p_vec,
+      ci_low = coef2 - 1.959964 * se_vec,
+      ci_high = coef2 + 1.959964 * se_vec,
+      stringsAsFactors = FALSE
+    )
+    list(
+      converged = TRUE,
+      coefficients = coef_df,
+      vcov = vcov_mat,
+      preliminary_coef = coef0,
+      corrected_design_moment = S2_x,
+      analysis_weights = w_case,
+      S1_x = S1_x,
+      S2_x = S2_x,
+      w_des_mom = crossprod(w_des),
+      c1 = c1,
+      c2 = c2,
+      lam_1 = lam_1,
+      lam_2 = lam_2,
+      alpha_prelim = alpha_1,
+      alpha_final = alpha_2,
+      resid_var = sigma2_eps
+    )
+  }
+
+  check_guard <- function(fit_cand, stage) {
+    if (!isTRUE(fit_cand$converged)) return(FALSE)
+    if (stage == "preliminary") {
+      S_corr <- fit_cand$S1_x[pred_idx, pred_idx, drop = FALSE] / nobs
+      S_obs <- des_mom_1[pred_idx, pred_idx, drop = FALSE] / nobs
+    } else {
+      S_corr <- fit_cand$S2_x[pred_idx, pred_idx, drop = FALSE]
+      S_obs <- fit_cand$w_des_mom[pred_idx, pred_idx, drop = FALSE]
+    }
+    eig_c <- eigen(0.5 * (S_corr + t(S_corr)), symmetric = TRUE, only.values = TRUE)$values
+    eig_o <- eigen(0.5 * (S_obs + t(S_obs)), symmetric = TRUE, only.values = TRUE)$values
+    min_c <- min(eig_c)
+    max_c <- max(eig_c)
+    max_o <- max(eig_o)
+    is.finite(min_c) && is.finite(max_c) && is.finite(max_o) &&
+      (min_c >= sqrt(.Machine$double.eps)) &&
+      (min_c >= 0.05 * max_o) &&
+      ((max_c / max(min_c, .Machine$double.eps)) <= 1e5)
+  }
+
+  alpha_1 <- c_pre$alpha
+  alpha_2 <- c_fin$alpha
+  fit_cur <- eval_fixed(
+    alpha_1, if (c_pre$correction == "step_up") "custom" else c_pre$correction,
+    alpha_2, if (c_fin$correction == "step_up") "custom" else c_fin$correction
+  )
+
+  if (c_pre$correction == "step_up" && !check_guard(fit_cur, "preliminary")) {
+    upper_1 <- if (is.finite(lam_1)) {
+      if (lam_1 <= 1 + 1 / nobs) lam_1 * nobs - 1 else nobs
+    } else alpha_min
+    if (upper_1 > alpha_min) {
+      grid_1 <- seq(alpha_min, upper_1, length.out = 9L)
+      pass_hi <- NA_real_
+      fail_lo <- alpha_min
+      fit_hi <- NULL
+      for (a_cand in grid_1[-1L]) {
+        f_c <- eval_fixed(a_cand, "custom", alpha_2, if (c_fin$correction == "step_up") "custom" else c_fin$correction)
+        if (check_guard(f_c, "preliminary")) {
+          pass_hi <- a_cand
+          fit_hi <- f_c
+          break
+        } else {
+          fail_lo <- a_cand
+        }
+      }
+      if (is.finite(pass_hi)) {
+        lo <- fail_lo; hi <- pass_hi
+        for (iter in seq_len(12L)) {
+          if (hi - lo <= 0.005) break
+          mid <- 0.5 * (lo + hi)
+          f_m <- eval_fixed(mid, "custom", alpha_2, if (c_fin$correction == "step_up") "custom" else c_fin$correction)
+          if (check_guard(f_m, "preliminary")) {
+            hi <- mid; fit_hi <- f_m
+          } else {
+            lo <- mid
+          }
+        }
+        alpha_1 <- hi
+        fit_cur <- fit_hi
+      }
+    }
+  }
+
+  if (c_fin$correction == "step_up" && !check_guard(fit_cur, "final")) {
+    lam_2_cur <- fit_cur$lam_2
+    upper_2 <- if (!is.null(lam_2_cur) && is.finite(lam_2_cur)) {
+      if (lam_2_cur <= 1 + 1 / nobs) lam_2_cur * nobs - 1 else nobs
+    } else alpha_min
+    if (upper_2 > alpha_min) {
+      grid_2 <- seq(alpha_min, upper_2, length.out = 9L)
+      pass_hi <- NA_real_
+      fail_lo <- alpha_min
+      fit_hi <- NULL
+      for (a_cand in grid_2[-1L]) {
+        f_c <- eval_fixed(alpha_1, if (c_pre$correction == "step_up") "custom" else c_pre$correction, a_cand, "custom")
+        if (check_guard(f_c, "final")) {
+          pass_hi <- a_cand
+          fit_hi <- f_c
+          break
+        } else {
+          fail_lo <- a_cand
+        }
+      }
+      if (is.finite(pass_hi)) {
+        lo <- fail_lo; hi <- pass_hi
+        for (iter in seq_len(12L)) {
+          if (hi - lo <= 0.005) break
+          mid <- 0.5 * (lo + hi)
+          f_m <- eval_fixed(alpha_1, if (c_pre$correction == "step_up") "custom" else c_pre$correction, mid, "custom")
+          if (check_guard(f_m, "final")) {
+            hi <- mid; fit_hi <- f_m
+          } else {
+            lo <- mid
+          }
+        }
+        alpha_2 <- hi
+        fit_cur <- fit_hi
+      }
+    }
+  }
+
+  fit_cur$diagnostics <- list(
+    nobs = nobs,
+    npredictors = q,
+    lambda_prelim = fit_cur$lam_1,
+    lambda_final = fit_cur$lam_2,
+    alpha_prelim = alpha_1,
+    alpha_final = alpha_2,
+    correction_prelim = fit_cur$c1,
+    correction_final = fit_cur$c2,
+    resid_var = fit_cur$resid_var
+  )
+  fit_cur
+}
+
+#' Fit a REPAIR modified method-of-moments (M-MOM / M-MOMS) measurement-error model
+#'
+#' Estimates a linear regression model when predictors, the outcome, or both are
+#' likelihood-only predictions measured with heteroscedastic sampling error
+#' (Vig & Hallquist, 2026). Delegates directly to \code{repair::fit_mmom()} when
+#' the \pkg{repair} package is installed and uses an identical built-in fallback
+#' otherwise.
+#'
+#' @param outcome Numeric outcome vector of length \eqn{N}.
+#' @param predictors Numeric predictor matrix (\eqn{N \times q}, excluding the
+#'   intercept).
+#' @param err_x Numeric 3D array (\eqn{q \times q \times N}) of per-observation
+#'   predictor sampling-error covariance matrices \eqn{\hat{\boldsymbol{\Psi}}_{x,j}}.
+#' @param err_y Non-negative numeric vector of length \eqn{N} giving per-observation
+#'   outcome sampling-error variances \eqn{\hat{\psi}_{y,j}}.
+#' @param err_xy Optional numeric matrix (\eqn{N \times q}) of per-observation
+#'   outcome-predictor sampling-error covariances \eqn{\hat{\boldsymbol{\psi}}_{xy,j}^\top}.
+#' @param regularization Regularization policy: \code{"step_up"} (default;
+#'   adaptive M-MOMS step-up search), \code{"minimum"} (fixed minimum
+#'   \eqn{\alpha = q + 2}), \code{"none"}, or \code{"custom"}.
+#' @param alpha Optional custom regularization parameter when
+#'   \code{regularization = "custom"}.
+#' @param backend Computation backend passed to \code{repair::fit_mmom()} when
+#'   available (\code{"auto"}, \code{"r"}, or \code{"rcpp"}).
+#' @return A list with \code{converged}, \code{coefficients} (data.frame with
+#'   \code{term}, \code{estimate}, \code{se}, \code{zstat}, \code{pval},
+#'   \code{ci_low}, \code{ci_high}), \code{vcov}, \code{preliminary_coef},
+#'   \code{corrected_design_moment}, \code{analysis_weights},
+#'   \code{diagnostics}, and \code{repair_fit} (the raw \pkg{repair} object when
+#'   \pkg{repair} is installed).
+#' @export
+medusa_fit_mmom <- function(
+  outcome,
+  predictors,
+  err_x,
+  err_y = NULL,
+  err_xy = NULL,
+  regularization = c("step_up", "minimum", "none", "custom"),
+  alpha = NULL,
+  backend = c("auto", "r", "rcpp")
+) {
+  regularization <- match.arg(regularization)
+  backend <- match.arg(backend)
+  predictors <- as.matrix(predictors)
+  storage.mode(predictors) <- "double"
+  nobs <- length(outcome)
+  q <- ncol(predictors)
+  if (is.null(colnames(predictors))) colnames(predictors) <- paste0("x", seq_len(q))
+  if (is.null(err_y)) err_y <- rep(0.0, nobs)
+  if (is.null(err_xy)) err_xy <- matrix(0.0, nobs, q)
+  ctrl <- list(correction = regularization, alpha = alpha)
+  data_list <- list(
+    outcome = as.numeric(outcome),
+    predictors = predictors,
+    err_x = err_x,
+    err_y = as.numeric(err_y),
+    err_xy = as.matrix(err_xy)
+  )
+
+  if (requireNamespace("repair", quietly = TRUE)) {
+    rfit <- tryCatch(
+      repair::fit_mmom(
+        data_list = data_list,
+        preliminary_moment_control = ctrl,
+        final_moment_control = ctrl,
+        backend = backend
+      ),
+      error = function(e) NULL
+    )
+    if (!is.null(rfit) && isTRUE(rfit@converged)) {
+      diag_list <- rfit@diagnostics
+      return(list(
+        converged = TRUE,
+        coefficients = as.data.frame(rfit@coefficients),
+        vcov = as.matrix(rfit@vcov),
+        preliminary_coef = rfit@preliminary_coef,
+        corrected_design_moment = as.matrix(rfit@corrected_design_moment),
+        analysis_weights = as.numeric(rfit@analysis_weights),
+        diagnostics = list(
+          nobs = nobs,
+          npredictors = q,
+          lambda_prelim = diag_list$lambda_prelim,
+          lambda_final = diag_list$lambda_final,
+          alpha_prelim = if (!is.null(diag_list$alpha_prelim)) diag_list$alpha_prelim else q + 2,
+          alpha_final = if (!is.null(diag_list$alpha_final)) diag_list$alpha_final else q + 2
+        ),
+        repair_fit = rfit
+      ))
+    }
+  }
+
+  fb <- medusa_fit_mmom_fallback(
+    data_list = data_list,
+    preliminary_moment_control = ctrl,
+    final_moment_control = ctrl
+  )
+  fb$repair_fit <- NULL
+  fb
+}
+
+#' Measurement-error-corrected inter-region connectivity and PPI via REPAIR
+#'
+#' Estimates trial-by-trial seed-to-target neural connectivity, directed lagged
+#' connectivity (controlling for baseline target activity at the seed lag), and
+#' task-modulated psychophysiological interactions (PPI) from a
+#' \code{\link{decon_epoch_regression}} trial panel using the REPAIR modified
+#' method-of-moments (\code{M-MOMS} / \code{M-MOM}) framework of Vig & Hallquist
+#' (2026). Propagates per-trial operator standard errors (\code{se_demixed}) into
+#' exact heteroscedastic predictor and outcome error covariances,including the
+#' rank-1 interaction error block for PPI (\code{seed * x}) and dual predictor
+#' error variances for Granger-style auto-lag controls (\code{targ_t0}).
+#'
+#' @param panel_dt A \code{data.frame} or \code{data.table} returned in
+#'   \code{$panel} by \code{\link{decon_epoch_regression}}.
+#' @param seed_region Character scalar naming the seed region/parcel/voxel.
+#' @param target_region Character scalar naming the target region/parcel/voxel.
+#' @param seed_lag Numeric lag (in seconds) for the seed readout (default \code{0}).
+#' @param target_lag Numeric lag (in seconds) for the target readout (default \code{0}).
+#' @param covariates Optional character vector of error-free trial covariate
+#'   columns in \code{panel_dt}. Defaults to \code{"x"} when present in
+#'   \code{panel_dt}, or \code{character(0)} otherwise.
+#' @param test_ppi Logical; if \code{TRUE}, includes the interaction between
+#'   the seed readout and the first covariate in \code{covariates}
+#'   (\code{seed_c:x_c}) with exact per-trial interaction error covariance
+#'   \eqn{\tilde{\psi}_{S,j} [1, x_{c,j}; x_{c,j}, x_{c,j}^2]}. Default: \code{FALSE}.
+#' @param control_target_seed_lag Logical; if \code{TRUE} and
+#'   \code{abs(target_lag - seed_lag) > 1e-6}, includes the target region's
+#'   readout at \code{seed_lag} (\code{targ_t0_val}) as an error-prone control
+#'   covariate with measurement-error variance \code{se_demixed^2}. Default:
+#'   \code{FALSE}.
+#' @param orthogonalize_seed_x Logical; if \code{TRUE} (default), residualizes
+#'   the run-centered seed readout on the error-free covariates within each
+#'   subject-run and scales the seed error variance by \eqn{1 - h_{x,r,j}}
+#'   prior to forming PPI interactions, preventing quadratic task drive
+#'   (\eqn{x_c^2}) from confounding physiological-by-psychological interactions.
+#' @param method Estimation method: \code{"mmoms"} (default; adaptive step-up
+#'   REPAIR \code{M-MOMS}), \code{"mmom"} (fixed minimum-regularization REPAIR
+#'   \code{M-MOM}), \code{"eb_predictor"} (Skrondal & Laake 2001 role-specific
+#'   Empirical-Bayes shrunk predictor on likelihood-only outcome),
+#'   \code{"naive_gls"} (precision-weighted WLS without predictor error
+#'   subtraction), or \code{"naive_unweighted"} (unweighted OLS).
+#' @param use_whitened Logical; if \code{TRUE}, uses \code{decon_demixed_whitened}
+#'   and \code{se_whitened} when present. Defaults to \code{FALSE} for
+#'   \code{"mmoms"} and \code{"mmom"} (so elementwise PPI products are formed on
+#'   unmixed trial states before error correction) and \code{TRUE} for
+#'   \code{"naive_gls"}.
+#' @param region_col Optional column name identifying regions/parcels/voxels in
+#'   \code{panel_dt} (auto-detected from \code{"region"}, \code{"parcel"},
+#'   \code{"voxel"}).
+#' @param id_col Column name identifying subjects in \code{panel_dt} (default
+#'   \code{"id"}).
+#' @param return_augmented_panel Logical; if \code{TRUE}, returns the merged
+#'   trial panel augmented with moment-preserving REPAIR predictor columns
+#'   (\code{seed_repair}, \code{ppi_repair}, \code{repair_weight}) that reproduce
+#'   subject-level \code{M-MOMS} slopes in weighted least squares / \code{lmer()}.
+#' @return A list of class \code{"medusa_connectivity_repair"} containing
+#'   \code{group} (group-level random-effects meta-analytic inference table),
+#'   \code{subjects} (per-subject estimates, SEs, and REPAIR diagnostics),
+#'   optional \code{panel_repair}, and \code{settings}.
+#' @export
+decon_connectivity_repair <- function(
+  panel_dt,
+  seed_region,
+  target_region,
+  seed_lag = 0,
+  target_lag = 0,
+  covariates = NULL,
+  test_ppi = FALSE,
+  control_target_seed_lag = FALSE,
+  orthogonalize_seed_x = TRUE,
+  method = c("mmoms", "mmom", "eb_predictor", "naive_gls", "naive_unweighted"),
+  use_whitened = NULL,
+  region_col = NULL,
+  id_col = "id",
+  return_augmented_panel = FALSE
+) {
+  method <- match.arg(method)
+  dt <- data.table::copy(data.table::as.data.table(panel_dt))
+  if (is.null(region_col)) {
+    for (cand in c("region", "parcel", "voxel")) {
+      if (cand %in% names(dt)) {
+        region_col <- cand
+        break
+      }
+    }
+  }
+  if (is.null(region_col) || !(region_col %in% names(dt))) {
+    stop("Could not find region/parcel/voxel column in panel_dt")
+  }
+  if (!(id_col %in% names(dt))) {
+    dt[, (id_col) := "sub001"]
+  }
+  if (!("run" %in% names(dt))) {
+    dt[, run := "run1"]
+  }
+  if (is.null(covariates)) {
+    covariates <- if ("x" %in% names(dt)) "x" else character(0L)
+  } else {
+    covariates <- intersect(covariates, names(dt))
+  }
+  if (isTRUE(test_ppi) && !length(covariates)) {
+    stop("test_ppi = TRUE requires at least one covariate column in panel_dt")
+  }
+  if (is.null(use_whitened)) {
+    use_whitened <- identical(method, "naive_gls")
+  }
+
+  y_col <- if (isTRUE(use_whitened) && "decon_demixed_whitened" %in% names(dt)) {
+    "decon_demixed_whitened"
+  } else if ("decon_demixed" %in% names(dt)) {
+    "decon_demixed"
+  } else if ("beta_lss" %in% names(dt)) {
+    "beta_lss"
+  } else {
+    "decon_raw"
+  }
+  se_col <- if (isTRUE(use_whitened) && "se_whitened" %in% names(dt)) {
+    "se_whitened"
+  } else if ("se_demixed" %in% names(dt)) {
+    "se_demixed"
+  } else {
+    NULL
+  }
+  eb_col <- if (isTRUE(use_whitened) && "decon_eb_whitened" %in% names(dt)) {
+    "decon_eb_whitened"
+  } else if ("decon_eb" %in% names(dt)) {
+    "decon_eb"
+  } else {
+    NULL
+  }
+
+  seed_sub <- dt[get(region_col) == seed_region & abs(evt_time - seed_lag) < 1e-6]
+  targ_sub <- dt[get(region_col) == target_region & abs(evt_time - target_lag) < 1e-6]
+  if (!nrow(seed_sub)) stop("No rows match seed_region = '", seed_region, "' at seed_lag = ", seed_lag)
+  if (!nrow(targ_sub)) stop("No rows match target_region = '", target_region, "' at target_lag = ", target_lag)
+
+  seed_keep <- data.table::data.table(
+    id = seed_sub[[id_col]],
+    run = seed_sub[["run"]],
+    trial = seed_sub[["trial"]],
+    seed_val = as.numeric(seed_sub[[y_col]]),
+    se_seed = if (!is.null(se_col)) as.numeric(seed_sub[[se_col]]) else rep(0.0, nrow(seed_sub)),
+    seed_eb = if (!is.null(eb_col)) as.numeric(seed_sub[[eb_col]]) else NA_real_,
+    tau2_seed = if ("tau2_bio" %in% names(seed_sub)) as.numeric(seed_sub[["tau2_bio"]]) else NA_real_
+  )
+  for (cv in covariates) {
+    cv_use <- if (isTRUE(use_whitened) && paste0(cv, "_whitened") %in% names(seed_sub)) {
+      paste0(cv, "_whitened")
+    } else {
+      cv
+    }
+    seed_keep[[cv]] <- as.numeric(seed_sub[[cv_use]])
+  }
+
+  targ_keep <- data.table::data.table(
+    id = targ_sub[[id_col]],
+    run = targ_sub[["run"]],
+    trial = targ_sub[["trial"]],
+    targ_val = as.numeric(targ_sub[[y_col]]),
+    se_targ = if (!is.null(se_col)) as.numeric(targ_sub[[se_col]]) else rep(0.0, nrow(targ_sub)),
+    w_targ = if ("precision_weight" %in% names(targ_sub)) as.numeric(targ_sub[["precision_weight"]]) else rep(1.0, nrow(targ_sub))
+  )
+
+  m_dt <- merge(targ_keep, seed_keep, by = c("id", "run", "trial"), sort = FALSE)
+  has_t0 <- isTRUE(control_target_seed_lag) && abs(target_lag - seed_lag) > 1e-6
+  if (has_t0) {
+    t0_sub <- dt[get(region_col) == target_region & abs(evt_time - seed_lag) < 1e-6]
+    if (nrow(t0_sub) > 0L) {
+      t0_keep <- data.table::data.table(
+        id = t0_sub[[id_col]],
+        run = t0_sub[["run"]],
+        trial = t0_sub[["trial"]],
+        targ_t0_val = as.numeric(t0_sub[[y_col]]),
+        se_targ_t0 = if (!is.null(se_col)) as.numeric(t0_sub[[se_col]]) else rep(0.0, nrow(t0_sub)),
+        targ_t0_eb = if (!is.null(eb_col)) as.numeric(t0_sub[[eb_col]]) else NA_real_,
+        tau2_targ_t0 = if ("tau2_bio" %in% names(t0_sub)) as.numeric(t0_sub[["tau2_bio"]]) else NA_real_
+      )
+      m_dt <- merge(m_dt, t0_keep, by = c("id", "run", "trial"), sort = FALSE)
+    } else {
+      has_t0 <- FALSE
+    }
+  }
+
+  # Center target, seed, and covariates within (id, run)
+  m_dt[, targ_c := targ_val - mean(targ_val, na.rm = TRUE), by = .(id, run)]
+  m_dt[, seed_c_raw := seed_val - mean(seed_val, na.rm = TRUE), by = .(id, run)]
+  if (has_t0) {
+    m_dt[, targ_t0_c := targ_t0_val - mean(targ_t0_val, na.rm = TRUE), by = .(id, run)]
+  }
+  for (cv in covariates) {
+    m_dt[, (paste0(cv, "_c")) := get(cv) - mean(get(cv), na.rm = TRUE), by = .(id, run)]
+  }
+  cov_c_names <- if (length(covariates)) paste0(covariates, "_c") else character(0L)
+
+  # Orthogonalize seed_c with respect to error-free covariates within (id, run) when requested
+  if (isTRUE(orthogonalize_seed_x) && length(cov_c_names) > 0L) {
+    m_dt[, c("seed_c", "h_x_run") := {
+      X_r <- as.matrix(.SD)
+      ys <- seed_c_raw
+      ok_r <- is.finite(ys) & (rowSums(!is.finite(X_r)) == 0L)
+      if (sum(ok_r) > ncol(X_r) + 2L && any(apply(X_r[ok_r, , drop = FALSE], 2L, stats::sd) > 1e-10)) {
+        qr_x <- qr(X_r[ok_r, , drop = FALSE])
+        Q_x <- qr.Q(qr_x)
+        res_s <- ys
+        res_s[ok_r] <- ys[ok_r] - as.numeric(Q_x %*% crossprod(Q_x, ys[ok_r]))
+        h_vec <- rep(0.0, length(ys))
+        h_vec[ok_r] <- pmin(0.85, rowSums(Q_x^2))
+        list(res_s, h_vec)
+      } else {
+        list(ys, rep(0.0, length(ys)))
+      }
+    }, by = .(id, run), .SDcols = cov_c_names]
+  } else {
+    m_dt[, seed_c := seed_c_raw]
+    m_dt[, h_x_run := 0.0]
+  }
+
+  # Compute EB reliability factor per trial for role-specific EB predictor mode
+  m_dt[, rel_seed_trial := {
+    s2 <- (1.0 - h_x_run) * (se_seed^2)
+    ok_s <- is.finite(s2) & (s2 > 0)
+    if (any(ok_s)) {
+      v_obs <- stats::var(seed_c, na.rm = TRUE)
+      t2_est <- max(0.05 * stats::median(s2[ok_s]), v_obs - mean(s2[ok_s]))
+      t2_est / (t2_est + s2)
+    } else {
+      rep(1.0, .N)
+    }
+  }, by = id]
+  m_dt[, seed_eb_c := rel_seed_trial * seed_c]
+  if (has_t0) {
+    m_dt[, rel_t0_trial := {
+      s2 <- se_targ_t0^2
+      ok_s <- is.finite(s2) & (s2 > 0)
+      if (any(ok_s)) {
+        v_obs <- stats::var(targ_t0_c, na.rm = TRUE)
+        t2_est <- max(0.05 * stats::median(s2[ok_s]), v_obs - mean(s2[ok_s]))
+        t2_est / (t2_est + s2)
+      } else {
+        rep(1.0, .N)
+      }
+    }, by = id]
+    m_dt[, targ_t0_eb_c := rel_t0_trial * targ_t0_c]
+  }
+
+  subj_ids <- unique(m_dt$id)
+  subj_rows <- vector("list", length(subj_ids))
+  aug_panels <- if (isTRUE(return_augmented_panel)) vector("list", length(subj_ids)) else NULL
+
+  for (si in seq_along(subj_ids)) {
+    sid <- subj_ids[si]
+    sub_dt <- m_dt[id == sid]
+    n_i <- nrow(sub_dt)
+
+    use_eb <- identical(method, "eb_predictor")
+    s_vec <- if (use_eb) sub_dt$seed_eb_c else sub_dt$seed_c
+    psi_s <- if (method %in% c("mmoms", "mmom")) {
+      pmax(0.0, (1.0 - sub_dt$h_x_run) * (sub_dt$se_seed^2))
+    } else {
+      rep(0.0, n_i)
+    }
+    psi_y <- if (method %in% c("mmoms", "mmom")) {
+      pmax(0.0, sub_dt$se_targ^2)
+    } else {
+      rep(0.0, n_i)
+    }
+
+    # Build predictor matrix X_i and per-trial error covariance array err_x_i
+    pred_list <- list(seed_c = s_vec)
+    if (has_t0) {
+      pred_list[["targ_t0_val"]] <- if (use_eb) sub_dt$targ_t0_eb_c else sub_dt$targ_t0_c
+    }
+    for (k in seq_along(covariates)) {
+      pred_list[[ paste0(covariates[k], "_c") ]] <- sub_dt[[ cov_c_names[k] ]]
+    }
+    if (isTRUE(test_ppi)) {
+      x1_c <- sub_dt[[ cov_c_names[1L] ]]
+      pred_list[["seed_c:x_c"]] <- s_vec * x1_c
+    }
+    X_i <- do.call(cbind, pred_list)
+    q_i <- ncol(X_i)
+    err_x_i <- array(0.0, dim = c(q_i, q_i, n_i))
+    err_x_i[1L, 1L, ] <- psi_s
+    if (has_t0 && method %in% c("mmoms", "mmom")) {
+      err_x_i[2L, 2L, ] <- pmax(0.0, sub_dt$se_targ_t0^2)
+    }
+    if (isTRUE(test_ppi) && method %in% c("mmoms", "mmom")) {
+      x1_c <- sub_dt[[ cov_c_names[1L] ]]
+      idx_ppi <- q_i
+      err_x_i[1L, idx_ppi, ] <- x1_c * psi_s
+      err_x_i[idx_ppi, 1L, ] <- x1_c * psi_s
+      err_x_i[idx_ppi, idx_ppi, ] <- (x1_c^2) * psi_s
+    }
+
+    if (method %in% c("mmoms", "mmom")) {
+      reg_pol <- if (identical(method, "mmoms")) "step_up" else "minimum"
+      mfit <- medusa_fit_mmom(
+        outcome = sub_dt$targ_c,
+        predictors = X_i,
+        err_x = err_x_i,
+        err_y = psi_y,
+        regularization = reg_pol
+      )
+      if (isTRUE(mfit$converged)) {
+        cf <- mfit$coefficients
+        cf <- cf[cf$term != "(Intercept)", , drop = FALSE]
+        w_raw <- mfit$analysis_weights
+        w_rep <- w_raw / mean(w_raw)
+        S2_full <- mfit$corrected_design_moment
+        S2_pred <- S2_full[-1L, -1L, drop = FALSE] -
+          tcrossprod(S2_full[-1L, 1L], S2_full[1L, -1L]) / max(S2_full[1L, 1L], .Machine$double.eps)
+        mu_X_w <- colSums(X_i * w_raw) / sum(w_raw)
+        X_i_wcent <- sweep(X_i, 2L, mu_X_w, "-")
+        X_w_obs <- crossprod(X_i_wcent, X_i_wcent * w_raw)
+        R_mat <- tryCatch(qr.solve(X_w_obs, S2_pred), error = function(e) diag(q_i))
+        X_rep <- X_i_wcent %*% R_mat
+        colnames(X_rep) <- paste0(colnames(X_i), "_repair")
+        subj_rows[[si]] <- data.table::data.table(
+          id = sid,
+          term = cf$term,
+          estimate = cf$estimate,
+          std.error = cf$se,
+          statistic = cf$zstat,
+          p.value = cf$pval,
+          n_trials = n_i,
+          lambda_prelim = mfit$diagnostics$lambda_prelim,
+          lambda_final = mfit$diagnostics$lambda_final,
+          alpha_prelim = mfit$diagnostics$alpha_prelim,
+          alpha_final = mfit$diagnostics$alpha_final,
+          converged = TRUE
+        )
+        if (isTRUE(return_augmented_panel)) {
+          sub_copy <- data.table::copy(sub_dt)
+          for (col_j in seq_len(q_i)) {
+            data.table::set(sub_copy, j = colnames(X_rep)[col_j], value = X_rep[, col_j])
+          }
+          data.table::set(sub_copy, j = "repair_weight", value = w_rep)
+          aug_panels[[si]] <- sub_copy
+        }
+        next
+      }
+    }
+
+    # Fallback / WLS / EB predictor / OLS path
+    w_use <- if (identical(method, "naive_unweighted")) {
+      rep(1.0, n_i)
+    } else {
+      w0 <- sub_dt$w_targ
+      w0[!is.finite(w0) | w0 <= 0] <- 1.0
+      w0 / mean(w0)
+    }
+    df_lm <- as.data.frame(X_i)
+    df_lm$targ_c <- sub_dt$targ_c
+    lm_fit <- stats::lm(targ_c ~ ., data = df_lm, weights = w_use)
+    sm_cf <- summary(lm_fit)$coefficients
+    keep_rows <- setdiff(rownames(sm_cf), "(Intercept)")
+    clean_terms <- gsub("^`|`$", "", keep_rows)
+    subj_rows[[si]] <- data.table::data.table(
+      id = sid,
+      term = clean_terms,
+      estimate = as.numeric(sm_cf[keep_rows, "Estimate"]),
+      std.error = as.numeric(sm_cf[keep_rows, "Std. Error"]),
+      statistic = as.numeric(sm_cf[keep_rows, "t value"]),
+      p.value = as.numeric(sm_cf[keep_rows, "Pr(>|t|)"]),
+      n_trials = n_i,
+      lambda_prelim = NA_real_,
+      lambda_final = NA_real_,
+      alpha_prelim = NA_real_,
+      alpha_final = NA_real_,
+      converged = TRUE
+    )
+    if (isTRUE(return_augmented_panel)) {
+      sub_copy <- data.table::copy(sub_dt)
+      for (col_j in seq_len(q_i)) {
+        data.table::set(sub_copy, j = paste0(colnames(X_i)[col_j], "_repair"), value = X_i[, col_j])
+      }
+      data.table::set(sub_copy, j = "repair_weight", value = w_use)
+      aug_panels[[si]] <- sub_copy
+    }
+  }
+
+  subj_dt <- data.table::rbindlist(subj_rows, fill = TRUE)
+
+  # Group-level random-effects pooling with ancillary sample-size weights and HKSJ t_{S-1} calibration
+  # (avoids the downward covariance bias Cov(w_s, theta_s) < 0 caused by EIV sandwich SEs depending on theta_s^2)
+  terms_u <- unique(subj_dt$term)
+  grp_rows <- vector("list", length(terms_u))
+  for (ti in seq_along(terms_u)) {
+    tm <- terms_u[ti]
+    st <- subj_dt[term == tm & is.finite(estimate) & is.finite(std.error) & std.error > 0]
+    S_k <- nrow(st)
+    if (S_k == 0L) next
+    if (S_k == 1L) {
+      grp_rows[[ti]] <- data.table::data.table(
+        term = tm,
+        estimate = st$estimate[1L],
+        std.error = st$std.error[1L],
+        statistic = st$statistic[1L],
+        df = Inf,
+        p.value = st$p.value[1L],
+        conf.low = st$estimate[1L] - 1.959964 * st$std.error[1L],
+        conf.high = st$estimate[1L] + 1.959964 * st$std.error[1L],
+        tau2_between = 0.0,
+        mean_unweighted = st$estimate[1L],
+        median_subj = st$estimate[1L],
+        n_subjects = 1L
+      )
+      next
+    }
+    theta_raw <- st$estimate
+    if (S_k >= 6L) {
+      med_t <- stats::median(theta_raw)
+      mad_t <- stats::mad(theta_raw, constant = 1.4826)
+      if (is.finite(mad_t) && mad_t > 1e-8) {
+        theta_s <- pmin(med_t + 3.0 * mad_t, pmax(med_t - 3.0 * mad_t, theta_raw))
+      } else {
+        theta_s <- theta_raw
+      }
+    } else {
+      theta_s <- theta_raw
+    }
+    v_s <- st$std.error^2
+    med_v <- stats::median(v_s)
+    v_s_stab <- pmax(v_s, 0.15 * med_v)
+    w0 <- 1.0 / v_s_stab
+    mu0 <- sum(w0 * theta_s) / sum(w0)
+    Q_stat <- sum(w0 * ((theta_s - mu0)^2))
+    denom_dl <- sum(w0) - sum(w0^2) / sum(w0)
+    tau2_dl <- if (denom_dl > 1e-12) max(0.0, (Q_stat - (S_k - 1.0)) / denom_dl) else 0.0
+
+    w_anc <- if ("n_trials" %in% names(st) && all(is.finite(st$n_trials)) && all(st$n_trials > 0)) {
+      as.numeric(st$n_trials)
+    } else {
+      rep(1.0, S_k)
+    }
+    w_anc <- w_anc / sum(w_anc)
+    mu_re <- sum(w_anc * theta_s)
+    var_hksj <- sum((w_anc^2) * ((theta_s - mu_re)^2)) * (S_k / (S_k - 1.0))
+    se_re <- sqrt(max(var_hksj, .Machine$double.eps))
+    df_re <- S_k - 1.0
+    t_re <- mu_re / se_re
+    p_re <- 2.0 * stats::pt(abs(t_re), df = df_re, lower.tail = FALSE)
+    t_crit <- stats::qt(0.975, df = df_re)
+    grp_rows[[ti]] <- data.table::data.table(
+      term = tm,
+      estimate = mu_re,
+      std.error = se_re,
+      statistic = t_re,
+      df = df_re,
+      p.value = p_re,
+      conf.low = mu_re - t_crit * se_re,
+      conf.high = mu_re + t_crit * se_re,
+      tau2_between = tau2_dl,
+      mean_unweighted = mean(theta_raw),
+      median_subj = stats::median(theta_raw),
+      n_subjects = S_k
+    )
+  }
+
+  grp_dt <- data.table::rbindlist(grp_rows, fill = TRUE)
+  if (nrow(grp_dt) > 0L) {
+    grp_dt[, `:=`(
+      seed_region = seed_region,
+      target_region = target_region,
+      seed_lag = seed_lag,
+      target_lag = target_lag,
+      method = method
+    )]
+  }
+
+  structure(
+    list(
+      group = grp_dt,
+      subjects = subj_dt,
+      panel_repair = if (isTRUE(return_augmented_panel)) data.table::rbindlist(aug_panels, fill = TRUE) else NULL,
+      settings = list(
+        seed_region = seed_region,
+        target_region = target_region,
+        seed_lag = seed_lag,
+        target_lag = target_lag,
+        covariates = covariates,
+        test_ppi = test_ppi,
+        control_target_seed_lag = control_target_seed_lag,
+        orthogonalize_seed_x = orthogonalize_seed_x,
+        method = method,
+        use_whitened = use_whitened
+      )
+    ),
+    class = "medusa_connectivity_repair"
+  )
+}
+
+#' Between-subject REPAIR structural regression on MEDuSA mixed models
+#'
+#' Connects fitted \code{lme4::lmer()} (or \code{\link{mixed_by}} model objects)
+#' from MEDuSA Stage 4 directly to \code{repair::repair()} (Vig & Hallquist,
+#' 2026) to estimate measurement-error-corrected between-subject regressions
+#' relating subject-specific neural random intercepts/slopes across brain
+#' regions or to external behavioral/clinical variables.
+#'
+#' @param formula Structural regression formula using \code{repair::re()} markers
+#'   (e.g., \code{re("x_whitened", model = "target") ~ re("x_whitened", model = "seed") + age}).
+#' @param models Named list of fitted \code{lme4::lmer} or \code{nlme::lme}
+#'   models (or a single fitted model).
+#' @param data Subject-level \code{data.frame} with one row per subject ID.
+#' @param id Character scalar naming the subject ID column in \code{data}
+#'   (default \code{"id"}).
+#' @param regularization Regularization policy passed to \code{repair::repair()}:
+#'   \code{"step_up"} (default; adaptive M-MOMS), \code{"minimum"},
+#'   \code{"none"}, or \code{"custom"}.
+#' @param cross_model_error Cross-model prediction-error covariance policy when
+#'   \code{models} has multiple entries (defaults to \code{"independent"} when
+#'   \code{length(models) > 1L}).
+#' @param medusa_mlm Optional alias for \code{models} (e.g., a single fitted
+#'   \code{lme4::lmer} model).
+#' @param subject_data Optional alias for \code{data}.
+#' @param id_col Optional alias for \code{id}.
+#' @param ... Additional arguments passed to \code{repair::repair()}.
+#' @return A list with \code{coefficients} (tidy \code{data.frame} from
+#'   \code{repair::repair_coefficients()}), \code{reliability} (from
+#'   \code{repair::repair_reliability()}), \code{predictions} (likelihood-only
+#'   random-effect predictions and error variances), and \code{fit} (the S7
+#'   \code{class_repair_mod} object).
+#' @export
+medusa_between_subject_repair <- function(
+  formula,
+  models = NULL,
+  data = NULL,
+  id = "id",
+  regularization = c("step_up", "minimum", "none", "custom"),
+  cross_model_error = NULL,
+  medusa_mlm = NULL,
+  subject_data = NULL,
+  id_col = NULL,
+  ...
+) {
+  if (!requireNamespace("repair", quietly = TRUE)) {
+    stop("The `repair` package is required for `medusa_between_subject_repair()`.")
+  }
+  if (is.null(models) && !is.null(medusa_mlm)) models <- medusa_mlm
+  if (is.null(data) && !is.null(subject_data)) data <- subject_data
+  if (!is.null(id_col)) id <- id_col
+  if (is.null(models)) stop("`models` (or `medusa_mlm`) must be provided.")
+  if (is.null(data)) stop("`data` (or `subject_data`) must be provided.")
+  regularization <- match.arg(regularization)
+  if (is.null(cross_model_error) && is.list(models) && length(models) > 1L) {
+    cross_model_error <- "independent"
+  }
+  r_args <- list(
+    formula = formula,
+    models = models,
+    data = as.data.frame(data),
+    id = id,
+    regularization = regularization
+  )
+  if (!is.null(cross_model_error)) r_args$cross_model_error <- cross_model_error
+  extra_dots <- list(...)
+  if (length(extra_dots) > 0L) r_args <- c(r_args, extra_dots)
+  r_mod <- do.call(repair::repair, r_args)
+  list(
+    coefficients = repair::repair_coefficients(r_mod),
+    reliability = repair::repair_reliability(r_mod),
+    predictions = repair::repair_predictions(r_mod),
+    fit = r_mod
+  )
+}
+
