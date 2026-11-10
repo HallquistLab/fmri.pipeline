@@ -1205,22 +1205,24 @@ test_that("medusa_fit_mmom and decon_connectivity_repair disattenuate measuremen
   expect_equal(unname(stats::coef(lm_aug)[-1L]), s1_mmoms$estimate, tolerance = 1e-5)
 
   # Between-subject random-effect regression via medusa_between_subject_repair
-  p_rseed <- panel_full[voxel == "R_seed" & evt_time == 0]
-  m_l1 <- suppressWarnings(lme4::lmer(decon_demixed ~ x + (1 + x | id), data = p_rseed))
-  re_ids <- rownames(lme4::ranef(m_l1)$id)
-  b_true_re <- lme4::ranef(m_l1)$id[["x"]]
-  trait_df <- data.frame(
-    id = re_ids,
-    trait_y = 1.5 * b_true_re + rnorm(length(re_ids), 0, 0.05)
-  )
-  bs_rep <- medusa_between_subject_repair(
-    formula = trait_y ~ re(x, group = "id"),
-    medusa_mlm = m_l1,
-    subject_data = trait_df,
-    id_col = "id"
-  )
-  expect_true(is.list(bs_rep))
-  expect_true(!is.null(bs_rep$coefficients) || inherits(bs_rep, "repair"))
+  if (requireNamespace("repair", quietly = TRUE)) {
+    p_rseed <- panel_full[voxel == "R_seed" & evt_time == 0]
+    m_l1 <- suppressWarnings(lme4::lmer(decon_demixed ~ x + (1 + x | id), data = p_rseed))
+    re_ids <- rownames(lme4::ranef(m_l1)$id)
+    b_true_re <- lme4::ranef(m_l1)$id[["x"]]
+    trait_df <- data.frame(
+      id = re_ids,
+      trait_y = 1.5 * b_true_re + rnorm(length(re_ids), 0, 0.05)
+    )
+    bs_rep <- medusa_between_subject_repair(
+      formula = trait_y ~ re(x, group = "id"),
+      medusa_mlm = m_l1,
+      subject_data = trait_df,
+      id_col = "id"
+    )
+    expect_true(is.list(bs_rep))
+    expect_true(!is.null(bs_rep$coefficients) || inherits(bs_rep, "repair"))
+  }
 })
 
 test_that("fast-TR amendments: AR(1)xAR(2) cascade whitening, AR(3) second-difference noise_sd, and sub-TR lobe-calibrated within-trial demixing", {
