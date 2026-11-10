@@ -118,12 +118,15 @@ get_medusa_interpolated_ts(
 
 - readout_kernel:
 
-  Readout kernel applied at each output grid time: `"linear"` (default),
-  `"boxcar"`, `"triangle"`, or `"gaussian"`.
+  Readout kernel applied at each output grid time: `"linear"` (default
+  two-point bracket interpolation), `"boxcar"`, `"triangle"`, or
+  `"gaussian"` local window integration within each contiguous
+  uncensored segment.
 
 - readout_width:
 
   Full window width (in seconds) for non-linear `readout_kernel` modes.
+  Defaults to `1.5 * max_gap`.
 
 ## Details
 

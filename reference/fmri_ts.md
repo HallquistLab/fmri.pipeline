@@ -99,7 +99,7 @@ method to get rehydrated time series object with key values
 
 ### `fmri_ts$get_events()`
 
-Get a copy of event data, optionally restoring original variable names.
+Get a copy of the event data, optionally with original names
 
 #### Usage
 
@@ -109,7 +109,7 @@ Get a copy of event data, optionally restoring original variable names.
 
 - `orig_names`:
 
-  Whether to restore the input variable names.
+  Whether to restore the input variable names
 
 ------------------------------------------------------------------------
 

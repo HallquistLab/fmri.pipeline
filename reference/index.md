@@ -97,6 +97,10 @@
   : helper function to create an FWE object that specifies the type of
   FWE correction and the model outputs to which it is applied
 
+- [`decon_connectivity_repair()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_connectivity_repair.md)
+  : Measurement-error-corrected inter-region connectivity and PPI via
+  REPAIR
+
 - [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md)
   : Operator-based epoch de-mixing and gain-corrected trial regression
   across lags
@@ -274,6 +278,13 @@
   [`as.data.frame(`*`<feat_output_lookup>`*`)`](https://hallquistlab.github.io/fmri.pipeline/reference/lookup_feat_outputs.md)
   [`print(`*`<feat_output_lookup>`*`)`](https://hallquistlab.github.io/fmri.pipeline/reference/lookup_feat_outputs.md)
   : Lookup FSL FEAT output images by model and contrast
+
+- [`medusa_between_subject_repair()`](https://hallquistlab.github.io/fmri.pipeline/reference/medusa_between_subject_repair.md)
+  : Between-subject REPAIR structural regression on MEDuSA mixed models
+
+- [`medusa_fit_mmom()`](https://hallquistlab.github.io/fmri.pipeline/reference/medusa_fit_mmom.md)
+  : Fit a REPAIR modified method-of-moments (M-MOM / M-MOMS)
+  measurement-error model
 
 - [`meta_mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/meta_mixed_by.md)
   : Function to run Bayesian random-effects meta-regression on

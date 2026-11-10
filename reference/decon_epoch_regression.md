@@ -311,11 +311,13 @@ realism), the recommended end-to-end configuration is:
 
 2.  **Stage 2 (Deconvolution):** Use
     [`deconvolve_crossrun_hrf`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_crossrun_hrf.md)
-    with `scaling = "noise_sd"` (AR(1) innovation noise SD rather than
-    total `"zscore"` variance) and `penalty = "sobolev"`.
+    with `lambda = NULL` (adaptive prewhitened GCV tuning),
+    `scaling = "noise_sd"` (AR(1) innovation noise SD rather than total
+    `"zscore"` variance), and `penalty = "sobolev"`.
 
-3.  **Stage 3 (Epoch De-Mixing & Whitening):** Use
-    `decon_epoch_regression(..., demix_other_events = TRUE, demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls", whiten_panel = TRUE, return_panel = TRUE)`.
+3.  **Stage 3 (Epoch De-Mixing, Parcel Pre-Aggregation & Whitening):**
+    Use
+    `decon_epoch_regression(..., demix_other_events = TRUE, demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls", aggregate_by_parcel = TRUE, whiten_panel = TRUE, return_panel = TRUE)`.
     Enable `demix_within_trial = TRUE` with `lags` spaced at
     \\1\times\mathrm{TR}\\ when estimating multi-lag waveforms
     \\\beta(\tau)\\ (if `lags` is sampled finer than

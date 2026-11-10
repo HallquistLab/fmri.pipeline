@@ -78,7 +78,9 @@
 
 
 <dt id="arg-add-metadata">add_metadata<a class="anchor" aria-label="anchor" href="#arg-add-metadata"></a></dt>
-<dd><p>A data.frame with one row per value of <code>niftis</code>, saved as atlas-level metadata. The <code>id</code>, <code>run</code>, and optional <code>session</code> columns are also saved in per-file sidecars for event alignment.</p></dd>
+<dd><p>A data.frame with one row per value of <code>niftis</code>, saved
+as atlas-level metadata. The <code>id</code>, <code>run</code>, and optional <code>session</code>
+columns are also saved in per-file sidecars for event alignment.</p></dd>
 
 
 <dt id="arg-out-dir">out_dir<a class="anchor" aria-label="anchor" href="#arg-out-dir"></a></dt>
@@ -144,7 +146,7 @@ and does not require AFNI.</p></dd>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>The Bush 2011 algorithm uses the package's internal RcppArmadillo
-implementation and does not require an external executable.
+  implementation and does not require an external executable.
   Atlas, mask, and input images must share a spatial grid. Constant signals
   and signals containing nonfinite observations are excluded before fitting;
   their output rows are retained with missing estimates. The <code>decon_status</code>
@@ -157,28 +159,28 @@ implementation and does not require an external executable.
 <p>If you want to use subject metadata to name the output file, use <code>this_subj</code> in your <code>out_file_expression</code>, which will give you access to a one-row
   data.frame containing the metadata for the current subject in the loop.</p>
 <p>Set <code>decon_settings$scaling</code> explicitly to <code>"zscore"</code>,
-<code>"noise_sd"</code>, <code>"demean"</code>, <code>"none"</code>, or <code>"psc"</code>. The default is z-scoring.
-An explicit mode overrides <code>normalize</code>/<code>demean</code>; otherwise
-<code>normalize = FALSE</code> selects demeaning unless <code>demean = FALSE</code> too.
-The voxelwise Bush paths require z-scoring because their learning-rate and
-bounded-encoding/resampling behavior is sensitive to scale. Their output remains
-a bounded encoding. Use the linear algorithm for estimates in alternative units.
-For linear methods, z-scoring is recommended for standardized trial responses;
-demeaning retains input units, and percent signal change requires an appropriate
-positive baseline rather than residualized/zero-mean data. Raw scale does not by
-itself degrade the conditioning of the fixed linear inverse, but it changes
-signal weights during global tuning. See <code><a href="deconvolve_reglin.html">deconvolve_reglin</a></code>.</p>
+  <code>"noise_sd"</code>, <code>"demean"</code>, <code>"none"</code>, or <code>"psc"</code>. The default is z-scoring.
+  An explicit mode overrides <code>normalize</code>/<code>demean</code>; otherwise
+  <code>normalize = FALSE</code> selects demeaning unless <code>demean = FALSE</code> too.
+  The voxelwise Bush paths require z-scoring because their learning-rate and
+  bounded-encoding/resampling behavior is sensitive to scale. Their output remains
+  a bounded encoding. Use the linear algorithm for estimates in alternative units.
+  For linear methods, z-scoring is recommended for standardized trial responses;
+  demeaning retains input units, and percent signal change requires an appropriate
+  positive baseline rather than residualized/zero-mean data. Raw scale does not by
+  itself degrade the conditioning of the fixed linear inverse, but it changes
+  signal weights during global tuning. See <code><a href="deconvolve_reglin.html">deconvolve_reglin</a></code>.</p>
 <p>Scaling uses the observed run once, before any zero tail is appended
-(<code>decon_settings$tail_padding</code>, defaulting to <code>0L</code> for
-<code>reglin</code>/<code>regularized_linear</code> and <code>length(decon_settings$kernel)</code>
-for <code>bush2011</code>/<code>bush2015</code>);
-solver normalization is disabled, as is linear-solver demeaning of padded data. Each output has
-a <code>.scaling.csv</code> sidecar containing voxel number, mode, subtracted center,
-divisor, and validity status. Its <code>.metadata.csv</code> records algorithm, scaling,
-output units, and the scaling filename. Original-series files contain
-<code>BOLD_input</code>, the transformed observations supplied before padding, plus
-the legacy <code>BOLD_z</code> alias only for z-scored inputs. Existing output files
-are skipped; regenerate them to adopt the new scaling behavior and sidecars.</p>
+  (<code>decon_settings$tail_padding</code>, defaulting to <code>0L</code> for
+  <code>reglin</code>/<code>regularized_linear</code> and <code>length(decon_settings$kernel)</code>
+  for <code>bush2011</code>/<code>bush2015</code>);
+  solver normalization is disabled, as is linear-solver demeaning of padded data. Each output has
+  a <code>.scaling.csv</code> sidecar containing voxel number, mode, subtracted center,
+  divisor, and validity status. Its <code>.metadata.csv</code> records algorithm, scaling,
+  output units, and the scaling filename. Original-series files contain
+  <code>BOLD_input</code>, the transformed observations supplied before padding, plus
+  the legacy <code>BOLD_z</code> alias only for z-scored inputs. Existing output files
+  are skipped; regenerate them to adopt the new scaling behavior and sidecars.</p>
     </div>
 
     <div class="section level2">

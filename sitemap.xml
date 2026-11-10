@@ -73,6 +73,7 @@
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/create_fwe_spec.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/create_new_hi_model.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/create_tracking_db.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/decon_connectivity_repair.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/deconvolution_impulse_diagnostics.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_crossrun_hrf.html</loc></url>
@@ -163,6 +164,8 @@
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/lookup_nvoxels.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/lookup_run_volumes.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/mat2df.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/medusa_between_subject_repair.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/medusa_fit_mmom.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/meta_mixed_by.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/mobj_fit_lm.html</loc></url>

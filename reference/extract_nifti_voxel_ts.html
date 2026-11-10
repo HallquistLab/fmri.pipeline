@@ -40,7 +40,7 @@
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>Extract selected voxel time series in a specified order</h1>
-
+      <small class="dont-index">Source: <a href="https://github.com/HallquistLab/fmri.pipeline/blob/master/R/RcppExports.R" class="external-link"><code>R/RcppExports.R</code></a></small>
       <div class="d-none name"><code>extract_nifti_voxel_ts.Rd</code></div>
     </div>
 
@@ -60,6 +60,7 @@
 <dl><dt id="arg-infile">infile<a class="anchor" aria-label="anchor" href="#arg-infile"></a></dt>
 <dd><p>Path to a scalar NIfTI image, optionally gzipped.</p></dd>
 
+
 <dt id="arg-voxel-indices">voxel_indices<a class="anchor" aria-label="anchor" href="#arg-voxel-indices"></a></dt>
 <dd><p>One-based linear indices within the spatial volume.</p></dd>
 
@@ -71,8 +72,8 @@
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>Uses the RNifti C++ API, including NIfTI slope/intercept scaling,
-without creating a full double-precision R array or intermediate text file.
-Spatial alignment with the atlas must be checked by the caller.</p>
+  without creating a full double-precision R array or intermediate text file.
+  Spatial alignment with the atlas must be checked by the caller.</p>
     </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

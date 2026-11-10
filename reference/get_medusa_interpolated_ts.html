@@ -155,13 +155,14 @@ this tolerance only permits wider brackets across deleted rows.</p></dd>
 
 <dt id="arg-readout-kernel">readout_kernel<a class="anchor" aria-label="anchor" href="#arg-readout-kernel"></a></dt>
 <dd><p>Readout kernel applied at each output grid time:
-<code>"linear"</code> (default), <code>"boxcar"</code>, <code>"triangle"</code>, or
-<code>"gaussian"</code>.</p></dd>
+<code>"linear"</code> (default two-point bracket interpolation), <code>"boxcar"</code>,
+<code>"triangle"</code>, or <code>"gaussian"</code> local window integration within each
+contiguous uncensored segment.</p></dd>
 
 
 <dt id="arg-readout-width">readout_width<a class="anchor" aria-label="anchor" href="#arg-readout-width"></a></dt>
 <dd><p>Full window width (in seconds) for non-linear
-<code>readout_kernel</code> modes.</p></dd>
+<code>readout_kernel</code> modes. Defaults to <code>1.5 * max_gap</code>.</p></dd>
 
 </dl></div>
     <div class="section level2">

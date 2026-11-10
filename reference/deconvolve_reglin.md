@@ -55,8 +55,11 @@ deconvolve_reglin(
 
   regularization penalty: `"diff2"` for smooth second differences,
   `"diff1"` for smooth first differences, `"ridge"` for amplitude
-  shrinkage, `"matern1"` for a damped first-order Matérn penalty, or
-  `"sobolev"` for a critically damped second-order Sobolev penalty.
+  shrinkage, `"matern1"` for a damped first-order
+  Matérn/Ornstein-Uhlenbeck penalty (`0.10 * I + 0.90 * crossprod(D1)`),
+  or `"sobolev"` for a critically damped second-order Sobolev penalty
+  (`0.05 * I + 0.45 * crossprod(D1) + 0.50 * crossprod(D2)`) that
+  suppresses negative sidelobe ringing and stabilizes low frequencies.
 
 - kernel_grid:
 
@@ -140,9 +143,13 @@ deconvolve_reglin(
 - scaling:
 
   Explicit input scaling: `"zscore"`, `"noise_sd"`, `"demean"`,
-  `"none"`, or `"psc"` (percent signal change). When supplied, overrides
-  `normalize` and `demean`. Otherwise those flags retain their existing
-  behavior; the default is z-scoring.
+  `"none"`, or `"psc"` (percent signal change). `"noise_sd"` centers
+  each signal and divides by a high-frequency second-difference estimate
+  of observation noise SD (adjusted for AR(1) autocorrelation when
+  available), standardizing SNR without conflating neural task variance
+  with noise variance. When supplied, overrides `normalize` and
+  `demean`. Otherwise those flags retain their existing behavior; the
+  default is z-scoring.
 
 ## Value
 
@@ -155,19 +162,18 @@ Constant signals and signals containing nonfinite observations are
 excluded from fitting and tuning. Their activity columns are returned as
 `NA`; diagnostics include a per-column `signal_status` vector (`"ok"`,
 `"constant"`, or `"nonfinite"`). Partial missingness excludes the entire
-signal; observations are not interpolated or deleted.
-
-Z-scoring remains the default and is recommended for standardized
-within-run trial responses. For fixed HRF/regularization, the linear
-inverse is homogeneous in its input: rescaling the observations rescales
-activity without changing the conditioning of the inverse matrix.
-Without z-scoring, global GCV gives signals with larger variance more
-weight. Demeaning retains input units; `"none"` retains offsets too and
-is mainly useful for already-centered data or simulations. Percent
-signal change uses `100 * (y - mean(y)) / mean(y)` and requires a
-positive baseline well away from zero. It is unsuitable for zero-mean
-residuals. No scaling choice removes HRF uncertainty or
-regularization-induced attenuation.
+signal; observations are not interpolated or deleted. Z-scoring remains
+the default and is recommended for standardized within-run trial
+responses. For fixed HRF/regularization, the linear inverse is
+homogeneous in its input: rescaling the observations rescales activity
+without changing the conditioning of the inverse matrix. Without
+z-scoring, global GCV gives signals with larger variance more weight.
+Demeaning retains input units; `"none"` retains offsets too and is
+mainly useful for already-centered data or simulations. Percent signal
+change uses `100 * (y - mean(y)) / mean(y)` and requires a positive
+baseline well away from zero. It is unsuitable for zero-mean residuals.
+No scaling choice removes HRF uncertainty or regularization-induced
+attenuation.
 
 Scaling is applied once. The matrix attributes `scaled:center`,
 `scaled:scale`, and `scaling` record the actual BOLD transformation

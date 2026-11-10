@@ -170,35 +170,36 @@ estimate_crossrun_hrf(
 
 - selection_mode:
 
-  Selection rule for HRF shapes per fold: `"hard"` (default; discrete
-  selection of a single best library candidate) or `"soft_average"`
-  (spread-normalized local Boltzmann evidence-weighted averaging over
-  the top locally compatible candidates, shrunk toward `fallback_kernel`
-  by Empirical-Bayes departure confidence).
+  Candidate selection rule: \`"hard"\` (default) selects a single
+  discrete winning HRF column index per voxel/parcel; \`"soft_average"\`
+  constructs a continuous Empirical-Bayes / Boltzmann evidence-weighted
+  composite HRF kernel across compatible neighborhood candidates blended
+  with the prespecified fallback kernel.
 
 ## Value
 
 An object of class crossrun_hrf with normalized kernels, per-target-run
-selections, candidate weight matrices (`kernel_weights`), unit-sum
-composite HRF kernels (`selected_kernels`), training manifests, parcel
-anchors, run status/design summaries, optional candidate scores,
-voxel/run IDs, and frozen settings.
+selections and training manifests, parcel anchors, run status/design
+summaries, optional candidate scores, voxel/run IDs, and frozen
+settings. When \`selection_mode = "soft_average"\`, also includes
+per-target-run candidate weight matrices (\`kernel_weights\`) and
+unit-sum composite HRF kernel matrices (\`selected_kernels\`).
 
 ## Details
 
 When multiple runs are supplied, each target run is excluded from its
 own HRF selection, including parcel anchors and fallback decisions. When
-only a single run is supplied (`length(bold) == 1L`), usable
+only a single run is supplied (\`length(bold) == 1L\`), usable
 observations are partitioned into contiguous temporal sub-blocks (3
 blocks for longer runs, 2 halves for shorter runs) that are scored
 against the full causal event design using full-run AR(1) covariance
 estimates and pooled across sub-blocks with cross-block compatibility
-testing, while returning a single-run `crossrun_hrf` object for full-run
-deconvolution. Training fits have run-specific condition or event
-amplitudes and nuisance coefficients, with one shared candidate HRF
-across conditions. They do not fit unrestricted trial timecourses or use
-RPE. Native SVD projections are shared across voxel blocks. Scores are
-adjusted partial R-squared after removing nuisance, averaged equally
+testing, while returning a single-run \`crossrun_hrf\` object for
+full-run deconvolution. Training fits have run-specific condition or
+event amplitudes and nuisance coefficients, with one shared candidate
+HRF across conditions. They do not fit unrestricted trial timecourses or
+use RPE. Native SVD projections are shared across voxel blocks. Scores
+are adjusted partial R-squared after removing nuisance, averaged equally
 across usable training runs. Parcel scores average these voxel scores
 equally, retaining voxel-specific amplitudes rather than averaging BOLD
 first. In voxel mode, selection maximizes score minus spatial_strength

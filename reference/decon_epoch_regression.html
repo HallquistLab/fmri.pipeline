@@ -296,9 +296,9 @@ covariate columns for downstream <code><a href="mixed_by.html">mixed_by()</a></c
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>A list with <code>coefficients</code> (per voxel/parcel, lag, and predictor term),
-  <code>summary</code> (averaged across usable units per lag and term), optional
-  <code>epochs</code>, optional <code>panel</code>, and <code>settings</code>.</p>
+    <p>A list with <code>coefficients</code> (per voxel/parcel, lag, and predictor
+  term), <code>summary</code> (averaged across usable units per lag and term),
+  optional <code>epochs</code>, optional <code>panel</code>, and <code>settings</code>.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
@@ -350,17 +350,19 @@ covariate columns for downstream <code><a href="mixed_by.html">mixed_by()</a></c
       (evidence-weighted HRF kernel averaging across locally supported
       shapes), and parcel labels in <code>spatial_groups</code>.</p></li>
 <li><p><strong>Stage 2 (Deconvolution):</strong> Use <code><a href="deconvolve_crossrun_hrf.html">deconvolve_crossrun_hrf</a></code>
-      with <code>scaling = "noise_sd"</code> (AR(1) innovation noise SD rather than
-      total <code>"zscore"</code> variance) and <code>penalty = "sobolev"</code>.</p></li>
-<li><p><strong>Stage 3 (Epoch De-Mixing &amp; Whitening):</strong> Use
+      with <code>lambda = NULL</code> (adaptive prewhitened GCV tuning),
+      <code>scaling = "noise_sd"</code> (AR(1) innovation noise SD rather than
+      total <code>"zscore"</code> variance), and <code>penalty = "sobolev"</code>.</p></li>
+<li><p><strong>Stage 3 (Epoch De-Mixing, Parcel Pre-Aggregation &amp; Whitening):</strong> Use
       <code>decon_epoch_regression(..., demix_other_events = TRUE,
       demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls",
-      whiten_panel = TRUE, return_panel = TRUE)</code>. Enable
-      <code>demix_within_trial = TRUE</code> with <code>lags</code> spaced at \(1\times\mathrm{TR}\)
-      when estimating multi-lag waveforms \(\beta(\tau)\) (if <code>lags</code> is
-      sampled finer than \(1\times\mathrm{TR}\), <code>within_trial_ridge</code> is
-      automatically scaled by \((\mathrm{TR}/\Delta\tau)^2\) to prevent sub-TR
-      collinearity amplification), and set <code>source_model = "duration"</code>
+      aggregate_by_parcel = TRUE, whiten_panel = TRUE, return_panel = TRUE)</code>.
+      Enable <code>demix_within_trial = TRUE</code> with <code>lags</code> spaced at
+      \(1\times\mathrm{TR}\) when estimating multi-lag waveforms \(\beta(\tau)\)
+      (if <code>lags</code> is sampled finer than \(1\times\mathrm{TR}\),
+      <code>within_trial_ridge</code> is automatically scaled by
+      \((\mathrm{TR}/\Delta\tau)^2\) to prevent sub-TR collinearity
+      amplification), and set <code>source_model = "duration"</code>
       (<code>duration_scale = "rate"</code>) when modeling variable-duration (RT)
       epochs.</p></li>
 <li><p><strong>Stage 4 (Group Mixed-Effects Inference):</strong> Pass both the

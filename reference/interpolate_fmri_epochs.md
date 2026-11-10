@@ -59,14 +59,6 @@ interpolate_fmri_epochs(
 
   Maximum source bracket duration (default acquisition TR).
 
-- readout_kernel:
-
-  Readout kernel applied at each output grid time.
-
-- readout_width:
-
-  Full window width in seconds for non-linear readout kernels.
-
 ## Author
 
 Michael Hallquist
