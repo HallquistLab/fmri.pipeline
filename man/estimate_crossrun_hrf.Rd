@@ -30,7 +30,8 @@ estimate_crossrun_hrf(
   canonical_strength = 0.01,
   spatial_coords = NULL,
   spatial_fwhm = NULL,
-  selection_mode = c("hard", "soft_average")
+  selection_mode = c("hard", "soft_average"),
+  noise_groups = NULL
 )
 }
 \arguments{
@@ -114,6 +115,11 @@ single discrete winning HRF column index per voxel/parcel; `"soft_average"`
 constructs a continuous Empirical-Bayes / Boltzmann evidence-weighted
 composite HRF kernel across compatible neighborhood candidates blended with
 the prespecified fallback kernel.}
+
+\item{noise_groups}{Optional voxel labels defining noise covariance pooling
+neighborhoods, in voxel column order. Defaults to \code{spatial_groups} when
+omitted. Allows noise neighborhoods (e.g., tissue- or sub-parcel-informed
+groups) to differ from HRF selection parcels.}
 }
 \value{
 An object of class crossrun_hrf with normalized kernels, per-target-run

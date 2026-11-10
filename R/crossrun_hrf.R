@@ -238,11 +238,13 @@ hrf_single_run_subblocks <- function(run_name, y, ev, tr, offset, kernels,
       if (!is.null(design_b) && length(rows_b) >= 6L) {
         psi1_r <- if ("psi1" %in% names(noise_r)) noise_r$psi1 else rep(0, nrow(noise_r))
         psi2_r <- if ("psi2" %in% names(noise_r)) noise_r$psi2 else rep(0, nrow(noise_r))
-        ar_keys_b <- paste(noise_r$rho, psi1_r, psi2_r, sep = ":")
+        psi3_r <- if ("psi3" %in% names(noise_r)) noise_r$psi3 else rep(0, nrow(noise_r))
+        psi4_r <- if ("psi4" %in% names(noise_r)) noise_r$psi4 else rep(0, nrow(noise_r))
+        ar_keys_b <- paste(noise_r$rho, psi1_r, psi2_r, psi3_r, psi4_r, sep = ":")
         for (ak in unique(ar_keys_b)) {
           indices <- which(ar_keys_b == ak)
           idx1 <- indices[1L]
-          ar_vec <- c(noise_r$rho[idx1], psi1_r[idx1], psi2_r[idx1])
+          ar_vec <- c(noise_r$rho[idx1], psi1_r[idx1], psi2_r[idx1], psi3_r[idx1], psi4_r[idx1])
           part <- hrf_score_run_ar(y[, indices, drop = FALSE], design_b, z, rows_b,
             as.integer(batch_size), ar_vec = ar_vec, evidence = evidence == "calibrated",
             fallback_index = as.integer(fallback_kernel))
@@ -358,6 +360,10 @@ hrf_compute_spatial_weights <- function(spatial_coords, spatial_groups, spatial_
 #'   constructs a continuous Empirical-Bayes / Boltzmann evidence-weighted
 #'   composite HRF kernel across compatible neighborhood candidates blended with
 #'   the prespecified fallback kernel.
+#' @param noise_groups Optional voxel labels defining noise covariance pooling
+#'   neighborhoods, in voxel column order. Defaults to \code{spatial_groups} when
+#'   omitted. Allows noise neighborhoods (e.g., tissue- or sub-parcel-informed
+#'   groups) to differ from HRF selection parcels.
 #' @return An object of class crossrun_hrf with normalized kernels, per-target-run
 #'   selections and training manifests, parcel anchors, run status/design summaries,
 #'   optional candidate scores, voxel/run IDs, and frozen settings. When
@@ -416,7 +422,8 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     noise_grid = seq(-0.8, 0.9, by = 0.1), evidence = c("calibrated", "legacy"),
     evidence_alpha = 0.05, canonical_strength = 0.01,
     spatial_coords = NULL, spatial_fwhm = NULL,
-    selection_mode = c("hard", "soft_average")) {
+    selection_mode = c("hard", "soft_average"),
+    noise_groups = NULL) {
   hrf_validate_bold(bold)
   pooling <- match.arg(pooling)
   amplitude_model <- match.arg(amplitude_model)
@@ -479,6 +486,13 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
   }
   if (pooling == "parcel" && spatial_strength != 0)
     stop("spatial_strength applies only to voxel pooling")
+  if (!is.null(noise_groups)) {
+    if (!is.atomic(noise_groups) || length(noise_groups) != length(voxel_ids) ||
+        (!is.null(names(noise_groups)) && !identical(names(noise_groups), voxel_ids)) ||
+        anyNA(noise_groups) || any(!nzchar(as.character(noise_groups))))
+      stop("noise_groups must be nonmissing labels in voxel column order")
+    noise_groups <- stats::setNames(as.character(noise_groups), voxel_ids)
+  }
   spatial_weights <- hrf_compute_spatial_weights(spatial_coords, spatial_groups, spatial_fwhm)
   offsets <- hrf_run_numeric(time_offset, bold, "time_offset")
   events <- hrf_run_list(events, bold, "events", function(y) NULL)
@@ -487,6 +501,7 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
   per_run <- run_results <- noise <- design_manifest <- event_manifest <- vector("list", length(bold))
   names(per_run) <- names(run_results) <- names(noise) <- names(design_manifest) <- names(event_manifest) <- names(bold)
   if (!is.null(spatial_groups)) names(spatial_groups) <- voxel_ids
+  eff_noise_groups <- if (!is.null(noise_groups)) noise_groups else spatial_groups
   for (r in seq_along(bold)) {
     y <- bold[[r]]; ev <- events[[r]]
     checkmate::assert_data_frame(ev, min.rows = 1L)
@@ -503,8 +518,9 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     z <- cbind(intercept = 1, trend = seq(-1, 1, length.out = nrow(y)), nuisance[[r]])
     if (any(!is.finite(z[mask, , drop = FALSE]))) stop("Nuisance values must be finite on usable rows")
     noise[[r]] <- hrf_estimate_noise(y, ev, tr, offsets[r], kernels, fallback_kernel,
-      z, mask, spatial_groups, noise_grid, batch_size,
-      if (noise_model == "ols") 0 else if (!is.null(noise_rho)) noise_rho[r] else NULL)
+      z, mask, eff_noise_groups, noise_grid, batch_size,
+      if (noise_model == "ols") 0 else if (!is.null(noise_rho)) noise_rho[r] else NULL,
+      spatial_coords = spatial_coords, spatial_fwhm = spatial_fwhm)
     rho_ref <- if (any(is.finite(noise[[r]]$rho))) stats::median(noise[[r]]$rho, na.rm = TRUE) else 0
     design <- hrf_build_run_design(y, ev, tr, offsets[r], kernels, z, mask,
       amplitude_model, rho_ref, batch_size, fallback_kernel)
@@ -515,12 +531,14 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     manifest <- list()
     psi1_r <- if ("psi1" %in% names(noise[[r]])) noise[[r]]$psi1 else rep(0, nrow(noise[[r]]))
     psi2_r <- if ("psi2" %in% names(noise[[r]])) noise[[r]]$psi2 else rep(0, nrow(noise[[r]]))
-    ar_keys_r <- paste(noise[[r]]$rho, psi1_r, psi2_r, sep = ":")
+    psi3_r <- if ("psi3" %in% names(noise[[r]])) noise[[r]]$psi3 else rep(0, nrow(noise[[r]]))
+    psi4_r <- if ("psi4" %in% names(noise[[r]])) noise[[r]]$psi4 else rep(0, nrow(noise[[r]]))
+    ar_keys_r <- paste(noise[[r]]$rho, psi1_r, psi2_r, psi3_r, psi4_r, sep = ":")
     for (ak in unique(ar_keys_r)) {
       indices <- which(ar_keys_r == ak)
       idx1 <- indices[1L]
       rho <- noise[[r]]$rho[idx1]
-      ar_vec <- c(rho, psi1_r[idx1], psi2_r[idx1])
+      ar_vec <- c(rho, psi1_r[idx1], psi2_r[idx1], psi3_r[idx1], psi4_r[idx1])
       part <- if (sum(mask) >= 3L) {
         hrf_score_run_ar(y[, indices, drop = FALSE], design, z, which(mask),
           as.integer(batch_size), ar_vec = ar_vec, evidence = evidence == "calibrated",
@@ -901,6 +919,26 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     }
     if (return_scores) candidate_scores[[target]] <- scores
   }
+  # Post-selection target-excluded noise refit:
+  # All HRF selections, weights, parcel anchors, and evidence scores are now
+  # strictly frozen from training runs (j != r). Refitting each run's noise model
+  # using its frozen cross-run selected_kernels[[r]] removes non-canonical HRF
+  # task leakage from the REML covariance and GLS scale without allowing any
+  # target-run information to enter HRF selection.
+  for (r in seq_along(bold)) {
+    mask_r <- !is.na(valid_rows[[r]]) & valid_rows[[r]]
+    if (sum(mask_r) < 12L) next
+    sel_k_r <- selected_kernels[[r]]
+    if (is.null(sel_k_r)) next
+    diff_fb <- max(abs(sweep(sel_k_r, 1L, kernels[, fallback_kernel], "-")))
+    if (!is.finite(diff_fb) || diff_fb <= 1e-6) next
+    z_r <- cbind(intercept = 1, trend = seq(-1, 1, length.out = nrow(bold[[r]])), nuisance[[r]])
+    fixed_r <- if (noise_model == "ols") 0 else if (!is.null(noise_rho)) noise_rho[r] else NULL
+    noise[[r]] <- hrf_estimate_noise(bold[[r]], events[[r]], tr, offsets[r],
+      kernels, fallback_kernel, z_r, mask_r, eff_noise_groups, noise_grid, batch_size,
+      fixed_r, selected_kernels = sel_k_r,
+      spatial_coords = spatial_coords, spatial_fwhm = spatial_fwhm)
+  }
   structure(list(kernels = kernels, parameters = parameters, selections = selections,
     kernel_weights = kernel_weights, selected_kernels = selected_kernels,
     parcels = anchors, training_runs = training_runs,
@@ -910,7 +948,7 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     run_ids = names(bold),
     voxel_ids = voxel_ids, n_time = vapply(bold, nrow, integer(1)),
     specification = list(events = events, nuisance = nuisance, valid_rows = valid_rows,
-      spatial_groups = spatial_groups),
+      spatial_groups = spatial_groups, noise_groups = eff_noise_groups),
     settings = list(tr = tr, time_offset = offsets, pooling = pooling, amplitude_model = amplitude_model,
       spatial_strength = spatial_strength, fallback_kernel = as.integer(fallback_kernel),
       min_r2 = min_r2, min_training_runs = min_training_runs, min_parcel_voxels = min_parcel_voxels,
@@ -918,7 +956,8 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
       rank_tolerance = 1e-8, evidence = evidence, evidence_alpha = evidence_alpha,
       canonical_strength = canonical_strength, selection_mode = selection_mode,
       noise_grid = noise_grid,
-      noise_pooling = if (is.null(spatial_groups)) "run" else "supplied_parcel",
+      noise_pooling = if (!is.null(noise_groups)) "supplied_noise_groups" else
+        if (is.null(spatial_groups)) "run" else "supplied_parcel",
       nuisance = "run_specific_intercept_linear_trend_and_supplied", noise_model = noise_model,
       selection = if (is_single_run) "within_run_subblock_pooled" else "leave_target_run_out",
       parcel_fallback = !is.null(spatial_groups),
@@ -1070,6 +1109,18 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       ar_psi1 <- if (!is.null(strat$psi1)) strat$psi1[columns[1L]] else 0.0
       ar_psi2 <- if (!is.null(strat$psi2)) strat$psi2[columns[1L]] else 0.0
       k_vec <- as.numeric(strat$get_kernel(columns[1L]))
+      x_gls_stratum <- NULL
+      if (!is.null(hrf_fit$specification$events[[r]]) && length(rows) >= 20L) {
+        mask_decon_bool <- seq_len(n) %in% rows
+        nuis_r <- if (!is.null(hrf_fit$specification$nuisance)) hrf_fit$specification$nuisance[[r]] else matrix(numeric(), n, 0L)
+        z_r_base <- cbind(intercept = 1, trend = seq(-1, 1, length.out = n), nuis_r)
+        off_r <- if (length(hrf_fit$settings$time_offset) >= r) hrf_fit$settings$time_offset[r] else 0.0
+        md_str <- hrf_build_noise_mean_design(n, hrf_fit$specification$events[[r]],
+          hrf_fit$settings$tr, off_r, k_vec, z_r_base, mask_decon_bool)
+        if (md_str$df_nominal >= 16L) {
+          x_gls_stratum <- md_str$design[rows, , drop = FALSE]
+        }
+      }
       if (backend != "wiener") {
         if (exists(key, envir = operators, inherits = FALSE)) operator <- get(key, envir = operators) else {
           operator <- hrf_inverse_operator(n, k_vec, rows, ar_op, z, settings)
@@ -1085,12 +1136,15 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
         }
       }
       for (indices in split(columns, ceiling(seq_along(columns) / batch_size))) {
+        y_blk <- y[rows, indices, drop = FALSE]
+        coh_nsd <- hrf_estimate_gls_noise_sd(y_blk, x_gls_stratum, rows, ar_op)
         scaled <- scale_decon_input(
-          y[rows, indices, drop = FALSE],
+          y_blk,
           scaling = scaling,
           noise_rho = ar,
           noise_psi1 = ar_psi1,
-          noise_psi2 = ar_psi2
+          noise_psi2 = ar_psi2,
+          noise_sd_override = if (identical(scaling, "noise_sd")) coh_nsd else NULL
         )
         out[, indices] <- if (backend == "wiener") {
           fit_input <- rbind(scaled$y, matrix(0, tail_padding, length(indices)))
@@ -1098,16 +1152,7 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
             scaling = "none", backend = "wiener")[seq_len(n), , drop = FALSE]
         } else operator %*% scaled$y
         centers[indices] <- scaled$center; divisors[indices] <- scaled$scale
-        noise_sds[indices] <- if (identical(scaling, "noise_sd")) {
-          scaled$scale
-        } else {
-          estimate_decon_noise_sd(
-            y[rows, indices, drop = FALSE],
-            noise_rho = ar,
-            noise_psi1 = ar_psi1,
-            noise_psi2 = ar_psi2
-          )
-        }
+        noise_sds[indices] <- if (identical(scaling, "noise_sd")) scaled$scale else coh_nsd
       }
     }
     attr(out, "tr") <- hrf_fit$settings$tr
