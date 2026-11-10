@@ -292,6 +292,41 @@ compute_ar1_operator_cov <- function(B, rows, rho, center_obs = TRUE) {
     return(tcrossprod(B_eff))
   }
   Bt <- t(B_eff)
+  if (has_ar2 && m >= 3L && all(diff(rows) == 1L)) {
+    # Exact stationary AR(3) backward innovation accumulation for contiguous observations:
+    # (1 - rho1 L)(1 - psi1 L - psi2 L^2) = 1 - phi1 L - phi2 L^2 - phi3 L^3
+    psi2 <- min(max(psi2, -0.85), 0.85)
+    k1 <- min(max(psi1 / max(1.0 - psi2, 1e-6), -0.85), 0.85)
+    psi1_st <- k1 * (1.0 - psi2)
+    phi <- c(rho1 + psi1_st, psi2 - rho1 * psi1_st, -rho1 * psi2)
+    A_yw <- matrix(c(1.0 - phi[2L], -(phi[1L] + phi[3L]), -phi[3L], 1.0), 2L, 2L)
+    g12 <- tryCatch(solve(A_yw, c(phi[1L], phi[2L])), error = function(e) NULL)
+    if (!is.null(g12) && all(is.finite(g12))) {
+      g1 <- g12[1L]
+      g2 <- g12[2L]
+      g3 <- phi[1L] * g2 + phi[2L] * g1 + phi[3L]
+      sig_u2 <- 1.0 - phi[1L] * g1 - phi[2L] * g2 - phi[3L] * g3
+      Gamma3 <- matrix(c(1.0, g1, g2, g1, 1.0, g1, g2, g1, 1.0), 3L, 3L)
+      L3 <- tryCatch(t(chol(Gamma3)), error = function(e) NULL)
+      if (is.finite(sig_u2) && sig_u2 > 1e-8 && !is.null(L3)) {
+        sig_u <- sqrt(sig_u2)
+        W_v <- matrix(0, m, M)
+        for (i in m:1L) {
+          acc <- Bt[i, ]
+          if (i + 1L <= m && i + 1L >= 4L) acc <- acc + phi[1L] * W_v[i + 1L, ]
+          if (i + 2L <= m && i + 2L >= 4L) acc <- acc + phi[2L] * W_v[i + 2L, ]
+          if (i + 3L <= m && i + 3L >= 4L) acc <- acc + phi[3L] * W_v[i + 3L, ]
+          W_v[i, ] <- acc
+        }
+        U <- matrix(0, m, M)
+        if (m >= 4L) {
+          U[4L:m, ] <- sig_u * W_v[4L:m, , drop = FALSE]
+        }
+        U[1L:3L, ] <- crossprod(L3, W_v[1L:3L, , drop = FALSE])
+        return(crossprod(U))
+      }
+    }
+  }
   if (has_ar1) {
     V <- matrix(0, m, M)
     V[m, ] <- Bt[m, ]
@@ -307,6 +342,7 @@ compute_ar1_operator_cov <- function(B, rows, rho, center_obs = TRUE) {
   if (has_ar2) {
     psi2 <- min(max(psi2, -0.85), 0.85)
     k1 <- min(max(psi1 / max(1.0 - psi2, 1e-6), -0.85), 0.85)
+    psi1_st <- k1 * (1.0 - psi2)
     s1 <- sqrt(max(1.0 - k1 * k1, 1e-8))
     s2 <- sqrt(max((1.0 - k1 * k1) * (1.0 - psi2 * psi2), 1e-8))
     c1_vec <- numeric(m)
@@ -314,7 +350,7 @@ compute_ar1_operator_cov <- function(B, rows, rho, center_obs = TRUE) {
     sp_vec <- rep(1.0, m)
     for (i in 2:m) {
       if (i >= 3L && (rows[i] - rows[i - 1L] == 1L) && (rows[i - 1L] - rows[i - 2L] == 1L)) {
-        c1_vec[i] <- psi1
+        c1_vec[i] <- psi1_st
         c2_vec[i] <- psi2
         sp_vec[i] <- s2
       } else if (rows[i] - rows[i - 1L] == 1L) {
@@ -331,7 +367,7 @@ compute_ar1_operator_cov <- function(B, rows, rho, center_obs = TRUE) {
     }
     # Normalize by stationary marginal SD of the cascaded AR(1)xAR(2) process so unit diagonal is preserved
     r1_ar2 <- k1
-    r2_ar2 <- psi1 * r1_ar2 + psi2
+    r2_ar2 <- psi1_st * r1_ar2 + psi2
     var_cascade <- max(1.0 + 2.0 * rho1 * r1_ar2 + 2.0 * (rho1^2) * r2_ar2, 0.15)
     U <- sweep(W_v, 1L, sp_vec / sqrt(var_cascade), "*")
   }
@@ -1333,24 +1369,29 @@ decon_epoch_regression <- function(
               diag_gain <- diag_base
             }
             W_lag <- sweep(W_sym, 1L, diag_gain, "/")
-            var_infl_wt <- pmax(1.0, diag(W_lag_unit %*% C_sym %*% t(W_lag_unit)))
-            se_infl_wt <- sqrt(var_infl_wt)
 
             idx_common <- which(ok_common)
             Y_common_old <- lapply(seq_len(n_lags), function(li) {
               demixed_epochs[[li]][row_span[idx_common], voxels, drop = FALSE]
             })
+            B_common_old <- lapply(seq_len(n_lags), function(li) {
+              ok_sub_li <- ok_common[ok_tau_list[[li]]]
+              B_demix_list[[li]][ok_sub_li, , drop = FALSE]
+            })
+            n_obs_b <- ncol(B_common_old[[1L]])
             for (l1 in seq_len(n_lags)) {
               Y_new_l1 <- matrix(0, m_common, length(voxels))
+              B_new_l1 <- matrix(0, m_common, n_obs_b)
               for (l2 in seq_len(n_lags)) {
                 w_12 <- W_lag[l1, l2]
                 if (abs(w_12) > 0) {
                   Y_new_l1 <- Y_new_l1 + w_12 * Y_common_old[[l2]]
+                  B_new_l1 <- B_new_l1 + w_12 * B_common_old[[l2]]
                 }
               }
               demixed_epochs[[l1]][row_span[idx_common], voxels] <- Y_new_l1
               ok_sub_l1 <- ok_common[ok_tau_list[[l1]]]
-              B_demix_list[[l1]][ok_sub_l1, ] <- se_infl_wt[l1] * B_demix_list[[l1]][ok_sub_l1, , drop = FALSE]
+              B_demix_list[[l1]][ok_sub_l1, ] <- B_new_l1
             }
           }
         }

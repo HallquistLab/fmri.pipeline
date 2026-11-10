@@ -81,6 +81,8 @@ Suggests:
     rstanarm,
     testthat (>= 3.0.0),
     withr
+Remotes:
+    HallquistLab/repair
 LinkingTo:
     Rcpp,
     RcppArmadillo,
