@@ -511,7 +511,8 @@ resolve_decon_scaling <- function(scaling = NULL, normalize = TRUE, demean = TRU
 # Under general stationary noise with lag-1/2 autocorrelations (gamma_1, gamma_2),
 # Var(Delta^2 e_t) = (6 - 8*gamma_1 + 2*gamma_2)*sigma_e^2 (reducing to
 # 2*(1-rho)*(3-rho)*sigma_e^2 under pure AR(1) where gamma_2 = rho^2).
-estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, noise_psi2 = NULL) {
+estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, noise_psi2 = NULL,
+                                    noise_psi3 = NULL, noise_psi4 = NULL) {
   y <- as.matrix(y)
   n <- nrow(y)
   p <- ncol(y)
@@ -538,6 +539,8 @@ estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, nois
     if (!is.null(ar_casc) && is.null(noise_psi1) && is.null(noise_psi2) && length(ar_casc) >= 3L) {
       noise_psi1 <- ar_casc[2L]
       noise_psi2 <- ar_casc[3L]
+      if (is.null(noise_psi3) && length(ar_casc) >= 4L) noise_psi3 <- ar_casc[4L]
+      if (is.null(noise_psi4) && length(ar_casc) >= 5L) noise_psi4 <- ar_casc[5L]
     }
     rho_vec <- rep_len(as.numeric(noise_rho), p)
   } else {
@@ -545,8 +548,12 @@ estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, nois
   }
   psi1_vec <- if (!is.null(noise_psi1)) rep_len(as.numeric(noise_psi1), p) else rep(0.0, p)
   psi2_vec <- if (!is.null(noise_psi2)) rep_len(as.numeric(noise_psi2), p) else rep(0.0, p)
+  psi3_vec <- if (!is.null(noise_psi3)) rep_len(as.numeric(noise_psi3), p) else rep(0.0, p)
+  psi4_vec <- if (!is.null(noise_psi4)) rep_len(as.numeric(noise_psi4), p) else rep(0.0, p)
   psi1_vec[!is.finite(psi1_vec)] <- 0.0
   psi2_vec[!is.finite(psi2_vec)] <- 0.0
+  psi3_vec[!is.finite(psi3_vec)] <- 0.0
+  psi4_vec[!is.finite(psi4_vec)] <- 0.0
   r2_d2_fallback <- rep(0.0, p)
   need_rho <- !is.finite(rho_vec)
   if (any(need_rho)) {
@@ -582,13 +589,30 @@ estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, nois
     rho_vec[need_rho] <- pmin(pmax(rho_est, 0), 0.90)
   }
   rho_vec <- pmin(pmax(rho_vec, -0.90), 0.95)
-  phi1 <- rho_vec + psi1_vec
-  phi2 <- psi2_vec - rho_vec * psi1_vec
-  phi3 <- -rho_vec * psi2_vec
-  gamma1 <- (phi1 + phi2 * phi3) / pmax(1.0 - phi2 - phi1 * phi3 - phi3^2, 0.05)
-  gamma1 <- pmin(pmax(gamma1, -0.90), 0.95)
-  gamma2 <- phi2 + (phi1 + phi3) * gamma1 + 1.5 * pmin(0.0, r2_d2_fallback)
-  gamma3 <- phi1 * gamma2 + phi2 * gamma1 + phi3
+  has_p34 <- any(abs(psi3_vec) > 1e-10 | abs(psi4_vec) > 1e-10)
+  if (has_p34 && exists("hrf_ar_cascade_info", mode = "function")) {
+    gamma1 <- gamma2 <- gamma3 <- numeric(p)
+    ar_keys <- paste(rho_vec, psi1_vec, psi2_vec, psi3_vec, psi4_vec, sep = ":")
+    for (ak in unique(ar_keys)) {
+      idx_k <- which(ar_keys == ak)
+      j0 <- idx_k[1L]
+      acf_k <- hrf_ar_cascade_info(
+        c(rho_vec[j0], psi1_vec[j0], psi2_vec[j0], psi3_vec[j0], psi4_vec[j0]),
+        max_lag = 3L
+      )$acf
+      gamma1[idx_k] <- pmin(pmax(acf_k[2L], -0.90), 0.95)
+      gamma2[idx_k] <- acf_k[3L] + 1.5 * pmin(0.0, r2_d2_fallback[idx_k])
+      gamma3[idx_k] <- acf_k[4L]
+    }
+  } else {
+    phi1 <- rho_vec + psi1_vec
+    phi2 <- psi2_vec - rho_vec * psi1_vec
+    phi3 <- -rho_vec * psi2_vec
+    gamma1 <- (phi1 + phi2 * phi3) / pmax(1.0 - phi2 - phi1 * phi3 - phi3^2, 0.05)
+    gamma1 <- pmin(pmax(gamma1, -0.90), 0.95)
+    gamma2 <- phi2 + (phi1 + phi3) * gamma1 + 1.5 * pmin(0.0, r2_d2_fallback)
+    gamma3 <- phi1 * gamma2 + phi2 * gamma1 + phi3
+  }
 
   if (!any(need_rho) && n >= 200L) {
     r1_d2_emp <- vapply(seq_len(p), function(j) {
@@ -628,6 +652,8 @@ scale_decon_input <- function(
   noise_rho = NULL,
   noise_psi1 = NULL,
   noise_psi2 = NULL,
+  noise_psi3 = NULL,
+  noise_psi4 = NULL,
   noise_sd_override = NULL
 ) {
   scaling <- resolve_decon_scaling(scaling, normalize, demean)
@@ -645,7 +671,9 @@ scale_decon_input <- function(
         y,
         noise_rho = noise_rho,
         noise_psi1 = noise_psi1,
-        noise_psi2 = noise_psi2
+        noise_psi2 = noise_psi2,
+        noise_psi3 = noise_psi3,
+        noise_psi4 = noise_psi4
       )
     }
   } else if (scaling == "psc") {

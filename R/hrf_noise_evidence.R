@@ -60,7 +60,21 @@ hrf_ar_cascade_info <- function(ar_vec, max_lag = 16L) {
 # mean design matrix for Step 1 noise estimation and GLS residual scale estimation.
 hrf_build_noise_mean_design <- function(n_obs, events, tr, offset, kernel_col, z, mask) {
   n_mask <- sum(mask)
-  if (is.null(events) || nrow(events) == 0L) return(z)
+  rank_fn <- function(a) {
+    if (ncol(a) == 0L || n_mask == 0L) return(0L)
+    a <- a[mask, , drop = FALSE]
+    norm <- sqrt(colSums(a^2)); norm[norm == 0] <- 1
+    s <- svd(sweep(a, 2L, norm, "/"), nu = 0, nv = 0)$d
+    if (length(s) && s[1L] > 0) sum(s > 1e-8 * s[1L]) else 0L
+  }
+  if (is.null(events) || nrow(events) == 0L) {
+    return(list(
+      design = z,
+      df_nominal = n_mask - rank_fn(z),
+      trial_design = matrix(0, n_obs, 0L),
+      used_trial_design = TRUE
+    ))
+  }
   durations <- if (is.null(events$duration)) rep(0, nrow(events)) else events$duration
   k_mat <- matrix(as.numeric(kernel_col), ncol = 1L)
   x <- hrf_event_design_cpp(n_obs, tr, offset, events$onset, durations,
@@ -87,29 +101,33 @@ hrf_build_noise_mean_design <- function(n_obs, events, tr, offset, kernel_col, z
     }, numeric(n_obs))
     z_dct <- cbind(z, dct_cols)
   }
-  # A rank check is preferable to a column-count check for repeated events.
-  rank_fn <- function(a) {
-    a <- a[mask, , drop = FALSE]
-    norm <- sqrt(colSums(a^2)); norm[norm == 0] <- 1
-    s <- svd(sweep(a, 2L, norm, "/"), nu = 0, nv = 0)$d
-    if (length(s) && s[1L] > 0) sum(s > 1e-8 * s[1L]) else 0L
-  }
   aug_trial_cond <- cbind(z_dct, x, derivative(x_cond), derivative(derivative(x_cond)))
   aug_trial <- cbind(z_dct, x)
   aug_cond <- cbind(z_dct, x_cond, derivative(x_cond), derivative(derivative(x_cond)))
   min_df_full <- max(36L, as.integer(0.68 * n_mask))
+  used_trial <- FALSE
   mean_design <- if (n_mask - rank_fn(aug_trial_cond) >= min_df_full) {
+    used_trial <- TRUE
     aug_trial_cond
   } else if (n_mask - rank_fn(aug_trial) >= min_df_full) {
+    used_trial <- TRUE
     aug_trial
   } else if (n_mask - rank_fn(cbind(z, x)) >= 20L) {
+    used_trial <- TRUE
     cbind(z, x)
   } else if (n_mask - rank_fn(aug_cond) >= 20L) {
     aug_cond
+  } else if (n_mask - rank_fn(cbind(z, x_cond)) >= 12L) {
+    cbind(z, x_cond)
   } else {
-    cbind(z, x)
+    z
   }
-  list(design = mean_design, df_nominal = n_mask - rank_fn(mean_design))
+  list(
+    design = mean_design,
+    df_nominal = n_mask - rank_fn(mean_design),
+    trial_design = x,
+    used_trial_design = used_trial
+  )
 }
 
 # Coherent, spike-robust leverage-standardized GLS/REML residual scale estimator
@@ -119,18 +137,43 @@ hrf_build_noise_mean_design <- function(n_obs, events, tr, offset, kernel_col, z
 # Leverage-standardized innovations z_t = e_t / sqrt(1 - h_t) have exact variance sigma^2;
 # Winsorizing at c = 3.0 * s_mad with exact Gaussian consistency beta(3.0) = E[min(Z^2, 9)]
 # retains >99% REML efficiency on clean Gaussian data while bounding motion spikes.
-hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_sd = NULL) {
+hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_sd = NULL,
+                                      return_innovations = FALSE, trial_rows = NULL) {
   y_rows <- as.matrix(y_rows)
   m <- length(rows)
   p_vox <- ncol(y_rows)
-  if (m < 4L || p_vox == 0L) return(rep(NA_real_, p_vox))
+  make_d2_unit <- function(mat) {
+    z_fb <- matrix(0.0, m, p_vox)
+    if (m < 3L || p_vox == 0L) return(z_fb)
+    ok_c <- which(colSums(!is.finite(mat)) == 0L)
+    if (!length(ok_c)) return(z_fb)
+    d2_c <- mat[3:m, ok_c, drop = FALSE] - 2.0 * mat[2:(m - 1L), ok_c, drop = FALSE] + mat[1:(m - 2L), ok_c, drop = FALSE]
+    d2_c <- sweep(d2_c, 2L, colMeans(d2_c), "-")
+    nrm_c <- sqrt(colSums(d2_c^2))
+    good_c <- is.finite(nrm_c) & nrm_c > .Machine$double.eps
+    if (any(good_c)) {
+      z_fb[3:m, ok_c[good_c]] <- sweep(d2_c[, good_c, drop = FALSE], 2L, nrm_c[good_c], "/")
+    }
+    z_fb
+  }
+  if (m < 4L || p_vox == 0L) {
+    sd_na <- rep(NA_real_, p_vox)
+    return(if (isTRUE(return_innovations)) list(sd = sd_na, z_unit = matrix(0.0, m, p_vox)) else sd_na)
+  }
   if (is.null(fallback_d2_sd)) {
     r1 <- if (length(ar_vec) >= 1L) ar_vec[1L] else 0.0
     p1 <- if (length(ar_vec) >= 2L) ar_vec[2L] else 0.0
     p2 <- if (length(ar_vec) >= 3L) ar_vec[3L] else 0.0
-    fallback_d2_sd <- estimate_decon_noise_sd(y_rows, noise_rho = r1, noise_psi1 = p1, noise_psi2 = p2)
+    p3 <- if (length(ar_vec) >= 4L) ar_vec[4L] else 0.0
+    p4 <- if (length(ar_vec) >= 5L) ar_vec[5L] else 0.0
+    fallback_d2_sd <- estimate_decon_noise_sd(
+      y_rows, noise_rho = r1, noise_psi1 = p1, noise_psi2 = p2, noise_psi3 = p3, noise_psi4 = p4
+    )
   }
-  if (is.null(x_rows) || m < 20L) return(as.numeric(fallback_d2_sd))
+  if (is.null(x_rows) || m < 20L) {
+    sd_fb <- as.numeric(fallback_d2_sd)
+    return(if (isTRUE(return_innovations)) list(sd = sd_fb, z_unit = make_d2_unit(y_rows)) else sd_fb)
+  }
 
   w_unit <- hrf_whitening_matrix(rows, ar_vec, unit_marginal = TRUE)
   wx <- w_unit %*% x_rows
@@ -138,12 +181,18 @@ hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_
   sv <- svd(sweep(wx, 2L, nrm, "/"), nv = 0)
   rk <- if (length(sv$d) && sv$d[1L] > 0) sum(sv$d > 1e-8 * sv$d[1L]) else 0L
   df_res <- m - rk
-  if (df_res < 16L) return(as.numeric(fallback_d2_sd))
+  if (df_res < 16L) {
+    sd_fb <- as.numeric(fallback_d2_sd)
+    return(if (isTRUE(return_innovations)) list(sd = sd_fb, z_unit = make_d2_unit(y_rows)) else sd_fb)
+  }
 
   q <- if (rk > 0L) sv$u[, seq_len(rk), drop = FALSE] else matrix(0.0, m, 0L)
   out_sd <- rep(NA_real_, p_vox)
+  z_unit <- if (isTRUE(return_innovations)) matrix(0.0, m, p_vox) else NULL
   ok_cols <- which(colSums(!is.finite(y_rows)) == 0L)
-  if (!length(ok_cols)) return(out_sd)
+  if (!length(ok_cols)) {
+    return(if (isTRUE(return_innovations)) list(sd = out_sd, z_unit = z_unit) else out_sd)
+  }
 
   wy <- w_unit %*% y_rows[, ok_cols, drop = FALSE]
   e_mat <- if (rk > 0L) wy - q %*% crossprod(q, wy) else wy
@@ -154,6 +203,36 @@ hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_
   c_win <- 3.0
   beta_win <- (2 * stats::pnorm(c_win) - 1) - 2 * c_win * stats::dnorm(c_win) +
     2 * (c_win^2) * (1 - stats::pnorm(c_win))
+
+  # For spatial/cross-parcel innovation covariance (`return_innovations = TRUE`), if `x_rows`
+  # fell back to a condition-mean design (dense rapid ITI), project out the top passband
+  # singular modes of `trial_rows` so trial-by-trial neural fluctuations never enter `z_unit`.
+  e_innov <- e_mat
+  keep_innov <- keep_t
+  inv_sd_innov <- inv_sd_t
+  if (isTRUE(return_innovations) && !is.null(trial_rows) && ncol(trial_rows) > 0L && (df_res > 24L)) {
+    wt <- w_unit %*% trial_rows
+    if (rk > 0L) wt <- wt - q %*% crossprod(q, wt)
+    nrm_t <- sqrt(colSums(wt^2))
+    pos_t <- nrm_t > 1e-8
+    if (any(pos_t)) {
+      sv_t <- svd(sweep(wt[, pos_t, drop = FALSE], 2L, nrm_t[pos_t], "/"), nv = 0)
+      rk_max <- max(0L, df_res - 24L)
+      rk_t <- if (length(sv_t$d) && sv_t$d[1L] > 0) min(rk_max, sum(sv_t$d > 0.06 * sv_t$d[1L])) else 0L
+      if (rk_t > 0L) {
+        qt <- sv_t$u[, seq_len(rk_t), drop = FALSE]
+        e_innov <- e_innov - qt %*% crossprod(qt, e_innov)
+        lev_tot <- lev + rowSums(qt^2)
+        keep_innov <- (1.0 - lev_tot) > 0.10
+        if (sum(keep_innov) >= 16L) {
+          inv_sd_innov <- 1.0 / sqrt(1.0 - lev_tot[keep_innov])
+        } else {
+          keep_innov <- keep_t
+        }
+      }
+    }
+  }
+  use_lev_innov <- sum(keep_innov) >= 16L
 
   for (idx_k in seq_along(ok_cols)) {
     j <- ok_cols[idx_k]
@@ -172,6 +251,27 @@ hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_
         s_est <- sqrt(mean(u^2) / beta_win)
       }
     }
+    if (isTRUE(return_innovations)) {
+      ej_in <- e_innov[, idx_k]
+      if (use_lev_innov) {
+        zi <- ej_in[keep_innov] * inv_sd_innov
+        si0 <- stats::mad(zi, center = 0)
+        ui <- if (is.finite(si0) && si0 > .Machine$double.eps) {
+          sign(zi) * pmin(abs(zi), c_win * si0)
+        } else zi
+        ui <- ui - mean(ui)
+        nrm_u <- sqrt(sum(ui^2))
+        if (is.finite(nrm_u) && nrm_u > .Machine$double.eps) {
+          z_unit[keep_innov, j] <- ui / nrm_u
+        }
+      } else {
+        ui <- ej_in - mean(ej_in)
+        nrm_u <- sqrt(sum(ui^2))
+        if (is.finite(nrm_u) && nrm_u > .Machine$double.eps) {
+          z_unit[, j] <- ui / nrm_u
+        }
+      }
+    }
     # Guard against severe omitted-event misspecification inflating GLS residuals far above Delta^2 y
     d2_j <- fallback_d2_sd[j]
     if (is.finite(d2_j) && d2_j > .Machine$double.eps && s_est > 1.35 * d2_j) {
@@ -179,7 +279,7 @@ hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_
     }
     out_sd[j] <- if (is.finite(s_est) && s_est > .Machine$double.eps) s_est else d2_j
   }
-  out_sd
+  if (isTRUE(return_innovations)) list(sd = out_sd, z_unit = z_unit) else out_sd
 }
 
 hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask,
@@ -303,14 +403,22 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
       v_norms <- sqrt(colSums(res1^2))
       ok_v <- is.finite(v_norms) & v_norms > 1e-10
       if (!any(ok_v)) next
-      res1_n <- sweep(res1[, ok_v, drop = FALSE], 2L, v_norms[ok_v], "/")
+      res1_ok <- res1[, ok_v, drop = FALSE]
+      res1_n <- sweep(res1_ok, 2L, v_norms[ok_v], "/")
       sw_ok <- sub_w[ok_v]
       sw_sum <- sum(sw_ok)
       if (sw_sum <= 0) next
+      m_diag <- if (rk > 0L) pmax(0.0, 1.0 - rowSums(q_des^2)) else rep(1.0, n_mask)
       for (L in seq_len(q_eff)) {
         li <- lag_idx[[L]]
-        bL <- if (rk > 0L) (-sum(q_des[li + L, , drop = FALSE] * q_des[li, , drop = FALSE])) / df_res else 0.0
-        emp_L <- colSums(res1_n[li + L, , drop = FALSE] * res1_n[li, , drop = FALSE])
+        # Normalize each lag-L product by the local energy of the participating gap-free
+        # index pairs (li, li + L) so scattered motion/censor gaps never attenuate emp_L.
+        d_exp_L <- sqrt(max(sum(m_diag[li + L]) * sum(m_diag[li]), 1e-12))
+        bL <- if (rk > 0L) (-sum(q_des[li + L, , drop = FALSE] * q_des[li, , drop = FALSE])) / d_exp_L else 0.0
+        r_hi <- res1_ok[li + L, , drop = FALSE]
+        r_lo <- res1_ok[li, , drop = FALSE]
+        den_L <- sqrt(pmax(colSums(r_hi^2) * colSums(r_lo^2), 1e-24))
+        emp_L <- colSums(r_hi * r_lo) / den_L
         r_lags[L] <- r_lags[L] + sum(sw_ok * (emp_L - bL))
       }
       u_chunks[[length(u_chunks) + 1L]] <- res1_n
@@ -321,6 +429,8 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
     if (w_tot <= 0) return(psi_zero)
     r_lags <- pmin(pmax(r_lags / w_tot, -0.80), 0.80)
     df_eff <- max(20.0, df_acc / w_tot)
+    pair_frac_12 <- min(length(lag_idx[[1L]]), length(lag_idx[[2L]])) / max(1.0, n_mask - 2.0)
+    df_eff_12 <- max(16.0, df_eff * min(1.0, pair_frac_12))
 
     # Exact Isserlis fourth-moment variance factor sum_{i,j} w_i w_j (u_i' u_j)^2
     # accounting for both parcel size and cross-voxel spatial noise correlation.
@@ -334,8 +444,8 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
       m_mat <- tcrossprod(u_w)
       sum(m_mat * m_mat)
     }
-    sigma_k2 <- max(1e-6, sp_var_factor / df_eff)
-    tau12 <- max(0.060, sqrt(5.9915 * sigma_k2))
+    sigma_k2_12 <- max(1e-6, sp_var_factor / df_eff_12)
+    tau12 <- max(0.060, sqrt(5.9915 * sigma_k2_12))
 
     if (q_eff == 2L) {
       r1 <- r_lags[1L]; r2 <- r_lags[2L]
@@ -362,7 +472,10 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
       phi_ld <- if (m_ord == 1L) km else c(phi_ld - km * rev(phi_ld), km)
       pred_v <- pred_v * (1.0 - km * km)
     }
-    tau34 <- max(0.090, sqrt(9.2103 * sigma_k2))
+    pair_frac_34 <- min(length(lag_idx[[3L]]), length(lag_idx[[4L]])) / max(1.0, n_mask - 4.0)
+    df_eff_34 <- max(16.0, df_eff * min(1.0, pair_frac_34))
+    sigma_k2_34 <- max(1e-6, sp_var_factor / df_eff_34)
+    tau34 <- max(0.090, sqrt(9.2103 * sigma_k2_34))
     n12 <- sum(pacf_k[1:2]^2)
     s12 <- if (is.finite(n12) && n12 > tau12^2) max(0.0, 1.0 - (tau12^2) / n12) else 0.0
     pacf_k[1:2] <- pmin(pmax(s12 * pacf_k[1:2], -0.70), 0.70)
@@ -1016,7 +1129,7 @@ hrf_inverse_operator <- function(n, kernel, rows, rho, nuisance, settings) {
 # gain-calibrated prewhitened GCV criterion gcv_adaptive.
 hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore",
     penalty = "sobolev", ridge_floor = 1e-8, observation_mask = "fit",
-    backend = "cpp", gcv_rule = c("min", "1se")) {
+    backend = "cpp", gcv_rule = c("min", "1se"), nuisance_mode = "ignore", tail_padding = 0L) {
   gcv_rule <- match.arg(gcv_rule)
   lambda_grid <- sort(unique(as.numeric(lambda_grid)))
   if (length(lambda_grid) == 1L) {
@@ -1064,6 +1177,11 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
     1.0
   }
 
+  run_tuning_list <- list()
+  run_weights <- numeric(0)
+  wiener_lambdas <- numeric(0)
+  wiener_tunings <- list()
+
   for (r_tune in seq_along(bold)) {
     y_t <- bold[[r_tune]]
     n_t <- nrow(y_t)
@@ -1078,8 +1196,10 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
     ok_cols <- which(st_t == "ok")
     if (!length(ok_cols)) next
 
-    r2_ok <- r2_v[ok_cols]
-    tp_ok <- tp_v[ok_cols]
+    r2_r_vec <- if (has_r2 && ncol(r2_mat) >= r_tune) r2_mat[, r_tune] else r2_v
+    tp_r_vec <- if (ncol(tp_mat) >= r_tune) tp_mat[, r_tune] else tp_v
+    r2_ok <- r2_r_vec[ok_cols]
+    tp_ok <- tp_r_vec[ok_cols]
     pos_r2 <- r2_ok[r2_ok > 0]
     if (length(pos_r2)) {
       r2_cut <- max(0.005, as.numeric(stats::quantile(pos_r2, probs = 0.35, na.rm = TRUE)))
@@ -1091,11 +1211,11 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
       ord_ok <- order(r2_ok, -tp_ok, decreasing = TRUE)
       active_cols <- ok_cols[utils::head(ord_ok, min(64L, length(ok_cols)))]
     } else if (length(active_cols) > 128L) {
-      ord_act <- order(r2_v[active_cols], decreasing = TRUE)
-      active_cols <- active_cols[ utils::head(ord_act, 128L) ]
+      ord_act <- order(r2_r_vec[active_cols], decreasing = TRUE)
+      active_cols <- active_cols[utils::head(ord_act, 128L)]
     }
 
-    w_act <- pmax(r2_v[active_cols], 1e-3)
+    w_act <- pmax(r2_r_vec[active_cols], 1e-3)
     w_act <- w_act / sum(w_act)
     sel_t <- hrf_fit$selections[[r_tune]]$kernel_index[active_cols]
     k_tab <- tapply(w_act, sel_t, sum)
@@ -1172,8 +1292,21 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
       noise_rho = rho_t,
       noise_psi1 = psi1_t,
       noise_psi2 = psi2_t,
+      noise_psi3 = psi3_t,
+      noise_psi4 = psi4_t,
       noise_sd_override = nsd_tune
     )$y
+    if (identical(nuisance_mode, "joint")) {
+      nuis_j <- if (!is.null(hrf_fit$specification$nuisance)) hrf_fit$specification$nuisance[[r_tune]] else matrix(numeric(), n_t, 0L)
+      z_j <- cbind(1, seq(-1, 1, length.out = n_t), nuis_j)[rows_t, , drop = FALSE]
+      nrm_j <- sqrt(colSums(z_j^2)); nrm_j[nrm_j == 0] <- 1
+      sv_j <- svd(sweep(z_j, 2L, nrm_j, "/"), nv = 0)
+      rk_j <- if (length(sv_j$d) && sv_j$d[1L] > 0) sum(sv_j$d > 1e-8 * sv_j$d[1L]) else 0L
+      if (rk_j > 0L && length(rows_t) - rk_j >= 8L) {
+        qj <- sv_j$u[, seq_len(rk_j), drop = FALSE]
+        sc_vox <- sc_vox - qj %*% crossprod(qj, sc_vox)
+      }
+    }
     y_tune <- sc_vox
     groups_all <- hrf_fit$specification$spatial_groups
     if (!is.null(groups_all) && length(groups_all) == n_vox) {
@@ -1183,9 +1316,17 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
       for (g in u_groups) {
         idx_g <- which(g_act == g)
         if (length(idx_g) >= 2L) {
-          wg <- sqrt(pmax(r2_v[active_cols[idx_g]], 1e-3))
+          wg <- sqrt(pmax(r2_r_vec[active_cols[idx_g]], 1e-3))
           wg <- wg / sum(wg)
-          p_series <- as.numeric(sc_vox[, idx_g, drop = FALSE] %*% wg)
+          sub_g <- sc_vox[, idx_g, drop = FALSE]
+          # Align voxel signs deterministically via leading SVD direction so mixed-polarity
+          # task voxels inside a parcel do not cancel out during GCV pooling.
+          sgn_g <- tryCatch({
+            vg <- svd(sub_g, nu = 0, nv = 1)$v[, 1L]
+            if (vg[which.max(wg)] < 0) vg <- -vg
+            ifelse(vg >= 0, 1.0, -1.0)
+          }, error = function(e) rep(1.0, length(idx_g)))
+          p_series <- as.numeric(sub_g %*% (wg * sgn_g))
           if (all(is.finite(p_series)) && stats::sd(p_series) > 1e-8) {
             parcel_cols[[g]] <- p_series
           }
@@ -1198,10 +1339,15 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
           scaling = "noise_sd",
           noise_rho = rho_t,
           noise_psi1 = psi1_t,
-          noise_psi2 = psi2_t
+          noise_psi2 = psi2_t,
+          noise_psi3 = psi3_t,
+          noise_psi4 = psi4_t
         )$y
         y_tune <- cbind(p_scaled, sc_vox[, seq_len(min(32L, ncol(sc_vox))), drop = FALSE])
       }
+    }
+    if (tail_padding > 0L) {
+      y_tune <- rbind(y_tune, matrix(0.0, as.integer(tail_padding), ncol(y_tune)))
     }
 
     tune_res <- deconvolve_reglin(
@@ -1225,7 +1371,10 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
     if (backend == "wiener" || !is.data.frame(tun) || nrow(tun) != length(lambda_grid)) {
       lam_out <- as.numeric(tune_res$lambda[1L])
       if (!is.finite(lam_out)) lam_out <- lambda_grid[1L]
-      return(list(lambda = lam_out, tuning = tun))
+      wiener_lambdas <- c(wiener_lambdas, lam_out)
+      wiener_tunings[[length(wiener_tunings) + 1L]] <- tun
+      run_weights <- c(run_weights, as.numeric(length(rows_t)))
+      next
     }
 
     # Evaluate exact interior gain-restored variance and modulation transfer on a
@@ -1315,21 +1464,52 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
     w_bias <- 0.25 + 0.35 * snr_task
     gcv_adaptive <- v_norm + w_bias * (1.0 - c_rel)^2 + 0.30 * (gcv_excess^2)
 
-    best_idx <- which.min(gcv_adaptive)
-    if (!length(best_idx) || !is.finite(best_idx)) best_idx <- 1L
-    if (gcv_rule == "1se" && best_idx < n_grid) {
-      var_min_idx <- max(which.min(v_lvl), which.min(v_diff))
-      if (best_idx < var_min_idx) {
-        best_idx <- min(var_min_idx, best_idx + 1L)
-      }
-    }
-
     tun$var_level <- v_lvl
     tun$var_contrast <- v_diff
     tun$mtf_rel <- c_rel
     tun$gcv_adaptive <- gcv_adaptive
     tun$snr_task <- rep(snr_task, n_grid)
-    return(list(lambda = lambda_grid[best_idx], tuning = tun))
+    run_tuning_list[[length(run_tuning_list) + 1L]] <- tun
+    run_weights <- c(run_weights, as.numeric(length(rows_t)))
+  }
+
+  if (length(wiener_lambdas) > 0L && !length(run_tuning_list)) {
+    w_norm <- run_weights / sum(run_weights)
+    ord_w <- order(w_norm, wiener_lambdas)
+    lam_pool <- exp(sum(w_norm[ord_w] * log(pmax(wiener_lambdas[ord_w], 1e-12))))
+    best_w <- which.min(abs(log(pmax(lambda_grid, 1e-12)) - log(max(lam_pool, 1e-12))))
+    return(list(lambda = lambda_grid[best_w], tuning = wiener_tunings[[ord_w[1L]]]))
+  }
+
+  if (length(run_tuning_list) > 0L) {
+    n_grid <- length(lambda_grid)
+    w_norm <- run_weights / sum(run_weights)
+    # Sort run contributions canonically so floating-point summation is strictly
+    # permutation-invariant across arbitrary run orderings.
+    sig_sort <- vapply(run_tuning_list, function(df_r) as.numeric(df_r$gcv_adaptive[1L]), numeric(1L))
+    ord_r <- order(w_norm, sig_sort)
+    tun_pool <- run_tuning_list[[ord_r[1L]]]
+    avg_cols <- intersect(
+      c("df", "rss", "gcv", "gcv_se", "var_level", "var_contrast", "mtf_rel", "gcv_adaptive", "snr_task"),
+      names(tun_pool)
+    )
+    for (cn in avg_cols) {
+      acc_c <- numeric(n_grid)
+      for (k in ord_r) {
+        acc_c <- acc_c + w_norm[k] * as.numeric(run_tuning_list[[k]][[cn]])
+      }
+      tun_pool[[cn]] <- acc_c
+    }
+    gcv_adaptive_pool <- tun_pool$gcv_adaptive
+    best_idx <- which.min(gcv_adaptive_pool)
+    if (!length(best_idx) || !is.finite(best_idx)) best_idx <- 1L
+    if (gcv_rule == "1se" && best_idx < n_grid) {
+      var_min_idx <- max(which.min(tun_pool$var_level), which.min(tun_pool$var_contrast))
+      if (best_idx < var_min_idx) {
+        best_idx <- min(var_min_idx, best_idx + 1L)
+      }
+    }
+    return(list(lambda = lambda_grid[best_idx], tuning = tun_pool))
   }
 
   list(
