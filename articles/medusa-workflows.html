@@ -376,12 +376,12 @@ vectors via Empirical-Bayes concordance.</p>
 <span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="va">decon</span><span class="op">$</span><span class="va">scaling</span><span class="op">$</span><span class="va">run1</span><span class="op">)</span></span>
 <span><span class="co">#&gt;    run voxel status   center      scale   noise_sd  scaling noise_rho</span></span>
-<span><span class="co">#&gt; 1 run1    v1     ok 100.2592 0.04960844 0.04960844 noise_sd     0.418</span></span>
-<span><span class="co">#&gt; 2 run1    v2     ok 100.2564 0.05017237 0.05017237 noise_sd     0.418</span></span>
-<span><span class="co">#&gt; 3 run1    v3     ok 100.2542 0.05220119 0.05220119 noise_sd     0.418</span></span>
-<span><span class="co">#&gt; 4 run1    v4     ok 100.2518 0.05800152 0.05800152 noise_sd     0.418</span></span>
-<span><span class="co">#&gt; 5 run1    v5     ok 100.2556 0.05792433 0.05792433 noise_sd     0.418</span></span>
-<span><span class="co">#&gt; 6 run1    v6     ok 100.2505 0.05512801 0.05512801 noise_sd     0.418</span></span>
+<span><span class="co">#&gt; 1 run1    v1     ok 100.2592 0.03825892 0.03825892 noise_sd    0.3731</span></span>
+<span><span class="co">#&gt; 2 run1    v2     ok 100.2564 0.03935950 0.03935950 noise_sd    0.3731</span></span>
+<span><span class="co">#&gt; 3 run1    v3     ok 100.2542 0.04308699 0.04308699 noise_sd    0.3731</span></span>
+<span><span class="co">#&gt; 4 run1    v4     ok 100.2518 0.04642880 0.04642880 noise_sd    0.3731</span></span>
+<span><span class="co">#&gt; 5 run1    v5     ok 100.2556 0.04335176 0.04335176 noise_sd    0.3731</span></span>
+<span><span class="co">#&gt; 6 run1    v6     ok 100.2505 0.04129131 0.04129131 noise_sd    0.3731</span></span>
 <span><span class="co">#&gt;   n_observations</span></span>
 <span><span class="co">#&gt; 1            220</span></span>
 <span><span class="co">#&gt; 2            220</span></span>
@@ -452,14 +452,14 @@ data.</p>
 <td align="left">run1</td>
 <td align="left">hrf_1</td>
 <td align="right">3</td>
-<td align="right">0.375</td>
+<td align="right">0.378</td>
 <td align="right">0.012</td>
 </tr>
 <tr class="even">
 <td align="left">run1</td>
 <td align="left">hrf_2</td>
 <td align="right">3</td>
-<td align="right">0.406</td>
+<td align="right">0.409</td>
 <td align="right">0.012</td>
 </tr>
 <tr class="odd">
@@ -505,21 +505,22 @@ isolated-impulse audit.</p>
 <span>  restore_scale <span class="op">=</span> <span class="cn">TRUE</span>, return_panel <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span>
 <span><span class="fu">knitr</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/knitr/man/kable.html" class="external-link">kable</a></span><span class="op">(</span><span class="va">feedback_fit</span><span class="op">$</span><span class="va">summary</span>, digits <span class="op">=</span> <span class="fl">3</span><span class="op">)</span></span></code></pre></div>
-<table class="table">
+<table style="width:100%;" class="table">
 <colgroup>
+<col width="1%">
 <col width="2%">
-<col width="2%">
-<col width="7%">
+<col width="6%">
+<col width="9%">
+<col width="9%">
 <col width="10%">
-<col width="11%">
-<col width="10%">
-<col width="7%">
-<col width="5%">
-<col width="8%">
-<col width="7%">
+<col width="9%">
+<col width="6%">
 <col width="5%">
 <col width="7%">
-<col width="8%">
+<col width="6%">
+<col width="4%">
+<col width="6%">
+<col width="7%">
 <col width="4%">
 </colgroup>
 <thead><tr class="header">
@@ -527,6 +528,7 @@ isolated-impulse audit.</p>
 <th align="left">term</th>
 <th align="right">mean_beta_raw</th>
 <th align="right">mean_beta_corrected</th>
+<th align="right">mean_beta_multilag</th>
 <th align="right">mean_beta_unweighted</th>
 <th align="right">mean_beta_weighted</th>
 <th align="right">mean_beta_gls</th>
@@ -544,111 +546,118 @@ isolated-impulse audit.</p>
 <td align="left">rpe</td>
 <td align="right">0.120</td>
 <td align="right">0.188</td>
+<td align="right">0.196</td>
 <td align="right">0.188</td>
 <td align="right">0.188</td>
-<td align="right">0.185</td>
+<td align="right">0.187</td>
 <td align="right">0.732</td>
-<td align="right">0.355</td>
-<td align="right">0.148</td>
+<td align="right">0.356</td>
+<td align="right">0.180</td>
 <td align="right">0.233</td>
-<td align="right">0.309</td>
-<td align="right">-0.057</td>
+<td align="right">0.252</td>
+<td align="right">-0.060</td>
 <td align="right">6</td>
 </tr>
 <tr class="even">
 <td align="right">-1</td>
 <td align="left">rpe</td>
-<td align="right">0.161</td>
+<td align="right">0.162</td>
+<td align="right">0.627</td>
+<td align="right">0.621</td>
 <td align="right">0.627</td>
 <td align="right">0.627</td>
 <td align="right">0.627</td>
-<td align="right">0.627</td>
-<td align="right">0.845</td>
+<td align="right">0.844</td>
 <td align="right">0.816</td>
-<td align="right">0.210</td>
+<td align="right">0.241</td>
 <td align="right">0.233</td>
-<td align="right">0.303</td>
-<td align="right">-0.056</td>
+<td align="right">0.248</td>
+<td align="right">-0.059</td>
 <td align="right">6</td>
 </tr>
 <tr class="odd">
 <td align="right">0</td>
 <td align="left">rpe</td>
-<td align="right">0.170</td>
-<td align="right">0.699</td>
+<td align="right">0.171</td>
+<td align="right">0.698</td>
+<td align="right">0.698</td>
 <td align="right">0.700</td>
+<td align="right">0.698</td>
 <td align="right">0.699</td>
-<td align="right">0.699</td>
-<td align="right">0.914</td>
+<td align="right">0.913</td>
 <td align="right">0.875</td>
-<td align="right">0.166</td>
+<td align="right">0.201</td>
 <td align="right">0.233</td>
-<td align="right">0.381</td>
-<td align="right">-0.079</td>
+<td align="right">0.312</td>
+<td align="right">-0.082</td>
 <td align="right">6</td>
 </tr>
 <tr class="even">
 <td align="right">1</td>
 <td align="left">rpe</td>
-<td align="right">0.140</td>
+<td align="right">0.141</td>
 <td align="right">0.482</td>
+<td align="right">0.480</td>
 <td align="right">0.474</td>
 <td align="right">0.482</td>
 <td align="right">0.481</td>
 <td align="right">0.940</td>
 <td align="right">0.767</td>
-<td align="right">0.102</td>
+<td align="right">0.142</td>
 <td align="right">0.233</td>
-<td align="right">0.364</td>
-<td align="right">0.062</td>
+<td align="right">0.298</td>
+<td align="right">0.059</td>
 <td align="right">6</td>
 </tr>
 <tr class="odd">
 <td align="right">2</td>
 <td align="left">rpe</td>
 <td align="right">0.087</td>
-<td align="right">0.146</td>
-<td align="right">0.141</td>
-<td align="right">0.146</td>
-<td align="right">0.144</td>
+<td align="right">0.148</td>
+<td align="right">0.143</td>
+<td align="right">0.142</td>
+<td align="right">0.148</td>
+<td align="right">0.147</td>
 <td align="right">0.837</td>
 <td align="right">0.283</td>
-<td align="right">0.074</td>
+<td align="right">0.125</td>
 <td align="right">0.233</td>
-<td align="right">0.381</td>
-<td align="right">-0.089</td>
+<td align="right">0.312</td>
+<td align="right">-0.092</td>
 <td align="right">6</td>
 </tr>
 <tr class="even">
 <td align="right">3</td>
 <td align="left">rpe</td>
 <td align="right">0.033</td>
-<td align="right">-0.117</td>
+<td align="right">-0.115</td>
+<td align="right">-0.104</td>
 <td align="right">-0.121</td>
-<td align="right">-0.117</td>
-<td align="right">-0.118</td>
-<td align="right">0.373</td>
-<td align="right">-0.339</td>
-<td align="right">0.010</td>
+<td align="right">-0.115</td>
+<td align="right">-0.115</td>
+<td align="right">0.370</td>
+<td align="right">-0.337</td>
+<td align="right">0.038</td>
 <td align="right">0.233</td>
-<td align="right">0.305</td>
-<td align="right">-0.041</td>
+<td align="right">0.249</td>
+<td align="right">-0.045</td>
 <td align="right">6</td>
 </tr>
 <tr class="odd">
 <td align="right">4</td>
 <td align="left">rpe</td>
-<td align="right">-0.004</td>
+<td align="right">-0.005</td>
 <td align="right">-0.117</td>
+<td align="right">-0.127</td>
 <td align="right">-0.114</td>
 <td align="right">-0.117</td>
-<td align="right">-0.116</td>
-<td align="right">-0.034</td>
+<td align="right">-0.117</td>
+<td align="right">-0.036</td>
 <td align="right">-0.254</td>
-<td align="right">0.094</td>
+<td align="right">0.127</td>
 <td align="right">0.233</td>
-<td align="right">0.313</td>
-<td align="right">-0.054</td>
+<td align="right">0.256</td>
+<td align="right">-0.057</td>
 <td align="right">6</td>
 </tr>
 </tbody>
@@ -755,8 +764,8 @@ independent temporal measurements.
 <td align="left">v1</td>
 <td align="right">0.5</td>
 <td align="right">0.107</td>
-<td align="right">0.462</td>
-<td align="right">0.461</td>
+<td align="right">0.460</td>
+<td align="right">0.459</td>
 <td align="right">0.047</td>
 <td align="right">0.048</td>
 </tr>
@@ -764,8 +773,8 @@ independent temporal measurements.
 <td align="left">v2</td>
 <td align="right">0.6</td>
 <td align="right">0.134</td>
-<td align="right">0.552</td>
-<td align="right">0.552</td>
+<td align="right">0.551</td>
+<td align="right">0.551</td>
 <td align="right">0.047</td>
 <td align="right">0.048</td>
 </tr>
@@ -774,25 +783,25 @@ independent temporal measurements.
 <td align="right">0.7</td>
 <td align="right">0.152</td>
 <td align="right">0.639</td>
-<td align="right">0.637</td>
+<td align="right">0.638</td>
 <td align="right">0.043</td>
 <td align="right">0.044</td>
 </tr>
 <tr class="even">
 <td align="left">v4</td>
 <td align="right">0.8</td>
-<td align="right">0.180</td>
+<td align="right">0.181</td>
+<td align="right">0.710</td>
 <td align="right">0.712</td>
-<td align="right">0.715</td>
 <td align="right">0.052</td>
 <td align="right">0.053</td>
 </tr>
 <tr class="odd">
 <td align="left">v5</td>
 <td align="right">0.9</td>
-<td align="right">0.205</td>
+<td align="right">0.206</td>
+<td align="right">0.863</td>
 <td align="right">0.864</td>
-<td align="right">0.865</td>
 <td align="right">0.042</td>
 <td align="right">0.043</td>
 </tr>
@@ -800,10 +809,10 @@ independent temporal measurements.
 <td align="left">v6</td>
 <td align="right">1.0</td>
 <td align="right">0.243</td>
-<td align="right">0.964</td>
-<td align="right">0.965</td>
+<td align="right">0.966</td>
+<td align="right">0.967</td>
 <td align="right">0.050</td>
-<td align="right">0.050</td>
+<td align="right">0.051</td>
 </tr>
 </tbody>
 </table>
@@ -851,14 +860,14 @@ units, and source model.</p>
 <td align="right">1</td>
 <td align="right">0.5</td>
 <td align="right">0.494</td>
-<td align="right">0.462</td>
+<td align="right">0.460</td>
 </tr>
 <tr class="even">
 <td align="left">v2</td>
 <td align="right">1</td>
 <td align="right">0.6</td>
 <td align="right">0.609</td>
-<td align="right">0.552</td>
+<td align="right">0.551</td>
 </tr>
 <tr class="odd">
 <td align="left">v3</td>
@@ -872,21 +881,21 @@ units, and source model.</p>
 <td align="right">2</td>
 <td align="right">0.8</td>
 <td align="right">0.776</td>
-<td align="right">0.712</td>
+<td align="right">0.710</td>
 </tr>
 <tr class="odd">
 <td align="left">v5</td>
 <td align="right">2</td>
 <td align="right">0.9</td>
-<td align="right">0.878</td>
-<td align="right">0.864</td>
+<td align="right">0.879</td>
+<td align="right">0.863</td>
 </tr>
 <tr class="even">
 <td align="left">v6</td>
 <td align="right">2</td>
 <td align="right">1.0</td>
 <td align="right">1.024</td>
-<td align="right">0.964</td>
+<td align="right">0.966</td>
 </tr>
 </tbody>
 </table>
@@ -916,21 +925,22 @@ covaries with value.</p>
 <span>  restore_scale <span class="op">=</span> <span class="cn">TRUE</span>, return_panel <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span>
 <span><span class="fu">knitr</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/knitr/man/kable.html" class="external-link">kable</a></span><span class="op">(</span><span class="va">decision_fit</span><span class="op">$</span><span class="va">summary</span>, digits <span class="op">=</span> <span class="fl">3</span><span class="op">)</span></span></code></pre></div>
-<table style="width:100%;" class="table">
+<table class="table">
 <colgroup>
+<col width="1%">
 <col width="2%">
-<col width="3%">
-<col width="7%">
+<col width="6%">
+<col width="9%">
+<col width="9%">
 <col width="10%">
-<col width="11%">
-<col width="10%">
-<col width="7%">
-<col width="5%">
-<col width="8%">
-<col width="7%">
+<col width="9%">
+<col width="6%">
 <col width="5%">
 <col width="7%">
-<col width="8%">
+<col width="6%">
+<col width="4%">
+<col width="6%">
+<col width="7%">
 <col width="4%">
 </colgroup>
 <thead><tr class="header">
@@ -938,6 +948,7 @@ covaries with value.</p>
 <th align="left">term</th>
 <th align="right">mean_beta_raw</th>
 <th align="right">mean_beta_corrected</th>
+<th align="right">mean_beta_multilag</th>
 <th align="right">mean_beta_unweighted</th>
 <th align="right">mean_beta_weighted</th>
 <th align="right">mean_beta_gls</th>
@@ -957,12 +968,13 @@ covaries with value.</p>
 <td align="right">0.184</td>
 <td align="right">0.184</td>
 <td align="right">0.184</td>
-<td align="right">0.182</td>
+<td align="right">0.184</td>
+<td align="right">0.183</td>
 <td align="right">0.533</td>
 <td align="right">0.342</td>
-<td align="right">0.297</td>
-<td align="right">0.315</td>
-<td align="right">0.164</td>
+<td align="right">0.306</td>
+<td align="right">0.316</td>
+<td align="right">0.134</td>
 <td align="right">0.048</td>
 <td align="right">6</td>
 </tr>
@@ -974,11 +986,12 @@ covaries with value.</p>
 <td align="right">0.138</td>
 <td align="right">0.138</td>
 <td align="right">0.138</td>
+<td align="right">0.138</td>
 <td align="right">0.360</td>
 <td align="right">0.234</td>
-<td align="right">0.403</td>
-<td align="right">0.315</td>
-<td align="right">0.166</td>
+<td align="right">0.413</td>
+<td align="right">0.316</td>
+<td align="right">0.135</td>
 <td align="right">0.055</td>
 <td align="right">6</td>
 </tr>
@@ -1019,27 +1032,27 @@ active-null simulations.</p>
 <span>               <span class="st">"voxel"</span>, <span class="st">"decon_raw"</span>, <span class="st">"decon_demixed"</span>, <span class="st">"se_demixed"</span>,</span>
 <span>               <span class="st">"precision_weight"</span>, <span class="st">"error_ac1"</span>, <span class="st">"decon_demixed_whitened"</span>,</span>
 <span>               <span class="st">"rpe"</span>, <span class="st">"rpe_whitened"</span><span class="op">)</span><span class="op">]</span><span class="op">)</span></span>
-<span><span class="co">#&gt;      id  run trial event_index trial_id evt_time voxel decon_raw decon_demixed</span></span>
-<span><span class="co">#&gt; 1 sim01 run1     1           3        1       -2    v1 0.3949406   -0.10517905</span></span>
-<span><span class="co">#&gt; 2 sim01 run1     2           6        2       -2    v1 0.2380665   -1.28383839</span></span>
-<span><span class="co">#&gt; 3 sim01 run1     3           9        3       -2    v1 0.4852554    0.25487668</span></span>
-<span><span class="co">#&gt; 4 sim01 run1     4          12        4       -2    v1 0.0426131   -0.57336578</span></span>
-<span><span class="co">#&gt; 5 sim01 run1     5          15        5       -2    v1 0.3129951    0.02490052</span></span>
-<span><span class="co">#&gt; 6 sim01 run1     6          18        6       -2    v1 0.1688344   -0.48850576</span></span>
-<span><span class="co">#&gt;   se_demixed precision_weight   error_ac1 decon_demixed_whitened        rpe</span></span>
-<span><span class="co">#&gt; 1  0.2932281        1.0064308  0.00000000            -0.10652024  0.1181378</span></span>
-<span><span class="co">#&gt; 2  0.2843355        1.0294731  0.00691435            -1.28679023 -0.3123133</span></span>
-<span><span class="co">#&gt; 3  0.2963147        0.9985126 -0.11927672             0.25096528  1.8923639</span></span>
-<span><span class="co">#&gt; 4  0.2779073        1.0463308 -0.15120772            -0.56000342 -1.1696051</span></span>
-<span><span class="co">#&gt; 5  0.2896330        1.0157061  0.03411401             0.02511609 -0.4224070</span></span>
-<span><span class="co">#&gt; 6  0.2947352        1.0025592 -0.08377549            -0.48601123 -1.0995872</span></span>
+<span><span class="co">#&gt;      id  run trial event_index trial_id evt_time voxel  decon_raw decon_demixed</span></span>
+<span><span class="co">#&gt; 1 sim01 run1     1           3        1       -2    v1 0.39980863   -0.10148459</span></span>
+<span><span class="co">#&gt; 2 sim01 run1     2           6        2       -2    v1 0.24213547   -1.27971761</span></span>
+<span><span class="co">#&gt; 3 sim01 run1     3           9        3       -2    v1 0.49067530    0.25707538</span></span>
+<span><span class="co">#&gt; 4 sim01 run1     4          12        4       -2    v1 0.04568107   -0.57783700</span></span>
+<span><span class="co">#&gt; 5 sim01 run1     5          15        5       -2    v1 0.31797264    0.02838822</span></span>
+<span><span class="co">#&gt; 6 sim01 run1     6          18        6       -2    v1 0.17209511   -0.48565273</span></span>
+<span><span class="co">#&gt;   se_demixed precision_weight    error_ac1 decon_demixed_whitened        rpe</span></span>
+<span><span class="co">#&gt; 1  0.2252475         1.039017  0.000000000            -0.10240474  0.1181378</span></span>
+<span><span class="co">#&gt; 2  0.2186491         1.052838 -0.002476644            -1.28056555 -0.3123133</span></span>
+<span><span class="co">#&gt; 3  0.2280089         1.033221 -0.132477747             0.25441708  1.8923639</span></span>
+<span><span class="co">#&gt; 4  0.2135799         1.063420 -0.161829601            -0.56927032 -1.1696051</span></span>
+<span><span class="co">#&gt; 5  0.2226519         1.044459  0.027277444             0.02885683 -0.4224070</span></span>
+<span><span class="co">#&gt; 6  0.2266765         1.036018 -0.095205992            -0.48387331 -1.0995872</span></span>
 <span><span class="co">#&gt;   rpe_whitened</span></span>
-<span><span class="co">#&gt; 1    0.1198215</span></span>
-<span><span class="co">#&gt; 2   -0.2837195</span></span>
-<span><span class="co">#&gt; 3    1.8698325</span></span>
-<span><span class="co">#&gt; 4   -1.1637358</span></span>
-<span><span class="co">#&gt; 5   -0.4189993</span></span>
-<span><span class="co">#&gt; 6   -1.1009167</span></span>
+<span><span class="co">#&gt; 1    0.1192654</span></span>
+<span><span class="co">#&gt; 2   -0.2937767</span></span>
+<span><span class="co">#&gt; 3    1.8785775</span></span>
+<span><span class="co">#&gt; 4   -1.1653180</span></span>
+<span><span class="co">#&gt; 5   -0.4213391</span></span>
+<span><span class="co">#&gt; 6   -1.1010554</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/stopifnot.html" class="external-link">stopifnot</a></span><span class="op">(</span><span class="op">!</span><span class="fu"><a href="https://rdrr.io/r/base/duplicated.html" class="external-link">anyDuplicated</a></span><span class="op">(</span><span class="va">panel</span><span class="op">[</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"id"</span>, <span class="st">"run"</span>, <span class="st">"trial_id"</span>, <span class="st">"evt_time"</span>, <span class="st">"voxel"</span><span class="op">)</span><span class="op">]</span><span class="op">)</span>,</span>
 <span>          <span class="fu"><a href="https://rdrr.io/r/base/all.html" class="external-link">all</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/is.finite.html" class="external-link">is.finite</a></span><span class="op">(</span><span class="va">panel</span><span class="op">$</span><span class="va">decon_demixed</span><span class="op">)</span><span class="op">)</span>,</span>
 <span>          <span class="fu"><a href="https://rdrr.io/r/base/all.html" class="external-link">all</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/is.finite.html" class="external-link">is.finite</a></span><span class="op">(</span><span class="va">panel</span><span class="op">$</span><span class="va">precision_weight</span><span class="op">)</span> <span class="op">&amp;</span> <span class="va">panel</span><span class="op">$</span><span class="va">precision_weight</span> <span class="op">&gt;</span> <span class="fl">0</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>

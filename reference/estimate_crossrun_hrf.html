@@ -76,7 +76,8 @@
 <span>  canonical_strength <span class="op">=</span> <span class="fl">0.01</span>,</span>
 <span>  spatial_coords <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  spatial_fwhm <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  selection_mode <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"hard"</span>, <span class="st">"soft_average"</span><span class="op">)</span></span>
+<span>  selection_mode <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"hard"</span>, <span class="st">"soft_average"</span><span class="op">)</span>,</span>
+<span>  noise_groups <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -215,6 +216,13 @@ single discrete winning HRF column index per voxel/parcel; `"soft_average"`
 constructs a continuous Empirical-Bayes / Boltzmann evidence-weighted
 composite HRF kernel across compatible neighborhood candidates blended with
 the prespecified fallback kernel.</p></dd>
+
+
+<dt id="arg-noise-groups">noise_groups<a class="anchor" aria-label="anchor" href="#arg-noise-groups"></a></dt>
+<dd><p>Optional voxel labels defining noise covariance pooling
+neighborhoods, in voxel column order. Defaults to <code>spatial_groups</code> when
+omitted. Allows noise neighborhoods (e.g., tissue- or sub-parcel-informed
+groups) to differ from HRF selection parcels.</p></dd>
 
 </dl></div>
     <div class="section level2">

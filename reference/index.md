@@ -286,6 +286,10 @@
   : Fit a REPAIR modified method-of-moments (M-MOM / M-MOMS)
   measurement-error model
 
+- [`medusa_multilag_infer()`](https://hallquistlab.github.io/fmri.pipeline/reference/medusa_multilag_infer.md)
+  : Joint Multi-Lag Trajectory Modeling and Operator-Informed Inference
+  for MEDuSA
+
 - [`meta_mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/meta_mixed_by.md)
   : Function to run Bayesian random-effects meta-regression on
   coefficients from mixed_by

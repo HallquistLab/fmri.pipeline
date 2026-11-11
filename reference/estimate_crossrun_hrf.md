@@ -32,7 +32,8 @@ estimate_crossrun_hrf(
   canonical_strength = 0.01,
   spatial_coords = NULL,
   spatial_fwhm = NULL,
-  selection_mode = c("hard", "soft_average")
+  selection_mode = c("hard", "soft_average"),
+  noise_groups = NULL
 )
 ```
 
@@ -175,6 +176,13 @@ estimate_crossrun_hrf(
   constructs a continuous Empirical-Bayes / Boltzmann evidence-weighted
   composite HRF kernel across compatible neighborhood candidates blended
   with the prespecified fallback kernel.
+
+- noise_groups:
+
+  Optional voxel labels defining noise covariance pooling neighborhoods,
+  in voxel column order. Defaults to `spatial_groups` when omitted.
+  Allows noise neighborhoods (e.g., tissue- or sub-parcel-informed
+  groups) to differ from HRF selection parcels.
 
 ## Value
 

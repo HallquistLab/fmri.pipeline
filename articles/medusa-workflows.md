@@ -279,12 +279,12 @@ decon <- deconvolve_crossrun_hrf(
 )
 head(decon$scaling$run1)
 #>    run voxel status   center      scale   noise_sd  scaling noise_rho
-#> 1 run1    v1     ok 100.2592 0.04960844 0.04960844 noise_sd     0.418
-#> 2 run1    v2     ok 100.2564 0.05017237 0.05017237 noise_sd     0.418
-#> 3 run1    v3     ok 100.2542 0.05220119 0.05220119 noise_sd     0.418
-#> 4 run1    v4     ok 100.2518 0.05800152 0.05800152 noise_sd     0.418
-#> 5 run1    v5     ok 100.2556 0.05792433 0.05792433 noise_sd     0.418
-#> 6 run1    v6     ok 100.2505 0.05512801 0.05512801 noise_sd     0.418
+#> 1 run1    v1     ok 100.2592 0.03825892 0.03825892 noise_sd    0.3731
+#> 2 run1    v2     ok 100.2564 0.03935950 0.03935950 noise_sd    0.3731
+#> 3 run1    v3     ok 100.2542 0.04308699 0.04308699 noise_sd    0.3731
+#> 4 run1    v4     ok 100.2518 0.04642880 0.04642880 noise_sd    0.3731
+#> 5 run1    v5     ok 100.2556 0.04335176 0.04335176 noise_sd    0.3731
+#> 6 run1    v6     ok 100.2505 0.04129131 0.04129131 noise_sd    0.3731
 #>   n_observations
 #> 1            220
 #> 2            220
@@ -342,8 +342,8 @@ knitr::kable(recovery$summary[, c("run", "fitted_kernel", "n_voxels",
 
 | run  | fitted_kernel | n_voxels | mean_gain | mean_abs_excess_leakage |
 |:-----|:--------------|---------:|----------:|------------------------:|
-| run1 | hrf_1         |        3 |     0.375 |                   0.012 |
-| run1 | hrf_2         |        3 |     0.406 |                   0.012 |
+| run1 | hrf_1         |        3 |     0.378 |                   0.012 |
+| run1 | hrf_2         |        3 |     0.409 |                   0.012 |
 | run2 | hrf_1         |        6 |     0.381 |                   0.013 |
 | run3 | hrf_1         |        6 |     0.387 |                   0.013 |
 
@@ -375,15 +375,15 @@ feedback_fit <- decon_epoch_regression(
 knitr::kable(feedback_fit$summary, digits = 3)
 ```
 
-| lag | term | mean_beta_raw | mean_beta_corrected | mean_beta_unweighted | mean_beta_weighted | mean_beta_gls | mean_r_raw | mean_r_demixed | mean_tau2_bio | mean_gain | mean_se_trial | mean_error_ac1 | n_voxels |
-|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| -2 | rpe | 0.120 | 0.188 | 0.188 | 0.188 | 0.185 | 0.732 | 0.355 | 0.148 | 0.233 | 0.309 | -0.057 | 6 |
-| -1 | rpe | 0.161 | 0.627 | 0.627 | 0.627 | 0.627 | 0.845 | 0.816 | 0.210 | 0.233 | 0.303 | -0.056 | 6 |
-| 0 | rpe | 0.170 | 0.699 | 0.700 | 0.699 | 0.699 | 0.914 | 0.875 | 0.166 | 0.233 | 0.381 | -0.079 | 6 |
-| 1 | rpe | 0.140 | 0.482 | 0.474 | 0.482 | 0.481 | 0.940 | 0.767 | 0.102 | 0.233 | 0.364 | 0.062 | 6 |
-| 2 | rpe | 0.087 | 0.146 | 0.141 | 0.146 | 0.144 | 0.837 | 0.283 | 0.074 | 0.233 | 0.381 | -0.089 | 6 |
-| 3 | rpe | 0.033 | -0.117 | -0.121 | -0.117 | -0.118 | 0.373 | -0.339 | 0.010 | 0.233 | 0.305 | -0.041 | 6 |
-| 4 | rpe | -0.004 | -0.117 | -0.114 | -0.117 | -0.116 | -0.034 | -0.254 | 0.094 | 0.233 | 0.313 | -0.054 | 6 |
+| lag | term | mean_beta_raw | mean_beta_corrected | mean_beta_multilag | mean_beta_unweighted | mean_beta_weighted | mean_beta_gls | mean_r_raw | mean_r_demixed | mean_tau2_bio | mean_gain | mean_se_trial | mean_error_ac1 | n_voxels |
+|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| -2 | rpe | 0.120 | 0.188 | 0.196 | 0.188 | 0.188 | 0.187 | 0.732 | 0.356 | 0.180 | 0.233 | 0.252 | -0.060 | 6 |
+| -1 | rpe | 0.162 | 0.627 | 0.621 | 0.627 | 0.627 | 0.627 | 0.844 | 0.816 | 0.241 | 0.233 | 0.248 | -0.059 | 6 |
+| 0 | rpe | 0.171 | 0.698 | 0.698 | 0.700 | 0.698 | 0.699 | 0.913 | 0.875 | 0.201 | 0.233 | 0.312 | -0.082 | 6 |
+| 1 | rpe | 0.141 | 0.482 | 0.480 | 0.474 | 0.482 | 0.481 | 0.940 | 0.767 | 0.142 | 0.233 | 0.298 | 0.059 | 6 |
+| 2 | rpe | 0.087 | 0.148 | 0.143 | 0.142 | 0.148 | 0.147 | 0.837 | 0.283 | 0.125 | 0.233 | 0.312 | -0.092 | 6 |
+| 3 | rpe | 0.033 | -0.115 | -0.104 | -0.121 | -0.115 | -0.115 | 0.370 | -0.337 | 0.038 | 0.233 | 0.249 | -0.045 | 6 |
+| 4 | rpe | -0.005 | -0.117 | -0.127 | -0.114 | -0.117 | -0.117 | -0.036 | -0.254 | 0.127 | 0.233 | 0.256 | -0.057 | 6 |
 
 The function models non-target cue/decision contributions
 (`demix_other_events = TRUE`), the operator’s trial-to-trial cross-talk
@@ -477,12 +477,12 @@ knitr::kable(data.frame(
 
 | voxel | truth |   raw | corrected |   gls | se_weighted | se_gls |
 |:------|------:|------:|----------:|------:|------------:|-------:|
-| v1    |   0.5 | 0.107 |     0.462 | 0.461 |       0.047 |  0.048 |
-| v2    |   0.6 | 0.134 |     0.552 | 0.552 |       0.047 |  0.048 |
-| v3    |   0.7 | 0.152 |     0.639 | 0.637 |       0.043 |  0.044 |
-| v4    |   0.8 | 0.180 |     0.712 | 0.715 |       0.052 |  0.053 |
-| v5    |   0.9 | 0.205 |     0.864 | 0.865 |       0.042 |  0.043 |
-| v6    |   1.0 | 0.243 |     0.964 | 0.965 |       0.050 |  0.050 |
+| v1    |   0.5 | 0.107 |     0.460 | 0.459 |       0.047 |  0.048 |
+| v2    |   0.6 | 0.134 |     0.551 | 0.551 |       0.047 |  0.048 |
+| v3    |   0.7 | 0.152 |     0.639 | 0.638 |       0.043 |  0.044 |
+| v4    |   0.8 | 0.181 |     0.710 | 0.712 |       0.052 |  0.053 |
+| v5    |   0.9 | 0.206 |     0.863 | 0.864 |       0.042 |  0.043 |
+| v6    |   1.0 | 0.243 |     0.966 | 0.967 |       0.050 |  0.051 |
 
 ### Keep a fixed-HRF comparator
 
@@ -519,12 +519,12 @@ knitr::kable(comparison, digits = 3)
 
 | voxel | true_hrf_column | true_beta | fixed_hrf_beta | learned_hrf_beta |
 |:------|----------------:|----------:|---------------:|-----------------:|
-| v1    |               1 |       0.5 |          0.494 |            0.462 |
-| v2    |               1 |       0.6 |          0.609 |            0.552 |
+| v1    |               1 |       0.5 |          0.494 |            0.460 |
+| v2    |               1 |       0.6 |          0.609 |            0.551 |
 | v3    |               1 |       0.7 |          0.686 |            0.639 |
-| v4    |               2 |       0.8 |          0.776 |            0.712 |
-| v5    |               2 |       0.9 |          0.878 |            0.864 |
-| v6    |               2 |       1.0 |          1.024 |            0.964 |
+| v4    |               2 |       0.8 |          0.776 |            0.710 |
+| v5    |               2 |       0.9 |          0.879 |            0.863 |
+| v6    |               2 |       1.0 |          1.024 |            0.966 |
 
 This is one noisy realization of a matched model. Exact truth recovery
 is not a pass criterion, and this example does not measure population
@@ -554,10 +554,10 @@ decision_fit <- decon_epoch_regression(
 knitr::kable(decision_fit$summary, digits = 3)
 ```
 
-| lag | term | mean_beta_raw | mean_beta_corrected | mean_beta_unweighted | mean_beta_weighted | mean_beta_gls | mean_r_raw | mean_r_demixed | mean_tau2_bio | mean_gain | mean_se_trial | mean_error_ac1 | n_voxels |
-|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0 | value | 0.070 | 0.184 | 0.184 | 0.184 | 0.182 | 0.533 | 0.342 | 0.297 | 0.315 | 0.164 | 0.048 | 6 |
-| 1 | value | 0.055 | 0.138 | 0.138 | 0.138 | 0.138 | 0.360 | 0.234 | 0.403 | 0.315 | 0.166 | 0.055 | 6 |
+| lag | term | mean_beta_raw | mean_beta_corrected | mean_beta_multilag | mean_beta_unweighted | mean_beta_weighted | mean_beta_gls | mean_r_raw | mean_r_demixed | mean_tau2_bio | mean_gain | mean_se_trial | mean_error_ac1 | n_voxels |
+|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | value | 0.070 | 0.184 | 0.184 | 0.184 | 0.184 | 0.183 | 0.533 | 0.342 | 0.306 | 0.316 | 0.134 | 0.048 | 6 |
+| 1 | value | 0.055 | 0.138 | 0.138 | 0.138 | 0.138 | 0.138 | 0.360 | 0.234 | 0.413 | 0.316 | 0.135 | 0.055 | 6 |
 
 The known simulated decision-height slope is 0.35. Compare the table
 with that value: a duration-aware source does not by itself eliminate
@@ -595,27 +595,27 @@ head(panel[, c("id", "run", "trial", "event_index", "trial_id", "evt_time",
                "voxel", "decon_raw", "decon_demixed", "se_demixed",
                "precision_weight", "error_ac1", "decon_demixed_whitened",
                "rpe", "rpe_whitened")])
-#>      id  run trial event_index trial_id evt_time voxel decon_raw decon_demixed
-#> 1 sim01 run1     1           3        1       -2    v1 0.3949406   -0.10517905
-#> 2 sim01 run1     2           6        2       -2    v1 0.2380665   -1.28383839
-#> 3 sim01 run1     3           9        3       -2    v1 0.4852554    0.25487668
-#> 4 sim01 run1     4          12        4       -2    v1 0.0426131   -0.57336578
-#> 5 sim01 run1     5          15        5       -2    v1 0.3129951    0.02490052
-#> 6 sim01 run1     6          18        6       -2    v1 0.1688344   -0.48850576
-#>   se_demixed precision_weight   error_ac1 decon_demixed_whitened        rpe
-#> 1  0.2932281        1.0064308  0.00000000            -0.10652024  0.1181378
-#> 2  0.2843355        1.0294731  0.00691435            -1.28679023 -0.3123133
-#> 3  0.2963147        0.9985126 -0.11927672             0.25096528  1.8923639
-#> 4  0.2779073        1.0463308 -0.15120772            -0.56000342 -1.1696051
-#> 5  0.2896330        1.0157061  0.03411401             0.02511609 -0.4224070
-#> 6  0.2947352        1.0025592 -0.08377549            -0.48601123 -1.0995872
+#>      id  run trial event_index trial_id evt_time voxel  decon_raw decon_demixed
+#> 1 sim01 run1     1           3        1       -2    v1 0.39980863   -0.10148459
+#> 2 sim01 run1     2           6        2       -2    v1 0.24213547   -1.27971761
+#> 3 sim01 run1     3           9        3       -2    v1 0.49067530    0.25707538
+#> 4 sim01 run1     4          12        4       -2    v1 0.04568107   -0.57783700
+#> 5 sim01 run1     5          15        5       -2    v1 0.31797264    0.02838822
+#> 6 sim01 run1     6          18        6       -2    v1 0.17209511   -0.48565273
+#>   se_demixed precision_weight    error_ac1 decon_demixed_whitened        rpe
+#> 1  0.2252475         1.039017  0.000000000            -0.10240474  0.1181378
+#> 2  0.2186491         1.052838 -0.002476644            -1.28056555 -0.3123133
+#> 3  0.2280089         1.033221 -0.132477747             0.25441708  1.8923639
+#> 4  0.2135799         1.063420 -0.161829601            -0.56927032 -1.1696051
+#> 5  0.2226519         1.044459  0.027277444             0.02885683 -0.4224070
+#> 6  0.2266765         1.036018 -0.095205992            -0.48387331 -1.0995872
 #>   rpe_whitened
-#> 1    0.1198215
-#> 2   -0.2837195
-#> 3    1.8698325
-#> 4   -1.1637358
-#> 5   -0.4189993
-#> 6   -1.1009167
+#> 1    0.1192654
+#> 2   -0.2937767
+#> 3    1.8785775
+#> 4   -1.1653180
+#> 5   -0.4213391
+#> 6   -1.1010554
 stopifnot(!anyDuplicated(panel[c("id", "run", "trial_id", "evt_time", "voxel")]),
           all(is.finite(panel$decon_demixed)),
           all(is.finite(panel$precision_weight) & panel$precision_weight > 0))
