@@ -90,15 +90,16 @@ BOLD from the cue and choice is still evolving, and the next trial may
 start before that response has ended. Recovering a feedback-specific
 effect therefore requires choices about vascular response shape,
 regularization, event overlap, the duration of neural activity, and how
-trial-level estimation uncertainty is propagated to group mixed models.
-PRs #42–#55 (and the precision-weight/whitening extensions) improve each
+trial-level estimation uncertainty is propagated to group mixed models
+and errors-in-variables connectivity models. PRs #42–#64 improve each
 stage of this problem; they do not turn deconvolution into a direct
 recording of neuronal firing.</p>
 <p>This primer assumes familiarity with regression, covariance, and
 matrix multiplication. Read it before the <a href="medusa-workflows.html">worked workflow</a>. The <a href="https://github.com/HallquistLab/fmri.pipeline/blob/master/medusa_deconvolution_review_prs_42_53.qmd" class="external-link">technical
-review</a> preserves longer derivations and simulation demonstrations.
-The filename of that review is retained for existing links; its scope
-now includes PR #55+.</p>
+review</a> preserves earlier derivations and simulation demonstrations;
+its filename is retained for existing links, while this vignette and
+<code>medusa-workflows.Rmd</code> document the full architecture through
+PR #64.</p>
 </div>
 <div class="section level2">
 <h2 id="three-quantities-that-should-stay-distinct">Three quantities that should stay distinct<a class="anchor" aria-label="anchor" href="#three-quantities-that-should-stay-distinct"></a>
@@ -254,13 +255,16 @@ flexibility of the fitted smoother. <a href="https://doi.org/10.1080/00401706.19
 Wahba (1979)</a> is the statistical precedent. Both
 <code><a href="../reference/deconvolve_reglin.html">deconvolve_reglin()</a></code> and
 <code><a href="../reference/deconvolve_crossrun_hrf.html">deconvolve_crossrun_hrf()</a></code> support automatic prewhitened GCV
-tuning when <code>lambda = NULL</code> (evaluating
-<code>lambda_grid</code> under <code>gcv_rule = "min"</code> or
-<code>"1se"</code>). In MEDuSA, a good BOLD reconstruction score need
-not identify the best trial-level RPE estimate. Selecting settings
-because they maximize the eventual RPE correlation would bias the
-analysis toward that result; use design-matched simulations, independent
-data, or training-only selection.</p>
+tuning when <code>lambda = NULL</code> (in
+<code><a href="../reference/deconvolve_crossrun_hrf.html">deconvolve_crossrun_hrf()</a></code>,
+<code>hrf_tune_decon_lambda()</code> pools across all usable runs in an
+order-invariant manner and balances observation-space GCV against
+Stage-3 gain-restored variance and modulation transfer). In MEDuSA, a
+good BOLD reconstruction score alone need not identify the best
+trial-level RPE estimate. Selecting settings because they maximize the
+eventual RPE correlation would bias the analysis toward that result; use
+design-matched simulations, independent data, or training-only
+selection.</p>
 <p>PRs #50–#51 exploit the finite temporal reach of the HRF and AR(1)
 noise model to accelerate matrix calculations. Their main scientific
 yield is feasibility: more realistic validation, sensitivity analyses,
@@ -350,12 +354,17 @@ persistence contributes less misleading evidence. <a href="https://www.fmrib.ox.
 et al. (2001)</a> gives the fMRI context for temporal autocorrelation
 modeling.</p>
 <p>The current cross-run default uses <code>noise_model = "ar1"</code>
-and <code>evidence = "calibrated"</code>. It estimates noise covariance,
-compares candidates, and can retain the prespecified fallback when
-evidence is weak or inconsistent. PR #52 refined the candidate/fallback
-subspace comparison (using principal-angle F-tests when task rank
-exceeds 3), added spectral effective-candidate multiplicity correction
-(<a href="https://doi.org/10.1002/gepi.20408" class="external-link">Galwey, 2009</a>) for
+and <code>evidence = "calibrated"</code>. It estimates noise covariance
+(including post-selection 2-pass alternating REML
+AR(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>p</mi><annotation encoding="application/x-tex">p</annotation></semantics></math>)
+noise refitting under the target-excluded selected HRF, gap-local PACF
+estimation across scrubbed frames, exact subset Toeplitz Cholesky
+whitening across censor gaps, and heterogeneity-gated SUSAN bilateral
+noise pooling), compares candidates, and retains the prespecified
+fallback when evidence is weak, inconsistent, or task-free (0-event
+runs). PR #52 refined the candidate/fallback subspace comparison (using
+principal-angle F-tests when task rank exceeds 3), added spectral
+effective-candidate multiplicity correction (<a href="https://doi.org/10.1002/gepi.20408" class="external-link">Galwey, 2009</a>) for
 extended/dense libraries
 (<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>K</mi><mo>&gt;</mo><mn>9</mn></mrow><annotation encoding="application/x-tex">K &gt; 9</annotation></semantics></math>),
 and refined the design used for free-trial training, making the
@@ -403,13 +412,28 @@ The same issue arises when runs differ in task modulation variance.
 Z-scoring is a legitimate choice for standardized within-run questions,
 but changes the amplitude estimand.</p>
 <p><code>scaling = "noise_sd"</code> instead divides by an estimated
-measurement-noise SD. It uses second differences,
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>y</mi><mi>t</mi></msub><mo>−</mo><mn>2</mn><msub><mi>y</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo>+</mo><msub><mi>y</mi><mrow><mi>t</mi><mo>−</mo><mn>2</mn></mrow></msub></mrow><annotation encoding="application/x-tex">y_t-2y_{t-1}+y_{t-2}</annotation></semantics></math>,
-because smooth BOLD changes contribute less to them than high-frequency
-noise. An AR(1) adjustment accounts for how temporal correlation changes
-the variance of those differences. This is a working noise estimate:
-motion spikes, rapid signal changes, and a poor noise model can distort
-it.</p>
+<strong>marginal observation-noise SD</strong>
+(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>σ</mi><mtext mathvariant="normal">marg</mtext></msub><annotation encoding="application/x-tex">\sigma_{\text{marg}}</annotation></semantics></math>)—not
+the AR innovation SD
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>σ</mi><mi>u</mi></msub><annotation encoding="application/x-tex">\sigma_u</annotation></semantics></math>
+and not total signal-plus-noise SD. In modern cross-run fits with
+adequate residual degrees of freedom,
+<code>hrf_estimate_gls_noise_sd()</code> estimates
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>σ</mi><mtext mathvariant="normal">marg</mtext></msub><annotation encoding="application/x-tex">\sigma_{\text{marg}}</annotation></semantics></math>
+from leverage-standardized, Winsorized GLS residuals under the selected
+HRF and
+AR(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>p</mi><annotation encoding="application/x-tex">p</annotation></semantics></math>)
+correlation model;
+AR(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>p</mi><annotation encoding="application/x-tex">p</annotation></semantics></math>)-adjusted
+second differences
+(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>y</mi><mi>t</mi></msub><mo>−</mo><mn>2</mn><msub><mi>y</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo>+</mo><msub><mi>y</mi><mrow><mi>t</mi><mo>−</mo><mn>2</mn></mrow></msub></mrow><annotation encoding="application/x-tex">y_t-2y_{t-1}+y_{t-2}</annotation></semantics></math>
+via <code>estimate_decon_noise_sd()</code>) serve as a residualized
+omitted-event guard and standalone/low-df fallback. Because
+<code>"noise_sd"</code>, <code>"demean"</code>, and
+<code>"zscore"</code> center each run on usable observations, tonic
+between-run or between-person baseline levels are removed by design.
+This remains a working noise estimate: severe unmodeled neural signals
+or misspecified covariance can still affect it.</p>
 <table class="table">
 <colgroup>
 <col width="33%">
@@ -520,9 +544,9 @@ predictor, setting <code>demix_ridge &lt; 0.03</code> (e.g.,
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><mi>T</mi><mo>,</mo><mi>O</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">(T, O)</annotation></semantics></math>
 de-mixing operator.</li>
 <li>
-<strong>2nd-order Tikhonov target-trial de-mixing and per-trial gain
-restoration (<code>demix_target_trials = TRUE</code>):</strong> Forms
-the
+<strong>2nd-order Tikhonov target-trial de-mixing, per-trial gain
+restoration, and matched covariate alignment
+(<code>demix_target_trials = TRUE</code>):</strong> Forms the
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>N</mi><mi>r</mi></msub><mo>×</mo><msub><mi>N</mi><mi>r</mi></msub></mrow><annotation encoding="application/x-tex">N_r \times N_r</annotation></semantics></math>
 stratum resolution matrix
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>K</mi><mi>τ</mi></msub><mo>=</mo><msub><mi>S</mi><mi>τ</mi></msub><mi>D</mi><msub><mi>G</mi><mi>τ</mi></msub></mrow><annotation encoding="application/x-tex">K_\tau = S_\tau D G_\tau</annotation></semantics></math>
@@ -530,9 +554,14 @@ and applies a 2nd-order iterated Tikhonov inverse
 (<code>solve_duration_demix_operator()</code>) with per-trial effective
 gain restoration (<code>eff_gain_vec</code>) unified across
 <code>"impulse"</code>, <code>"window"</code>, and
-<code>"duration"</code> source models. This removes adjacent
-target-trial overlap and restores regularization-attenuated physical
-slope scales while bounding noise amplification.</li>
+<code>"duration"</code> source models, while gating unobservable
+boundary/gap trial-lags (<code>obs_frac_tau &lt; 0.20</code>) to
+<code>NA</code>. When fitting slopes against time-varying covariates,
+centered predictors are passed through the matched post-demixing
+resolution operator
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>M</mi><mtext mathvariant="normal">post</mtext></msub><annotation encoding="application/x-tex">M_{\text{post}}</annotation></semantics></math>
+(<code>P0-1</code> in PR #64) so residual off-diagonal target shrinkage
+at rapid ISIs does not bias estimated slopes.</li>
 <li>
 <strong>Within-trial multi-lag point-spread de-mixing
 (<code>demix_within_trial = TRUE</code>):</strong> When
@@ -542,12 +571,15 @@ lags
 are analyzed simultaneously, temporal smoothing and HRF spread cause
 activity at earlier lags to leak into later lags within the same trial.
 A 2nd-order Tikhonov multi-lag inverse
-(<code>within_trial_ridge = 0.06</code>) sharpens within-trial temporal
-waveform recovery across the requested lag grid while preserving
-cross-trial operator covariances.</li>
+(<code>within_trial_ridge = 0.06</code>) sharpens descriptive
+within-trial waveform recovery across the requested lag grid while
+preserving cross-trial operator covariances (leave
+<code>demix_within_trial = FALSE</code> when passing outputs to Stage-4
+<code><a href="../reference/medusa_multilag_infer.html">medusa_multilag_infer()</a></code>, which performs group-level
+spectral de-blurring and correlated-SURE P-spline smoothing).</li>
 <li>
 <strong>Operator-propagated uncertainty, Empirical-Bayes precision
-weights, and null-mode-damped ZCA whitening:</strong> Because trials
+weights, and spectrum-continuous ZCA whitening:</strong> Because trials
 preceded by short jitter intervals or rapid neighboring events undergo
 stronger unmixing amplification, their de-mixed estimates have larger
 error variance and non-zero trial-to-trial error covariance:
@@ -557,19 +589,23 @@ error variance and non-zero trial-to-trial error covariance:
 </annotation></semantics></math><code><a href="../reference/decon_epoch_regression.html">decon_epoch_regression()</a></code>
 extracts exact per-trial standard errors (<code>se_raw</code>,
 <code>se_demixed</code>), lag-1 trial error autocorrelation
-(<code>error_ac1</code>), and Empirical-Bayes stabilized
-inverse-variance precision weights (<code>precision_weight</code>), and
+(<code>error_ac1</code>), within-unit mean-1 precision weights
+(<code>precision_weight</code>), and unnormalized cohort-comparable
+inverse-variance weights (<code>precision_weight_cohort</code>,
+preserving between-participant reliability differences for
+<code>mixed_by(..., weights = "precision_weight_cohort")</code>). It
 supports precision-weighted WLS (<code>weighting = "precision"</code>),
 ZCA-whitened GLS (<code>weighting = "gls"</code>), and exported
 within-run ZCA-whitened panel variables
-(<code>whiten_panel = TRUE</code>) for downstream mixed-effects models
-(<code>mixed_by(..., weights = "precision_weight")</code>). Crucially,
-<code>compute_zca_whitening_matrix()</code> damps rank-deficient
-projection null modes
-(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>λ</mi><mi>k</mi></msub><mo>&lt;</mo><mn>0.35</mn></mrow><annotation encoding="application/x-tex">\lambda_k &lt; 0.35</annotation></semantics></math>
-arising from within-run centering and condition-mean subtraction) rather
-than inverting them, and scales off-diagonal whitening adaptively by the
-Bartlett lag-1 autocorrelation of the trial predictors.</li>
+(<code>whiten_panel = TRUE</code>).
+<code>compute_zca_whitening_matrix()</code> preserves run-mean null
+modes via exact centered-trace scaling
+(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mrow><mi mathvariant="normal">tr</mi><mo>⁡</mo></mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>Q</mi><mi>m</mi></msub><mi mathvariant="normal">Φ</mi><msub><mi>Q</mi><mi>m</mi></msub><mo stretchy="false" form="postfix">)</mo><mi>/</mi><mo stretchy="false" form="prefix">(</mo><mi>M</mi><mo>−</mo><mn>1</mn><mo stretchy="false" form="postfix">)</mo><mo>=</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\operatorname{tr}(Q_m \Phi Q_m)/(M-1) = 1</annotation></semantics></math>),
+damps near-singular modes smoothly via a spectrum-continuous fourth-root
+floor
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><msubsup><mi>λ</mi><mo>+</mo><mn>2</mn></msubsup><mo>+</mo><msup><mi>ϵ</mi><mn>2</mn></msup><msup><mo stretchy="false" form="postfix">)</mo><mrow><mi>−</mi><mn>1</mn><mi>/</mi><mn>4</mn></mrow></msup></mrow><annotation encoding="application/x-tex">(\lambda_+^2 + \epsilon^2)^{-1/4}</annotation></semantics></math>,
+and scales off-diagonal whitening adaptively by the Bartlett lag-1
+autocorrelation of the trial predictors.</li>
 </ol>
 <p>Correction remains conditional on the source model. Events that are
 indistinguishable in the design stay difficult to separate. Small gains
@@ -727,13 +763,29 @@ epoch regression</td>
 activity</td>
 </tr>
 <tr class="even">
-<td>#55+</td>
-<td>Heteroskedastic &amp; correlated trial errors in group models</td>
-<td>Operator-propagated per-trial SEs (<code>se_demixed</code>),
-precision weights (<code>precision_weight</code>), within-trial
-multi-lag de-mixing (<code>demix_within_trial</code>), within-run ZCA
-whitening (<code>whiten_panel</code>), and
-<code>mixed_by(..., weights = "precision_weight")</code>
+<td>#55–#62</td>
+<td>Heteroskedastic &amp; correlated trial errors, non-canonical
+AR(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>p</mi><annotation encoding="application/x-tex">p</annotation></semantics></math>)
+noise, and multi-lag/EIV inference</td>
+<td>Soft Boltzmann HRF averaging, post-selection 2-pass REML
+AR(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>p</mi><annotation encoding="application/x-tex">p</annotation></semantics></math>)
++ SUSAN noise pooling, spike-robust GLS marginal <code>noise_sd</code>,
+exact subset Toeplitz gapped covariance, parcel pre-aggregation,
+<code><a href="../reference/medusa_multilag_infer.html">medusa_multilag_infer()</a></code>, and REPAIR (<code>M-MOMS</code>)
+connectivity/trait disattenuation</td>
+</tr>
+<tr class="odd">
+<td>#64</td>
+<td>Rapid-ISI covariate mismatch, parcel task-curvature SE inflation,
+shared-noise PPI bias, and partial-lag/multi-covariate inference</td>
+<td>Post-demixing covariate operator (<code>M_post</code>), task-free
+<code>noise_innovations</code> + multi-stratum parcel operators,
+<code>precision_weight_cohort</code>, spectrum-continuous ZCA, causal
+observability gating (<code>obs_frac_tau &gt;= 0.20</code>),
+order-invariant multi-run GCV, joint multi-covariate/Level-2
+<code>medusa_multilag_infer(..., contrast_source = "unsmoothed")</code>,
+and
+<code>decon_connectivity_repair(..., shared_error = "auto")</code>
 </td>
 </tr>
 </tbody>
@@ -776,13 +828,15 @@ error control under schedule and duration confounds:</p>
 <code>restore_scale = TRUE</code> in
 <code><a href="../reference/decon_epoch_regression.html">decon_epoch_regression()</a></code>
 </td>
-<td>Normalizes runs by AR(1) innovation noise SD rather than total
-signal SD (<code>"zscore"</code>), preventing task modulation variance,
-low-frequency drift, or motion spikes from compressing run
-amplitudes.</td>
+<td>Normalizes runs by <strong>marginal observation-noise SD</strong>
+(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>σ</mi><mtext mathvariant="normal">marg</mtext></msub><annotation encoding="application/x-tex">\sigma_{\text{marg}}</annotation></semantics></math>,
+estimated via leverage-standardized Winsorized GLS residuals rather than
+AR innovation SD or total signal <code>"zscore"</code>), preventing task
+modulation variance, low-frequency drift, or motion spikes from
+compressing run amplitudes.</td>
 </tr>
 <tr class="even">
-<td><strong>Stage 1: HRF Estimation</strong></td>
+<td><strong>Stage 1: HRF &amp; Noise Estimation</strong></td>
 <td>
 <code>hrf_library(tr, preset = "medusa")</code> +
 <code>estimate_crossrun_hrf(..., noise_model = "ar1", evidence = "calibrated", selection_mode = "soft_average", spatial_groups = parcel_ids)</code>
@@ -790,63 +844,64 @@ amplitudes.</td>
 <td>Learns regional vascular delays out-of-sample across runs using a
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.5</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">0.5\text{ s}</annotation></semantics></math>-spaced
 27-candidate grid, spatially-correlated Stouffer/Brown + Cauchy parcel
-evidence pooling (<code>hrf_parcel_pooled_evidence()</code>), and local
+evidence pooling (<code>hrf_parcel_pooled_evidence()</code>), local
 Boltzmann kernel averaging
-(<code>selection_mode = "soft_average"</code>), reducing sub-grid HRF
-waveform RMSE by 8–22% and downstream neural latency error by 20–35%
-compared to discrete hard selection.</td>
+(<code>selection_mode = "soft_average"</code>), and post-selection
+2-pass REML
+AR(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>p</mi><annotation encoding="application/x-tex">p</annotation></semantics></math>)
++ SUSAN bilateral noise learning with exact subset Toeplitz Cholesky
+whitening across censor gaps.</td>
 </tr>
 <tr class="odd">
 <td><strong>Stage 2: Deconvolution</strong></td>
 <td><code>deconvolve_crossrun_hrf(..., lambda = NULL, penalty = "sobolev", backend = "cpp")</code></td>
 <td>Combines amplitude, first-difference, and second-difference
-smoothness penalties under AR(1)-GLS prewhitening to suppress
-high-frequency ringing and low-frequency baseline wander. By default
-(<code>lambda = NULL</code>), <code>hrf_tune_decon_lambda()</code>
-selects
+smoothness penalties under exact stationary/gapped
+AR(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>p</mi><annotation encoding="application/x-tex">p</annotation></semantics></math>)-GLS
+prewhitening. By default (<code>lambda = NULL</code>),
+<code>hrf_tune_decon_lambda()</code> pools across all usable runs in an
+order-invariant manner to select
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>λ</mi><annotation encoding="application/x-tex">\lambda</annotation></semantics></math>
 via gain-calibrated, task-weighted adaptive prewhitened GCV over
-<code>lambda_grid</code>, automatically adapting to task fSNR, AR(1)
-autocorrelation
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>ρ</mi><annotation encoding="application/x-tex">\rho</annotation></semantics></math>,
-and discrete derivative TR scaling while preventing observation-space
-over-smoothing in the presence of null background voxels.</td>
+<code>lambda_grid</code>.</td>
 </tr>
 <tr class="even">
 <td><strong>Stage 3: Epoch De-Mixing, Parcel Pre-Aggregation &amp;
 Duration Modeling</strong></td>
-<td><code>decon_epoch_regression(..., demix_other_events = TRUE, demix_target_trials = TRUE, restore_scale = TRUE, weighting = "gls", aggregate_by_parcel = TRUE, whiten_panel = TRUE, return_panel = TRUE)</code></td>
-<td>Subtracts preceding event bleed via condition-mean de-mixing
-(<code>demix_ridge = 0.05</code>, or <code>&lt; 0.03</code> for
-trial-varying non-target confounds), restores per-trial target gain via
-2nd-order Tikhonov inversion, and exports null-mode-damped ZCA-whitened
-panel columns. When analyzing anatomical parcels or ROIs, setting
-<code>aggregate_by_parcel = TRUE</code> aggregates voxels using
-inverse-variance precision weights and empirical spatial noise
-correlation propagation prior to Stage-3/4 fitting, calibrating
-<code>se_demixed</code>, <code>tau2_bio</code>,
-<code>precision_weight</code>, and ZCA whitening directly on the
-high-SNR parcel series. Setting <code>covariates = NULL</code> extracts
-a covariate-agnostic precision-weighted and ZCA-whitened panel
-(<code>tau2_mode = "marginal"</code>) for two-stage
-<code><a href="../reference/mixed_by.html">mixed_by()</a></code> modeling or inter-region connectivity
-(<code>R2 ~ R1_seed * x</code>). Add
-<code>demix_within_trial = TRUE</code> across a
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>1</mn><mo>×</mo><mtext mathvariant="normal">TR</mtext></mrow><annotation encoding="application/x-tex">1\times\text{TR}</annotation></semantics></math>-spaced
-<code>lags</code> grid for multi-lag waveform trajectories
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>β</mi><mo stretchy="false" form="prefix">(</mo><mi>τ</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">\beta(\tau)</annotation></semantics></math>,
-and <code>source_model = "duration"</code>
+<td><code>decon_epoch_regression(..., demix_other_events = TRUE, demix_target_trials = TRUE, restore_scale = TRUE, aggregate_by_parcel = TRUE, tau2_mode = "marginal", whiten_panel = TRUE, return_panel = TRUE)</code></td>
+<td>Subtracts preceding event bleed (<code>demix_ridge = 0.05</code>, or
+<code>&lt; 0.03</code> for trial-varying non-target confounds), restores
+per-trial target gain with matched
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>M</mi><mtext mathvariant="normal">post</mtext></msub><annotation encoding="application/x-tex">M_{\text{post}}</annotation></semantics></math>
+covariate alignment, gates unobservable boundary/gap trials
+(<code>obs_frac_tau &lt; 0.20</code>), and aggregates parcels using
+inverse-variance + HRF-evidence weights, exact multi-stratum operators,
+and task-free Step-1 <code>noise_innovations</code> spatial covariance
+(retaining <code>shared_noise_loading</code>). Leave
+<code>demix_within_trial = FALSE</code> when feeding
+<code><a href="../reference/medusa_multilag_infer.html">medusa_multilag_infer()</a></code>, and set
+<code>source_model = "duration"</code>
 (<code>duration_scale = "rate"</code>) for reaction-time epochs.</td>
 </tr>
 <tr class="odd">
-<td><strong>Stage 4: Group Multilevel Inference</strong></td>
-<td><code>mixed_by(data, decon_demixed_whitened ~ x_whitened + (1 + x_whitened \| id), weights = "precision_weight")</code></td>
-<td>Simultaneously accounts for between-run/per-trial heteroskedastic
-noise precision (<code>weights = "precision_weight"</code>) and
-within-run trial-to-trial error autocorrelation
-(<code>whiten_panel = TRUE</code>), maximizing small-sample power and
-preserving nominal Type I error when trial predictors are temporally
-autocorrelated.</td>
+<td><strong>Stage 4: Group Multilevel, Trajectory &amp; Connectivity
+Inference</strong></td>
+<td>
+<code>mixed_by(..., weights = "precision_weight_cohort")</code>,
+<code><a href="../reference/medusa_multilag_infer.html">medusa_multilag_infer()</a></code>, and
+<code>decon_connectivity_repair(..., use_whitened = FALSE, shared_error = "auto")</code>
+</td>
+<td>Uses <code>precision_weight_cohort</code> to preserve both per-trial
+and between-participant precision in <code><a href="../reference/mixed_by.html">mixed_by()</a></code> (paired
+with matched <code>*_whitened</code> columns for additive behavioral
+models); <code><a href="../reference/medusa_multilag_infer.html">medusa_multilag_infer()</a></code> for joint
+multi-covariate/Level-2 trajectory de-blurring, Marra–Wood simultaneous
+bands, and unbiased window contrasts
+(<code>contrast_source = "unsmoothed"</code>); and unwhitened
+<code>decon_demixed</code> + <code>se_demixed</code> +
+<code>shared_error = "auto"</code> in
+<code><a href="../reference/decon_connectivity_repair.html">decon_connectivity_repair()</a></code> for M-MOMS disattenuation and
+cross-parcel shared-noise correction.</td>
 </tr>
 </tbody>
 </table>

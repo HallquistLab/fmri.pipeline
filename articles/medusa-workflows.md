@@ -5,14 +5,24 @@
 Read the [conceptual
 primer](https://hallquistlab.github.io/fmri.pipeline/articles/medusa-concepts.md)
 first if HRF selection, regularization, or resolution matrices are
-unfamiliar. This vignette uses the MEDuSA API as merged in [PR
-62](https://github.com/HallquistLab/fmri.pipeline/pull/62). That
-revision added post-selection noise refitting, robust GLS marginal noise
-scaling, exact covariance for retained samples across censor gaps, and
-joint trajectory inference. It uses a small synthetic dataset so the
-core workflow runs without an imaging dataset, AFNI, a scheduler, or
-external files. Blocks labeled **recipe; not executed** require your
-study inputs. All other R chunks execute when the vignette is rendered.
+unfamiliar. This vignette uses the MEDuSA API through [PR
+62](https://github.com/HallquistLab/fmri.pipeline/pull/62) and [PR
+64](https://github.com/HallquistLab/fmri.pipeline/pull/64). Those
+revisions added post-selection AR($`p`$) noise refitting, spike-robust
+GLS marginal observation-noise scaling, exact subset Toeplitz covariance
+across censor gaps, order-invariant multi-run GCV tuning, causal BOLD
+observability gating, post-demixing covariate operator matching
+(`M_post`), task-free parcel noise propagation (`noise_innovations`),
+cohort-comparable precision weights (`precision_weight_cohort`),
+spectrum-continuous ZCA whitening, joint multi-covariate/Level-2
+trajectory inference
+([`medusa_multilag_infer()`](https://hallquistlab.github.io/fmri.pipeline/reference/medusa_multilag_infer.md)),
+and shared-error connectivity disattenuation
+(`decon_connectivity_repair(..., shared_error = "auto")`). It uses a
+small synthetic dataset so the core workflow runs without an imaging
+dataset, AFNI, a scheduler, or external files. Blocks labeled **recipe;
+not executed** require your study inputs. All other R chunks execute
+when the vignette is rendered.
 
 | Goal | Route | Important boundary |
 |----|----|----|
@@ -244,8 +254,11 @@ sub-blocks (3 blocks for longer runs, 2 halves for shorter runs) scored
 against the full causal event design and pooled with cross-block
 compatibility testing while keeping the full continuous run intact for
 [`deconvolve_crossrun_hrf()`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_crossrun_hrf.md).
-Cross-fitting HRFs does not make the resulting folds independent
-observations for inference.
+Runs with zero task events (such as resting-state or passive baseline
+runs) are retained as valid observations with canonical fallback HRFs
+and pure-nuisance AR($`p`$) noise estimates rather than discarded as
+`insufficient`. Cross-fitting HRFs does not make the resulting folds
+independent observations for inference.
 
 **Optional spatial borrowing recipe; not executed.** `parcel_ids` must
 be a named vector, independently defined, with names exactly equal to
@@ -311,7 +324,8 @@ dim(decon$activity$run1)
 Here `lambda = 0.1` is a fixed teaching value. In modern (`ar1` /
 `calibrated`) fits, `lambda = NULL` is the default and automatically
 invokes gain-calibrated, task-weighted adaptive prewhitened GCV
-(`hrf_tune_decon_lambda()`) over
+(`hrf_tune_decon_lambda()`) pooled across all usable runs in an
+order-invariant manner over
 `lambda_grid = 10^seq(-2, 1.0, length.out = 16)` (storing the selected
 scalar in `decon$settings$lambda` and the full diagnostic
 table—including `var_level`, `var_contrast`, `mtf_rel`, `gcv_adaptive`,
@@ -325,13 +339,22 @@ function, automatically adapting $`\lambda`$ across fSNR regimes and
 acquisition TRs. For legacy (`ols` / `legacy`) fits, omitting `lambda`
 still raises an error unless `lambda = NULL` is passed explicitly.
 
-`noise_sd` centers the input and divides by a high-frequency
-second-difference estimate of measurement noise SD (adjusted for AR(1)
-autocorrelation) rather than total temporal SD. The scale table
-(`decon$scaling$run1`) records `center`, `scale`, `noise_sd`, and
-validity status. Activity matrices preserve the acquisition grid and
-carry timing attributes. Use `decon$activity` for continuous
-diagnostics; retain the **whole object** for epoch regression.
+`scaling = "noise_sd"` centers the input and divides by an estimate of
+**marginal observation-noise SD** ($`\sigma_{\text{marg}}`$)—not the AR
+innovation SD $`\sigma_u`$ and not total temporal SD. In modern (`ar1` /
+`calibrated`) fits with sufficient residual degrees of freedom,
+`hrf_estimate_gls_noise_sd()` estimates $`\sigma_{\text{marg}}`$ from
+leverage-standardized, Winsorized GLS residuals under the selected HRF
+and AR($`p`$) correlation model, using an AR($`p`$)-adjusted residual
+second-difference scale (`estimate_decon_noise_sd()`) as an
+omitted-event guard and low-df/legacy fallback. Because `"noise_sd"`,
+`"demean"`, and `"zscore"` center each run on usable observations, tonic
+between-run or between-person BOLD baselines are removed by
+construction. The scale table (`decon$scaling$run1`) records `center`,
+`scale`, `noise_sd`, and validity status. Activity matrices preserve the
+acquisition grid and carry timing attributes. Use `decon$activity` for
+continuous diagnostics; retain the **whole object** for epoch
+regression.
 
 We set `nuisance_mode = "ignore"` explicitly to match the default and
 use data with no simulated drift. In a study, use appropriately cleaned
@@ -389,44 +412,62 @@ knitr::kable(feedback_fit$summary, digits = 3)
 
 | lag | term | mean_beta_raw | mean_beta_corrected | mean_beta_multilag | mean_beta_unweighted | mean_beta_weighted | mean_beta_gls | mean_r_raw | mean_r_demixed | mean_tau2_bio | mean_gain | mean_se_trial | mean_error_ac1 | n_voxels |
 |---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| -2 | rpe | 0.120 | 0.188 | 0.196 | 0.188 | 0.188 | 0.187 | 0.732 | 0.356 | 0.180 | 0.233 | 0.252 | -0.060 | 6 |
-| -1 | rpe | 0.162 | 0.627 | 0.621 | 0.627 | 0.627 | 0.627 | 0.844 | 0.816 | 0.241 | 0.233 | 0.248 | -0.059 | 6 |
-| 0 | rpe | 0.171 | 0.698 | 0.698 | 0.700 | 0.698 | 0.699 | 0.913 | 0.875 | 0.201 | 0.233 | 0.312 | -0.082 | 6 |
-| 1 | rpe | 0.141 | 0.482 | 0.480 | 0.474 | 0.482 | 0.481 | 0.940 | 0.767 | 0.142 | 0.233 | 0.298 | 0.059 | 6 |
-| 2 | rpe | 0.087 | 0.148 | 0.143 | 0.142 | 0.148 | 0.147 | 0.837 | 0.283 | 0.125 | 0.233 | 0.312 | -0.092 | 6 |
-| 3 | rpe | 0.033 | -0.115 | -0.104 | -0.121 | -0.115 | -0.115 | 0.370 | -0.337 | 0.038 | 0.233 | 0.249 | -0.045 | 6 |
-| 4 | rpe | -0.005 | -0.117 | -0.127 | -0.114 | -0.117 | -0.117 | -0.036 | -0.254 | 0.127 | 0.233 | 0.256 | -0.057 | 6 |
+| -2 | rpe | 0.120 | 0.188 | 0.197 | 0.188 | 0.188 | 0.185 | 0.732 | 0.356 | 0.183 | 0.233 | 0.252 | -0.060 | 6 |
+| -1 | rpe | 0.162 | 0.627 | 0.621 | 0.627 | 0.627 | 0.625 | 0.844 | 0.816 | 0.244 | 0.233 | 0.248 | -0.059 | 6 |
+| 0 | rpe | 0.171 | 0.698 | 0.697 | 0.700 | 0.698 | 0.698 | 0.913 | 0.875 | 0.205 | 0.233 | 0.312 | -0.082 | 6 |
+| 1 | rpe | 0.141 | 0.482 | 0.480 | 0.474 | 0.482 | 0.480 | 0.940 | 0.767 | 0.146 | 0.233 | 0.298 | 0.059 | 6 |
+| 2 | rpe | 0.087 | 0.148 | 0.143 | 0.142 | 0.148 | 0.147 | 0.837 | 0.283 | 0.129 | 0.233 | 0.312 | -0.092 | 6 |
+| 3 | rpe | 0.033 | -0.115 | -0.103 | -0.121 | -0.115 | -0.114 | 0.370 | -0.337 | 0.041 | 0.233 | 0.249 | -0.045 | 6 |
+| 4 | rpe | -0.005 | -0.117 | -0.128 | -0.114 | -0.117 | -0.117 | -0.036 | -0.254 | 0.130 | 0.233 | 0.256 | -0.057 | 6 |
 
 The correction uses the specified source model and readout to reduce
 mixing from other event types, overlapping target trials, and, with
-`demix_within_trial = TRUE`, neighboring lags. With the default
-`demix_ridge = 0.05`, non-target subtraction uses condition-mean
-sources. Trial-varying cue effects can survive it. A smaller value below
-0.03 requests a joint regularized correction and changes its bias and
-variance. Compare under your event schedule before choosing it.
+`demix_within_trial = TRUE`, neighboring lags. Here
+`demix_within_trial = TRUE` sharpens descriptive single-participant
+multi-lag curves; when pooling subjects in
+[`medusa_multilag_infer()`](https://hallquistlab.github.io/fmri.pipeline/reference/medusa_multilag_infer.md)
+below, leave `demix_within_trial = FALSE` so group-level spectral
+de-blurring and correlated-SURE P-spline smoothing operate on the
+unsharpened lag covariance. With the default `demix_ridge = 0.05`,
+non-target subtraction uses condition-mean sources; trial-varying cue
+effects can survive it, whereas a smaller value below `0.03` activates a
+joint regularized $`(T, O)`$ correction with its own bias–variance
+tradeoff. When regressing against supplied `covariates`,
+[`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md)
+also applies the matched post-demixing resolution operator
+($`M_{\text{post}}`$, normalized per trial row) to centered within-run
+predictors so residual off-diagonal target shrinkage at rapid ISIs does
+not attenuate or over-inflate slope estimates.
 
 MEDuSA propagates the fitted temporal covariance through the frozen
-inverse and readout to compute conditional `se_raw` and `se_demixed`. PR
-62 supports a stationary AR cascade where warranted, using the exact
-covariance subset on the retained acquisition indices. Parcel
-aggregation occurs before epoch fitting and uses a working spatial noise
-scale. The resulting trial SE conditions on the fitted HRFs, nuisance
-specification, regularization, and parcel weights. Preserve non-target
-events in the event table and align each covariate row to its target
-event.
+inverse and readout to compute conditional `se_raw` and `se_demixed`,
+using the exact stationary AR($`p`$) Toeplitz covariance subset on
+retained acquisition indices across censor gaps. Trial-lags with
+insufficient unmasked causal BOLD support (`obs_frac_tau < 0.20`, e.g.,
+inside long scrub gaps or past the end of acquisition) are gated to `NA`
+rather than extrapolated from smoothness penalties. Parcel aggregation
+(`aggregate_by_parcel = TRUE`) occurs before epoch fitting, combining
+exact per-stratum forward/inverse operators and propagating
+within-parcel spatial noise covariance from task-free Step-1 whitened
+`noise_innovations` (retaining `shared_noise_loading` on the panel for
+downstream cross-parcel connectivity). Preserve non-target events in the
+event table and align each covariate row to its target event.
 
 `restore_scale = TRUE` reports effects in original input units under the
 unit-sum HRF convention. It reverses the scaling divisor; it does not
 make estimates physiologically calibrated or guarantee unbiased
-amplitudes. `beta_raw` is the uncorrected readout under this same
-inverse, not the historical Bush pipeline. `beta_corrected` includes
-model-based de-mixing, gain correction, and (when
+amplitudes (in between-participant comparisons, unit-sum HRF
+normalization means regional vascular reactivity gain still scales
+BOLD-unit slopes alongside neural gain). `beta_raw` is the uncorrected
+readout under this same inverse, not the historical Bush pipeline.
+`beta_corrected` includes model-based de-mixing, gain correction,
+matched $`M_{\text{post}}`$ covariate alignment, and (when
 `weighting = "precision"`, the default) Empirical-Bayes precision
 weighting; `beta_gls` uses the function’s GLS path for the supplied
-covariates. The optional exported ZCA columns use a regularized
-transform of the working trial covariance. Correlations in a
-multi-predictor result are marginal correlations with each predictor,
-not partial correlations.
+covariates. The optional exported ZCA columns use a spectrum-continuous,
+centered-trace-stabilized transform of the working trial covariance.
+Correlations in a multi-predictor result are marginal correlations with
+each predictor, not partial correlations.
 
 ``` r
 
@@ -470,12 +511,12 @@ knitr::kable(data.frame(
 
 | voxel | truth |   raw | corrected |   gls | se_weighted | se_gls |
 |:------|------:|------:|----------:|------:|------------:|-------:|
-| v1    |   0.5 | 0.107 |     0.460 | 0.459 |       0.047 |  0.048 |
-| v2    |   0.6 | 0.134 |     0.551 | 0.551 |       0.047 |  0.048 |
-| v3    |   0.7 | 0.152 |     0.639 | 0.638 |       0.043 |  0.044 |
-| v4    |   0.8 | 0.181 |     0.710 | 0.712 |       0.052 |  0.053 |
-| v5    |   0.9 | 0.206 |     0.863 | 0.864 |       0.042 |  0.043 |
-| v6    |   1.0 | 0.243 |     0.966 | 0.967 |       0.050 |  0.051 |
+| v1    |   0.5 | 0.107 |     0.460 | 0.457 |       0.048 |  0.047 |
+| v2    |   0.6 | 0.134 |     0.551 | 0.550 |       0.048 |  0.047 |
+| v3    |   0.7 | 0.152 |     0.639 | 0.636 |       0.044 |  0.044 |
+| v4    |   0.8 | 0.181 |     0.710 | 0.714 |       0.053 |  0.053 |
+| v5    |   0.9 | 0.206 |     0.863 | 0.863 |       0.043 |  0.043 |
+| v6    |   1.0 | 0.243 |     0.966 | 0.967 |       0.051 |  0.051 |
 
 ### Keep a fixed-HRF comparator
 
@@ -512,12 +553,12 @@ knitr::kable(comparison, digits = 3)
 
 | voxel | true_hrf_column | true_beta | fixed_hrf_beta | learned_hrf_beta |
 |:------|----------------:|----------:|---------------:|-----------------:|
-| v1    |               1 |       0.5 |          0.494 |            0.460 |
-| v2    |               1 |       0.6 |          0.609 |            0.551 |
-| v3    |               1 |       0.7 |          0.686 |            0.639 |
-| v4    |               2 |       0.8 |          0.776 |            0.710 |
-| v5    |               2 |       0.9 |          0.879 |            0.863 |
-| v6    |               2 |       1.0 |          1.024 |            0.966 |
+| v1    |               1 |       0.5 |          0.502 |            0.460 |
+| v2    |               1 |       0.6 |          0.616 |            0.551 |
+| v3    |               1 |       0.7 |          0.695 |            0.639 |
+| v4    |               2 |       0.8 |          0.786 |            0.710 |
+| v5    |               2 |       0.9 |          0.892 |            0.863 |
+| v6    |               2 |       1.0 |          1.038 |            0.966 |
 
 This is one noisy realization of a matched model. Exact truth recovery
 is not a pass criterion, and this example does not measure population
@@ -549,8 +590,8 @@ knitr::kable(decision_fit$summary, digits = 3)
 
 | lag | term | mean_beta_raw | mean_beta_corrected | mean_beta_multilag | mean_beta_unweighted | mean_beta_weighted | mean_beta_gls | mean_r_raw | mean_r_demixed | mean_tau2_bio | mean_gain | mean_se_trial | mean_error_ac1 | n_voxels |
 |---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0 | value | 0.070 | 0.184 | 0.184 | 0.184 | 0.184 | 0.183 | 0.533 | 0.342 | 0.306 | 0.316 | 0.134 | 0.048 | 6 |
-| 1 | value | 0.055 | 0.138 | 0.138 | 0.138 | 0.138 | 0.138 | 0.360 | 0.234 | 0.413 | 0.316 | 0.135 | 0.055 | 6 |
+| 0 | value | 0.070 | 0.367 | 0.367 | 0.365 | 0.367 | 0.373 | 0.533 | 0.449 | 0.303 | 0.316 | 0.134 | 0.048 | 6 |
+| 1 | value | 0.055 | 0.286 | 0.286 | 0.286 | 0.286 | 0.193 | 0.360 | 0.329 | 0.416 | 0.316 | 0.135 | 0.055 | 6 |
 
 The known simulated decision-height slope is 0.35. Compare the table
 with that value: a duration-aware source does not by itself eliminate
@@ -586,8 +627,8 @@ panel$trial_id <- vapply(seq_len(nrow(panel)), function(j) {
 }, integer(1))
 head(panel[, c("id", "run", "trial", "event_index", "trial_id", "evt_time",
                "voxel", "decon_raw", "decon_demixed", "se_demixed",
-               "precision_weight", "error_ac1", "decon_demixed_whitened",
-               "rpe", "rpe_whitened")])
+               "precision_weight", "precision_weight_cohort", "error_ac1",
+               "decon_demixed_whitened", "rpe", "rpe_whitened")])
 #>      id  run trial event_index trial_id evt_time voxel  decon_raw decon_demixed
 #> 1 sim01 run1     1           3        1       -2    v1 0.39980863   -0.10148459
 #> 2 sim01 run1     2           6        2       -2    v1 0.24213547   -1.27971761
@@ -595,37 +636,46 @@ head(panel[, c("id", "run", "trial", "event_index", "trial_id", "evt_time",
 #> 4 sim01 run1     4          12        4       -2    v1 0.04568107   -0.57783700
 #> 5 sim01 run1     5          15        5       -2    v1 0.31797264    0.02838822
 #> 6 sim01 run1     6          18        6       -2    v1 0.17209511   -0.48565273
-#>   se_demixed precision_weight    error_ac1 decon_demixed_whitened        rpe
-#> 1  0.2252475         1.039017  0.000000000            -0.10240474  0.1181378
-#> 2  0.2186491         1.052838 -0.002476644            -1.28056555 -0.3123133
-#> 3  0.2280089         1.033221 -0.132477747             0.25441708  1.8923639
-#> 4  0.2135799         1.063420 -0.161829601            -0.56927032 -1.1696051
-#> 5  0.2226519         1.044459  0.027277444             0.02885683 -0.4224070
-#> 6  0.2266765         1.036018 -0.095205992            -0.48387331 -1.0995872
-#>   rpe_whitened
-#> 1    0.1192654
-#> 2   -0.2937767
-#> 3    1.8785775
-#> 4   -1.1653180
-#> 5   -0.4213391
-#> 6   -1.1010554
+#>   se_demixed precision_weight precision_weight_cohort    error_ac1
+#> 1  0.2252475         1.038610                4.429673  0.000000000
+#> 2  0.2186491         1.052263                4.487902 -0.002476644
+#> 3  0.2280089         1.032883                4.405250 -0.132477747
+#> 4  0.2135799         1.062712                4.532470 -0.161829601
+#> 5  0.2226519         1.043986                4.452604  0.027277444
+#> 6  0.2266765         1.035647                4.417037 -0.095205992
+#>   decon_demixed_whitened        rpe rpe_whitened
+#> 1             -0.1008635  0.1181378    0.1213021
+#> 2             -1.2854085 -0.3123133   -0.2737089
+#> 3              0.2560831  1.8923639    1.8725854
+#> 4             -0.5585138 -1.1696051   -1.1669019
+#> 5              0.0328390 -0.4224070   -0.4222067
+#> 6             -0.4808987 -1.0995872   -1.1080599
 stopifnot(!anyDuplicated(panel[c("id", "run", "trial_id", "evt_time", "voxel")]),
           all(is.finite(panel$decon_demixed)),
-          all(is.finite(panel$precision_weight) & panel$precision_weight > 0))
+          all(is.finite(panel$precision_weight) & panel$precision_weight > 0),
+          all(is.finite(panel$precision_weight_cohort) & panel$precision_weight_cohort > 0))
 ```
 
 `run`, `trial`, `event_index`, `onset`, `evt_time`, and `voxel` describe
 each observation; `decon_raw` and `decon_demixed` contain its readouts;
-`se_raw`, `se_demixed`, `precision_weight`, and `error_ac1` capture the
-operator-propagated per-trial standard errors, Empirical-Bayes
-stabilized precision weights, and lag-1 trial error autocorrelation.
-Because `whiten_panel = TRUE` was requested, `decon_demixed_whitened`
-and `rpe_whitened` also provide within-run ZCA-decorrelated trial
-responses and centered covariates. `trial` is **not necessarily your
-original behavioral trial ID**. Join behavior through the preserved
-event-row mapping, then validate one-to-one identity at the intended
-grain. Add participant and session IDs explicitly before combining
-people; do not let identical run names imply identical participants.
+`se_raw`, `se_demixed`, `precision_weight`, `precision_weight_cohort`,
+and `error_ac1` capture the operator-propagated per-trial standard
+errors, within-unit mean-1 precision weights (`precision_weight`),
+unnormalized cohort-comparable inverse total variance weights
+(`precision_weight_cohort`, which preserve between-participant
+reliability differences in multi-subject mixed models), and lag-1 trial
+error autocorrelation. When `aggregate_by_parcel = TRUE`, the panel also
+carries a list-column `shared_noise_loading` so cross-parcel noise
+correlations survive
+[`data.table::rbindlist()`](https://rdrr.io/pkg/data.table/man/rbindlist.html)
+for `decon_connectivity_repair(..., shared_error = "auto")`. Because
+`whiten_panel = TRUE` was requested, `decon_demixed_whitened` and
+`rpe_whitened` also provide within-run ZCA-decorrelated trial responses
+and centered covariates. `trial` is **not necessarily your original
+behavioral trial ID**. Join behavior through the preserved event-row
+mapping, then validate one-to-one identity at the intended grain. Add
+participant and session IDs explicitly before combining people; do not
+let identical run names imply identical participants.
 
 The finite-value assertion is appropriate to this complete synthetic
 dataset. In real data, report retained trials by run/lag/voxel,
@@ -689,7 +739,7 @@ group_result <- mixed_by(
   planned, model_formulae = list(
     feedback = decon_demixed ~ rpe_within + (1 + rpe_within || id) + (1 | id:run)
   ),
-  weights = "precision_weight", calculate = "parameter_estimates_reml",
+  weights = "precision_weight_cohort", calculate = "parameter_estimates_reml",
   padjust_by = NULL, return_models = TRUE
 )
 #> Using model_formulae to setup model_set
@@ -730,9 +780,9 @@ knitr::kable(subset(group_result$coef_df_reml, term == "rpe_within")[
   , c("estimate", "std.error", "df", "p.value"), with = FALSE], digits = 3)
 ```
 
-| estimate | std.error |  df | p.value |
-|---------:|----------:|----:|--------:|
-|    0.531 |     0.022 |  11 |       0 |
+| estimate | std.error |     df | p.value |
+|---------:|----------:|-------:|--------:|
+|    0.524 |     0.021 | 10.274 |       0 |
 
 ``` r
 
@@ -740,29 +790,42 @@ lme4::isSingular(group_fit)
 #> [1] FALSE
 ```
 
-The weights model relative conditional residual spread through the
-inverse weight. They do not remove within-run dependence. A transformed
-analysis needs the matched response and predictor columns from the same
-parcel and lag, plus a check of remaining dependence. Inspect
-singularity, residuals, and participant support before interpreting the
-fixed-effect SE. This example has one planned test. If you examine more
-parcels or lags, define the test family before fitting.
+Passing `weights = "precision_weight_cohort"` preserves relative
+reliability differences across participants as well as across runs and
+trials
+([`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md)
+normalizes finite positive weights across the whole cohort split rather
+than forcing every participant’s mean weight to one as
+`precision_weight` does). Weights model conditional residual spread
+through the inverse weight; they do not remove within-run serial
+dependence. A transformed analysis needs the matched response and
+predictor columns from the same parcel and lag, plus a check of
+remaining dependence. Inspect singularity, residuals, and participant
+support before interpreting the fixed-effect SE. This example has one
+planned test. If you examine more parcels or lags, define the test
+family before fitting.
 
-### Joint trajectory inference after PR 62
+### Joint trajectory and connectivity inference (PRs 62 & 64)
 
 The named subject results retain resolution and error-correlation
-summaries. This path pools per-subject, within-run slopes for one
-predictor at a time. The example uses `"none"` to keep the raw lag
-estimand and reports one prespecified parcel. The default list route
-takes the operator summaries from the first participant. Inspect whether
-they represent the sample or pass explicit common operators.
+summaries (`demix_within_trial = FALSE` above leaves cross-lag
+deblurring to Stage 4). On panel or epoch-list inputs,
+[`medusa_multilag_infer()`](https://hallquistlab.github.io/fmri.pipeline/reference/medusa_multilag_infer.md)
+fits **joint within-run multiple regression** across all supplied
+time-varying `covariates` (including $`M_{\text{post}}`$ covariate
+alignment), supports Level-2 between-participant traits via WLS + HC2
+inference, retains participants with partial lag support via
+available-case pooling across lags, and defaults planned linear window
+contrasts to unbiased `contrast_source = "unsmoothed"`. The example uses
+`"none"` to keep the raw lag estimand and reports one prespecified
+parcel.
 
 ``` r
 
 trajectory <- medusa_multilag_infer(
   subject_epochs, covariates = "rpe", use_whitened = FALSE,
-  trajectory_mode = "none", tr = tr, n_perm = 1999L,
-  n_boot_latency = 0L, seed = 5420L
+  trajectory_mode = "none", contrast_source = "unsmoothed",
+  tr = tr, n_perm = 1999L, n_boot_latency = 0L, seed = 5420L
 )
 knitr::kable(
   subset(trajectory$coefficients, parcel == "Parcel_A")[
@@ -773,18 +836,25 @@ knitr::kable(
 
 | lag | estimate | conf.low.sim | conf.high.sim | p_maxT |
 |----:|---------:|-------------:|--------------:|-------:|
-|  -2 |    0.275 |        0.224 |         0.326 |  0.000 |
-|  -1 |    0.445 |        0.386 |         0.503 |  0.000 |
-|   0 |    0.531 |        0.466 |         0.597 |  0.000 |
-|   1 |    0.491 |        0.428 |         0.554 |  0.000 |
-|   2 |    0.347 |        0.299 |         0.395 |  0.000 |
-|   3 |    0.169 |        0.140 |         0.198 |  0.000 |
-|   4 |    0.029 |        0.001 |         0.057 |  0.043 |
+|  -2 |    0.289 |        0.231 |         0.348 |   0.00 |
+|  -1 |    0.456 |        0.389 |         0.522 |   0.00 |
+|   0 |    0.534 |        0.465 |         0.604 |   0.00 |
+|   1 |    0.488 |        0.423 |         0.553 |   0.00 |
+|   2 |    0.345 |        0.295 |         0.394 |   0.00 |
+|   3 |    0.168 |        0.138 |         0.198 |   0.00 |
+|   4 |    0.029 |       -0.004 |         0.061 |   0.09 |
 
-`n_perm` counts correlated parametric null draws. The raw band and
-Max-\|T\| tests cover the lags within one parcel–term trajectory. TFCE
-and omnibus inference use that same family. Claims across parcels or
-terms need a study-wide procedure. Save the full `subject_epochs`
+`n_perm` counts studentized Wishart/Mahalanobis parametric null draws
+(incorporating Marra–Wood smoothing-variance inflation when
+`trajectory_mode` smooths across lags). The simultaneous band and
+Max-\|T\| tests cover the lags within one parcel–term trajectory; TFCE
+and omnibus inference use that same family, whereas claims across
+parcels or terms need a study-wide multiplicity procedure. For
+trial-level seed-to-target connectivity or PPI on `group_panel`, use
+`decon_connectivity_repair(group_panel, seed_region = "Parcel_A", target_region = "Parcel_B", covariates = "rpe", test_ppi = TRUE, use_whitened = FALSE, orthogonalize_seed_x = FALSE, shared_error = "auto", method = "mmoms", region_col = "parcel")`,
+which uses `shared_noise_loading` to disattenuate seed measurement error
+while subtracting cross-parcel shared-noise covariance and pooling
+subjects via HKSJ random-effects weights. Save the full `subject_epochs`
 objects and analysis settings, including the lag grid, parcel labels,
 and random seed.
 
@@ -918,15 +988,16 @@ candidates within a run, but that is not leave-one-run-out HRF learning.
 
 | Handoff | Settings to record | Check before proceeding |
 |----|----|----|
-| Input to HRF/noise fit | TR, offsets, masks, candidate library, `spatial_groups` and optional `noise_groups` | Confirm clocks, retained acquisition indices, target-run exclusion for HRF selection, and fallback strata. |
-| HRF/noise fit to inverse | `lambda` or tuning grid, penalty, nuisance mode, scaling | In PR 62, noise-SD scaling estimates **marginal observation** SD via leverage-adjusted robust GLS residuals. Examine estimated scales, fit residuals, and adaptive penalty diagnostics. |
-| Inverse to event measurements | Source duration and units, readout, demixing, target condition and lag grid | Verify event-row identity, time support, and effective gains. Check rate versus integrated activity for duration models. |
-| Event measurements to parcel panel | Parcel labels, `restore_scale`, `tau2_mode`, `whiten_panel` | Audit usable voxels and retained trials by run. Keep amplitudes, measurement SEs, and working precision weights in their stated units. |
-| Panel to group claim | Participant/run effects, predictors, weights, trajectory mode, test family | Check participant counts, residual dependence, singularity, and whether the test applies to one lag, one trajectory, or a whole study family. |
+| Input to HRF/noise fit | TR, offsets, masks, candidate library, `spatial_groups` and optional `noise_groups` | Confirm clocks, retained acquisition indices, target-run exclusion for HRF selection, gap-local AR($`p`$) noise fits, and fallback strata. |
+| HRF/noise fit to inverse | `lambda` or tuning grid, penalty, nuisance mode, scaling | In PRs 62 & 64, `scaling = "noise_sd"` estimates **marginal observation-noise** SD ($`\sigma_{\text{marg}}`$) via leverage-adjusted Winsorized GLS residuals, and `lambda = NULL` pools adaptive GCV across all usable runs. Examine estimated scales, fit residuals, and tuning diagnostics. |
+| Inverse to event measurements | Source duration and units, readout, demixing, target condition and lag grid | Verify event-row identity, causal BOLD observability (`obs_frac_tau >= 0.20`), matched $`M_{\text{post}}`$ covariate alignment, and rate versus integrated activity for duration models. |
+| Event measurements to parcel panel | Parcel labels, `restore_scale`, `tau2_mode`, `whiten_panel` | Audit usable voxels, task-free `noise_innovations` spatial covariance, and retained trials by run. Distinguish within-run `precision_weight` from cohort-comparable `precision_weight_cohort` and retain `shared_noise_loading` for connectivity. |
+| Panel to group claim | Participant/run effects, predictors, weights, trajectory/connectivity mode, test family | Check participant counts, residual dependence, singularity, `contrast_source = "unsmoothed"`, `shared_error = "auto"`, and whether the test applies to one lag, one trajectory, or a whole study family. |
 
-Earlier MEDuSA documents may use pre-PR 62 noise scaling or approximate
-gap handling. Use the installed version’s help for argument names and
-preserve the software revision alongside the fitted objects.
+Earlier MEDuSA documents may describe pre-PR 62 second-difference noise
+scaling, first-run GCV tuning, or single-covariate trajectory pooling.
+Use the installed version’s help for argument names and preserve the
+software revision alongside the fitted objects.
 
 ## Before interpreting a result
 
