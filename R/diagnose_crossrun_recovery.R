@@ -223,11 +223,11 @@ build_epoch_readout_matrix <- function(onsets, lag, n_time, tr, offset,
 #    adjusts W_unc into W_full so that constant baseline activity still maps to a
 #    constant across trials of unequal duration.
 solve_duration_demix_operator <- function(S_tau, operator, G_tau_unc, G_tau_cent,
-    scaling_mode, demix_ridge, gain_floor) {
+    scaling_mode, demix_ridge, gain_floor, DG_tau_unc = NULL, DG_tau_cent = NULL) {
   m_ok <- nrow(S_tau)
   n_obs <- ncol(operator)
-  K_norm <- S_tau %*% (operator %*% G_tau_cent)
-  K_unc <- S_tau %*% (operator %*% G_tau_unc)
+  K_norm <- S_tau %*% (if (!is.null(DG_tau_cent)) DG_tau_cent else (operator %*% G_tau_cent))
+  K_unc <- S_tau %*% (if (!is.null(DG_tau_unc)) DG_tau_unc else (operator %*% G_tau_unc))
   g_unc <- diag(K_unc)
   g_safe <- sign(ifelse(g_unc == 0, 1, g_unc)) * pmax(abs(g_unc), gain_floor)
   R_unc <- sweep(K_unc, 1L, g_safe, "/")
@@ -405,18 +405,26 @@ build_other_demix_operator <- function(S_all_0, DG_all_0, ev, o_idx, t_idx, demi
 # while preserving each trial's marginal error variance diag(Sigma_tot).
 # This allows downstream mixed models (`mixed_by(..., weights = "precision_weight")`)
 # to pair ZCA-decorrelated trial observations with diagonal precision weights.
-compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.05, offdiag_scale = 1.0) {
+compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.08, offdiag_scale = 0.90) {
   M <- nrow(Sigma_tot)
   if (M <= 1L) return(diag(M))
-  d_tot <- sqrt(pmax(diag(Sigma_tot), .Machine$double.eps))
-  R_tot <- sweep(sweep(Sigma_tot, 1L, d_tot, "/"), 2L, d_tot, "/")
+  Sigma_sym <- 0.5 * (Sigma_tot + t(Sigma_tot))
+  mean_mode_var <- sum(Sigma_sym) / M
+  cent_mean_var <- max((sum(diag(Sigma_sym)) - mean_mode_var) / max(1L, M - 1L), .Machine$double.eps)
+  # Stabilize the rank-1 run-mean null mode so run-centered covariance matrices
+  # have exact centered reference scale along 1_M and are strictly invariant to c * (1_M 1_M' / M).
+  if (is.finite(mean_mode_var) && mean_mode_var < cent_mean_var) {
+    Sigma_sym <- Sigma_sym + (cent_mean_var - mean_mode_var) * matrix(1.0 / M, M, M)
+  }
+  d_tot <- sqrt(pmax(diag(Sigma_sym), .Machine$double.eps))
+  R_tot <- sweep(sweep(Sigma_sym, 1L, d_tot, "/"), 2L, d_tot, "/")
   R_tot <- 0.5 * (R_tot + t(R_tot))
   if (offdiag_scale < 1.0) {
     R_tot <- (1.0 - offdiag_scale) * diag(M) + offdiag_scale * R_tot
   }
   eig <- eigen(R_tot, symmetric = TRUE)
-  cut_null <- max(eig_floor, 0.35)
-  inv_sqrt_vals <- ifelse(eig$values < cut_null, sqrt(pmax(eig$values, 0)), 1 / sqrt(pmax(eig$values, eig_floor)))
+  lam_pos <- pmax(eig$values, 0.0)
+  inv_sqrt_vals <- 1.0 / ((lam_pos^2 + eig_floor^2)^0.25)
   R_inv_half <- eig$vectors %*% (inv_sqrt_vals * t(eig$vectors))
   Phi <- sweep(sweep(R_inv_half, 1L, d_tot, "*"), 2L, d_tot, "/")
   tr_mean <- mean(diag(Phi))
@@ -820,8 +828,16 @@ decon_epoch_regression <- function(
       rel_r0[!is.finite(rel_r0) | rel_r0 <= 0] <- 1
       abs_s2_mat[r, ok_r] <- nsd_r0[ok_r]^2
       rel_s2_mat[r, ok_r] <- rel_r0[ok_r]^2
-      if (!is.null(fit$selections[[r]]$score)) {
-        sc_v <- as.numeric(fit$selections[[r]]$score)
+      sel_r <- fit$selections[[r]]
+      sc_raw <- if (!is.null(sel_r[["selected_adjusted_partial_r2"]])) {
+        sel_r[["selected_adjusted_partial_r2"]]
+      } else if (!is.null(sel_r[["best_adjusted_partial_r2"]])) {
+        sel_r[["best_adjusted_partial_r2"]]
+      } else {
+        sel_r[["score"]]
+      }
+      if (!is.null(sc_raw) && is.numeric(sc_raw)) {
+        sc_v <- as.numeric(sc_raw)
         sc_v[!is.finite(sc_v) | sc_v < 0] <- 0
         cv_r2_mat[r, ] <- sc_v
       }
@@ -848,7 +864,7 @@ decon_epoch_regression <- function(
       w_g <- if (isTRUE(restore_scale) || settings$scaling %in% c("demean", "none")) {
         ev_mult / s2_abs_fl
       } else {
-        ev_mult / (s2_abs_fl * s2_rel_fl)
+        ev_mult / s2_rel_fl
       }
       w_g[!is.finite(w_g) | w_g <= 0] <- 1.0
       parcel_weights_list[[g]] <- w_g / sum(w_g)
@@ -890,14 +906,14 @@ decon_epoch_regression <- function(
 
   total_trials <- sum(target_counts)
   raw_epochs <- demixed_epochs <- se_raw_epochs <- se_demixed_epochs <- vector("list", n_lags)
-  pw_epochs <- pw_op_epochs <- pw_raw_epochs <- error_ac1_epochs <- tau2_bio_epochs <- vector("list", n_lags)
+  pw_epochs <- pw_cohort_epochs <- pw_op_epochs <- pw_raw_epochs <- error_ac1_epochs <- tau2_bio_epochs <- vector("list", n_lags)
   rel_epochs <- eb_y_epochs <- vector("list", n_lags)
   whitened_y_epochs <- se_whitened_epochs <- eb_whitened_y_epochs <- if (isTRUE(whiten_panel)) vector("list", n_lags) else NULL
   whitened_x_epochs <- if (isTRUE(whiten_panel) && n_terms > 0L) vector("list", n_lags) else NULL
   V_demix_blocks <- vector("list", n_lags)
   lag_names <- sprintf("lag_%g", lags)
   names(raw_epochs) <- names(demixed_epochs) <- names(se_raw_epochs) <- names(se_demixed_epochs) <- lag_names
-  names(pw_epochs) <- names(pw_op_epochs) <- names(pw_raw_epochs) <- names(error_ac1_epochs) <- names(tau2_bio_epochs) <- lag_names
+  names(pw_epochs) <- names(pw_cohort_epochs) <- names(pw_op_epochs) <- names(pw_raw_epochs) <- names(error_ac1_epochs) <- names(tau2_bio_epochs) <- lag_names
   names(rel_epochs) <- names(eb_y_epochs) <- lag_names
   if (isTRUE(whiten_panel)) {
     names(whitened_y_epochs) <- names(se_whitened_epochs) <- names(eb_whitened_y_epochs) <- lag_names
@@ -910,6 +926,7 @@ decon_epoch_regression <- function(
     se_raw_epochs[[li]] <- na_mat
     se_demixed_epochs[[li]] <- na_mat
     pw_epochs[[li]] <- na_mat
+    pw_cohort_epochs[[li]] <- na_mat
     pw_op_epochs[[li]] <- na_mat
     pw_raw_epochs[[li]] <- na_mat
     error_ac1_epochs[[li]] <- na_mat
@@ -953,6 +970,12 @@ decon_epoch_regression <- function(
     unit_ids
   )
   lag_res_trials <- integer(n_units)
+  track_unit_cor <- (n_units >= 2L && n_units <= 256L)
+  unit_err_cor_accum <- if (track_unit_cor) {
+    matrix(0.0, n_units, n_units, dimnames = list(unit_ids, unit_ids))
+  } else NULL
+  unit_err_df_tot <- 0.0
+  li_ref_cor <- which.min(abs(lags))
 
   for (r in seq_len(n_runs)) {
     n <- fit$n_time[r]
@@ -1003,6 +1026,13 @@ decon_epoch_regression <- function(
       act_r[, valid] <- sweep(act_r[, valid, drop = FALSE], 2L, div_r[valid], "*")
     }
 
+    Z_vox_r <- if (!is.null(deconvolution$noise_innovations) &&
+                   length(deconvolution$noise_innovations) >= r) {
+      deconvolution$noise_innovations[[r]]
+    } else NULL
+    has_z_vox <- is.matrix(Z_vox_r) && nrow(Z_vox_r) == length(rows) && ncol(Z_vox_r) == n_voxels
+    mix_by_key <- list()
+
     if (isTRUE(aggregate_by_parcel)) {
       act_parcel_r <- matrix(NA_real_, n, n_units, dimnames = list(NULL, unit_ids))
       valid_parcel <- logical(n_units)
@@ -1011,6 +1041,25 @@ decon_epoch_regression <- function(
       keys_parcel <- character(n_units)
       kernels_parcel <- vector("list", n_units)
       ar_parcel <- vector("list", n_units)
+      z_unit_parcel_r <- if (has_z_vox && track_unit_cor) {
+        matrix(0.0, length(rows), n_units, dimnames = list(NULL, unit_ids))
+      } else NULL
+
+      # Precompute low-rank neural trial projection fallback when Z_vox_r is absent
+      Q_task_fb <- NULL
+      if (!has_z_vox && length(rows) >= 12L) {
+        G_fb_act <- hrf_event_design_cpp(
+          n, tr, offset, ev$onset, duration, seq_len(m_all), m_all, matrix(1.0, 1L, 1L)
+        )[[1L]][rows, , drop = FALSE]
+        G_fb_all <- cbind(1.0, seq(-1.0, 1.0, length.out = length(rows)), G_fb_act)
+        nrm_fb <- sqrt(colSums(G_fb_all^2)); nrm_fb[nrm_fb == 0] <- 1.0
+        sv_fb <- svd(sweep(G_fb_all, 2L, nrm_fb, "/"), nv = 0)
+        rk_max_fb <- max(0L, length(rows) - 10L)
+        rk_fb <- if (length(sv_fb$d) && sv_fb$d[1L] > 0 && rk_max_fb > 0L) {
+          min(rk_max_fb, sum(sv_fb$d > 0.05 * sv_fb$d[1L]))
+        } else 0L
+        if (rk_fb > 0L) Q_task_fb <- sv_fb$u[, seq_len(rk_fb), drop = FALSE]
+      }
 
       for (g in seq_len(n_units)) {
         vox_g <- parcel_vox_list[[g]]
@@ -1027,18 +1076,31 @@ decon_epoch_regression <- function(
         s2_ceil <- (sum(u_g * seff_v))^2
         if (length(v_ok) == 1L || length(rows) < 4L) {
           sig_eff_parcel_r[g] <- sqrt(s2_indep)
-        } else {
-          D2_vox <- diff(act_r[rows, v_ok, drop = FALSE], differences = 2L)
-          d2_p <- as.numeric(D2_vox %*% u_g)
-          mad_d2_v <- apply(D2_vox, 2L, stats::mad, na.rm = TRUE)
-          mad_d2_p <- stats::mad(d2_p, na.rm = TRUE)
-          denom_d2 <- sum(u_g * mad_d2_v)
-          if (is.finite(mad_d2_p) && is.finite(denom_d2) && denom_d2 > 1e-12) {
-            r_emp <- (mad_d2_p / denom_d2)^2
-            s2_eff_g <- min(s2_ceil, max(s2_indep, r_emp * s2_ceil))
+          if (!is.null(z_unit_parcel_r)) {
+            z_unit_parcel_r[, g] <- Z_vox_r[, v_ok[1L]]
+          }
+        } else if (has_z_vox) {
+          zeta_g <- as.numeric(Z_vox_r[, v_ok, drop = FALSE] %*% (u_g * seff_v))
+          z_norm2 <- sum(zeta_g^2)
+          if (is.finite(z_norm2) && z_norm2 > 1e-20) {
+            s2_eff_g <- min(s2_ceil, max(0.05 * s2_indep, z_norm2))
+            if (!is.null(z_unit_parcel_r)) {
+              z_unit_parcel_r[, g] <- zeta_g / sqrt(z_norm2)
+            }
           } else {
             s2_eff_g <- s2_indep
           }
+          sig_eff_parcel_r[g] <- sqrt(max(s2_eff_g, 1e-12))
+        } else {
+          A_sub <- act_r[rows, v_ok, drop = FALSE]
+          if (!is.null(Q_task_fb)) {
+            A_sub <- A_sub - Q_task_fb %*% crossprod(Q_task_fb, A_sub)
+          }
+          A_sub <- sweep(A_sub, 2L, colMeans(A_sub), "-")
+          v_sub <- sqrt(pmax(colSums(A_sub^2), 1e-24))
+          U_sub <- sweep(A_sub, 2L, v_sub, "/")
+          zeta_fb <- as.numeric(U_sub %*% (u_g * seff_v))
+          s2_eff_g <- min(s2_ceil, max(0.05 * s2_indep, sum(zeta_fb^2)))
           sig_eff_parcel_r[g] <- sqrt(max(s2_eff_g, 1e-12))
         }
 
@@ -1052,14 +1114,37 @@ decon_epoch_regression <- function(
           rho_g <- sum(u_g * rho[v_ok])
           psi1_g <- if (!is.null(strat$psi1)) sum(u_g * strat$psi1[v_ok]) else 0.0
           psi2_g <- if (!is.null(strat$psi2)) sum(u_g * strat$psi2[v_ok]) else 0.0
+          psi3_g <- if (!is.null(strat$psi3)) sum(u_g * strat$psi3[v_ok]) else 0.0
+          psi4_g <- if (!is.null(strat$psi4)) sum(u_g * strat$psi4[v_ok]) else 0.0
           k_mat <- vapply(v_ok, function(vi) as.numeric(strat$get_kernel(vi)), numeric(nrow(fit$kernels)))
           k_g <- as.numeric(k_mat %*% u_g)
           k_sum <- sum(k_g)
           if (is.finite(k_sum) && abs(k_sum) > 1e-6) k_g <- k_g / k_sum
           rho_parcel[g] <- rho_g
           kernels_parcel[[g]] <- matrix(k_g, ncol = 1L)
-          keys_parcel[g] <- paste0("parcel_", unit_ids[g], ":", round(rho_g, 6))
-          ar_parcel[[g]] <- if (abs(psi1_g) > 1e-10 || abs(psi2_g) > 1e-10) c(rho_g, psi1_g, psi2_g) else rho_g
+          pkey_g <- paste0("parcel_mix_", unit_ids[g], "_", r)
+          keys_parcel[g] <- pkey_g
+          has_p34_g <- abs(psi3_g) > 1e-10 || abs(psi4_g) > 1e-10
+          has_p12_g <- abs(psi1_g) > 1e-10 || abs(psi2_g) > 1e-10 || has_p34_g
+          ar_parcel[[g]] <- if (has_p34_g) {
+            c(rho_g, psi1_g, psi2_g, psi3_g, psi4_g)
+          } else if (has_p12_g) {
+            c(rho_g, psi1_g, psi2_g)
+          } else {
+            rho_g
+          }
+          if (length(u_keys) <= 32L) {
+            mix_by_key[[pkey_g]] <- lapply(u_keys, function(sk) {
+              idx_sk <- which(keys[v_ok] == sk)
+              v_rep <- v_ok[idx_sk[1L]]
+              list(
+                key = sk,
+                weight = sum(u_g[idx_sk]),
+                kernel = strat$get_kernel(v_rep),
+                ar = if (!is.null(strat$get_ar)) strat$get_ar(v_rep) else rho[v_rep]
+              )
+            })
+          }
         }
       }
       act_r <- act_parcel_r
@@ -1069,9 +1154,11 @@ decon_epoch_regression <- function(
       keys <- keys_parcel
       get_unit_kernel <- function(idx) kernels_parcel[[idx]]
       get_unit_ar <- function(idx) ar_parcel[[idx]]
+      Z_unit_r <- z_unit_parcel_r
     } else {
       get_unit_kernel <- strat$get_kernel
       get_unit_ar <- if (!is.null(strat$get_ar)) strat$get_ar else function(idx) rho[idx]
+      Z_unit_r <- if (has_z_vox && track_unit_cor) Z_vox_r else NULL
     }
     stratum_map[[r]] <- keys
     sig_eff_mat[r, ] <- sig_eff_r
@@ -1112,26 +1199,96 @@ decon_epoch_regression <- function(
       demixed_epochs[[li]][row_span, valid] <- S_lags_model[[li]] %*% act_r[, valid, drop = FALSE]
     }
 
+    sub_op_cache <- new.env(parent = emptyenv())
+    get_cached_sub_op <- function(s_key, s_kern, s_ar) {
+      if (exists(s_key, envir = sub_op_cache, inherits = FALSE)) {
+        get(s_key, envir = sub_op_cache)
+      } else {
+        op_s <- hrf_inverse_operator(n, s_kern[, 1L], rows, s_ar, z, settings)
+        assign(s_key, op_s, envir = sub_op_cache)
+        op_s
+      }
+    }
+    U_ref_by_key <- if (!is.null(Z_unit_r)) list() else NULL
+
     for (key in unique(keys[valid])) {
       voxels <- which(keys == key & valid)
       ar <- get_unit_ar(voxels[1L])
       hrf_k <- get_unit_kernel(voxels[1L])
-      operator <- hrf_inverse_operator(n, hrf_k[, 1L], rows, ar, z, settings)
+      mix_spec <- mix_by_key[[key]]
+      if (!is.null(mix_spec)) {
+        op_parts <- lapply(mix_spec, function(ms) get_cached_sub_op(ms$key, ms$kernel, ms$ar))
+        operator <- matrix(0.0, n, length(rows))
+        for (mi in seq_along(mix_spec)) {
+          operator <- operator + mix_spec[[mi]]$weight * op_parts[[mi]]
+        }
+      } else {
+        op_parts <- NULL
+        operator <- get_cached_sub_op(key, hrf_k, ar)
+      }
+
+      eval_stratum_forward <- function(ons_v, dur_v, scale_int_idx = integer(0L),
+                                       scale_int_div = numeric(0L), win_div = 1.0) {
+        m_ev <- length(ons_v)
+        build_one <- function(k_mat) {
+          G_u <- hrf_event_design_cpp(n, tr, offset, ons_v, dur_v,
+            seq_len(m_ev), m_ev, k_mat)[[1L]][rows, , drop = FALSE]
+          if (length(scale_int_idx) > 0L) {
+            G_u[, scale_int_idx] <- sweep(G_u[, scale_int_idx, drop = FALSE], 2L, scale_int_div, "/")
+          }
+          if (win_div != 1.0 && win_div > 0) {
+            G_u <- G_u / win_div
+          }
+          G_c <- if (settings$scaling != "none") sweep(G_u, 2L, colMeans(G_u), "-") else G_u
+          list(G_unc = G_u, G_cent = G_c)
+        }
+        base_g <- build_one(hrf_k)
+        if (is.null(mix_spec)) {
+          list(
+            G_unc = base_g$G_unc,
+            G_cent = base_g$G_cent,
+            DG_unc = operator %*% base_g$G_unc,
+            DG_cent = operator %*% base_g$G_cent
+          )
+        } else {
+          DG_u <- matrix(0.0, n, m_ev)
+          DG_c <- matrix(0.0, n, m_ev)
+          for (mi in seq_along(mix_spec)) {
+            gm <- build_one(mix_spec[[mi]]$kernel)
+            wm <- mix_spec[[mi]]$weight
+            DG_u <- DG_u + wm * (op_parts[[mi]] %*% gm$G_unc)
+            DG_c <- DG_c + wm * (op_parts[[mi]] %*% gm$G_cent)
+          }
+          list(G_unc = base_g$G_unc, G_cent = base_g$G_cent, DG_unc = DG_u, DG_cent = DG_c)
+        }
+      }
+
+      # Unclipped causal BOLD reference energy per target trial for boundary/censor gating
+      if (source_model == "duration") {
+        n_ref_g <- nrow(hrf_k) + max(4L, as.integer(ceiling(max(c(0.0, dur_target)) / tr)) + 4L)
+        G_ref_t <- hrf_event_design_cpp(n_ref_g, tr, 0.0, rep(0.0, m_target), dur_target,
+          seq_len(m_target), m_target, hrf_k)[[1L]]
+        if (duration_scale == "integral" && any(dur_target > 0)) {
+          dp_ref <- which(dur_target > 0)
+          G_ref_t[, dp_ref] <- sweep(G_ref_t[, dp_ref, drop = FALSE], 2L, dur_target[dp_ref] / tr, "/")
+        }
+        g2_full_target <- pmax(colSums(G_ref_t^2), 1e-12)
+      } else {
+        dur_ref1 <- if (source_model == "window") w_src else 0.0
+        n_ref_g <- nrow(hrf_k) + max(4L, as.integer(ceiling(dur_ref1 / tr)) + 4L)
+        G_ref_1 <- hrf_event_design_cpp(n_ref_g, tr, 0.0, 0.0, dur_ref1, 1L, 1L, hrf_k)[[1L]]
+        if (source_model == "window" && w_src > 0) G_ref_1 <- G_ref_1 / (w_src / tr)
+        g2_full_target <- rep(max(sum(G_ref_1^2), 1e-12), m_target)
+      }
 
       # Forward design for all events at their own onsets (for non-target leakage removal)
       dur_all_model <- duration
       if (source_model == "impulse") dur_all_model[t_idx] <- 0
-      G_all_0 <- hrf_event_design_cpp(n, tr, offset, ev$onset, dur_all_model,
-        seq_len(m_all), m_all, hrf_k)[[1L]][rows, , drop = FALSE]
-      if (source_model == "duration" && duration_scale == "integral") {
-        pos_t <- t_idx[dur_target > 0]
-        if (length(pos_t)) {
-          G_all_0[, pos_t] <- sweep(G_all_0[, pos_t, drop = FALSE], 2L,
-            dur_target[dur_target > 0] / tr, "/")
-        }
-      }
-      if (settings$scaling != "none") G_all_0 <- sweep(G_all_0, 2L, colMeans(G_all_0), "-")
-      DG_all_0 <- operator %*% G_all_0
+      pos_t_all <- if (source_model == "duration" && duration_scale == "integral") t_idx[dur_target > 0] else integer(0L)
+      div_t_all <- if (length(pos_t_all)) (dur_target[dur_target > 0] / tr) else numeric(0L)
+      fw_all_0 <- eval_stratum_forward(ev$onset, dur_all_model, pos_t_all, div_t_all)
+      G_all_0 <- fw_all_0$G_cent
+      DG_all_0 <- fw_all_0$DG_cent
 
       L_joint <- if (demix_other_events && length(o_idx) > 0L) {
         build_other_demix_operator(S_all_0, DG_all_0, ev, o_idx, t_idx, demix_ridge,
@@ -1151,24 +1308,20 @@ decon_epoch_regression <- function(
       # so differential time-on-task baseline leakage is removed across all lags
       alpha0_hat <- NULL
       b_alpha0 <- NULL
+      s_alpha0 <- NULL
       DG_target_0_sum <- NULL
       if (source_model == "duration") {
         S_0 <- build_epoch_readout_matrix(ev$onset[t_idx] + 0.5 * dur_target, 0, n, tr, offset,
           readout_kernel = dur_kernel, readout_width = pmax(w_src, dur_target))
-        ok_0 <- rowSums(!is.finite(S_0)) == 0L
-        G_0_unc <- hrf_event_design_cpp(n, tr, offset, ev$onset[t_idx], dur_target,
-          seq_len(m_target), m_target, hrf_k)[[1L]][rows, , drop = FALSE]
-        if (duration_scale == "integral" && any(dur_target > 0)) {
-          d_pos0 <- dur_target > 0
-          G_0_unc[, d_pos0] <- sweep(G_0_unc[, d_pos0, drop = FALSE], 2L, dur_target[d_pos0] / tr, "/")
-        }
-        G_0_cent <- if (settings$scaling != "none") {
-          sweep(G_0_unc, 2L, colMeans(G_0_unc), "-")
-        } else {
-          G_0_unc
-        }
+        dp0_idx <- if (duration_scale == "integral" && any(dur_target > 0)) which(dur_target > 0) else integer(0L)
+        dp0_div <- if (length(dp0_idx)) (dur_target[dp0_idx] / tr) else numeric(0L)
+        fw_0 <- eval_stratum_forward(ev$onset[t_idx], dur_target, dp0_idx, dp0_div)
+        G_0_unc <- fw_0$G_unc
+        G_0_cent <- fw_0$G_cent
+        obs_frac_0 <- colSums(G_0_unc^2) / g2_full_target
+        ok_0 <- (rowSums(!is.finite(S_0)) == 0L) & is.finite(obs_frac_0) & (obs_frac_0 >= 0.20)
         if (any(ok_0)) {
-          DG_target_0_sum <- operator %*% rowSums(G_0_cent[, ok_0, drop = FALSE])
+          DG_target_0_sum <- rowSums(fw_0$DG_cent[, ok_0, drop = FALSE])
           Y_0 <- S_0[ok_0, , drop = FALSE] %*% act_r[, voxels, drop = FALSE]
           S_clean_0 <- S_0[ok_0, , drop = FALSE]
           if (!is.null(L_other)) {
@@ -1179,15 +1332,19 @@ decon_epoch_regression <- function(
           demix_0 <- solve_duration_demix_operator(
             S_0[ok_0, , drop = FALSE], operator,
             G_0_unc[, ok_0, drop = FALSE], G_0_cent[, ok_0, drop = FALSE],
-            settings$scaling, demix_ridge, gain_floor
+            settings$scaling, demix_ridge, gain_floor,
+            DG_tau_unc = fw_0$DG_unc[, ok_0, drop = FALSE],
+            DG_tau_cent = fw_0$DG_cent[, ok_0, drop = FALSE]
           )
           alpha0_hat <- colMeans(demix_0$W %*% Y_0)
-          b_alpha0 <- colMeans(demix_0$W %*% (S_clean_0 %*% operator))
+          s_alpha0 <- colMeans(demix_0$W %*% S_clean_0)
+          b_alpha0 <- as.numeric(s_alpha0 %*% operator)
         }
       }
 
       ok_tau_list <- vector("list", n_lags)
       B_demix_list <- vector("list", n_lags)
+      M_act_list <- vector("list", n_lags)
       DG_tau_list <- vector("list", n_lags)
 
       for (li in seq_len(n_lags)) {
@@ -1208,40 +1365,35 @@ decon_epoch_regression <- function(
           se_raw_epochs[[li]][row_span[ok_raw], voxels] <- outer(d_raw_unit, sig_eff_r[voxels])
         }
 
-        S_tau <- S_lags_model[[li]]
-        ok_tau <- rowSums(!is.finite(S_tau)) == 0L
-        ok_tau_list[[li]] <- ok_tau
-        if (!any(ok_tau)) next
-        m_ok <- sum(ok_tau)
-        Y_clean <- demixed_epochs[[li]][row_span, voxels, drop = FALSE]
-        S_clean_tau <- S_tau[ok_tau, , drop = FALSE]
-
-        max_run_time <- offset + (n - 1) * tr
         if (source_model == "duration") {
-          shifted_onsets <- pmin(max_run_time, pmax(offset, ev$onset[t_idx] + lags[li]))
-          G_tau_unc <- hrf_event_design_cpp(n, tr, offset, shifted_onsets, dur_target,
-            seq_len(m_target), m_target, hrf_k)[[1L]][rows, , drop = FALSE]
-          if (duration_scale == "integral" && any(dur_target > 0)) {
-            d_pos <- dur_target > 0
-            G_tau_unc[, d_pos] <- sweep(G_tau_unc[, d_pos, drop = FALSE], 2L, dur_target[d_pos] / tr, "/")
-          }
+          shifted_onsets <- ev$onset[t_idx] + lags[li]
+          dp_idx <- if (duration_scale == "integral" && any(dur_target > 0)) which(dur_target > 0) else integer(0L)
+          dp_div <- if (length(dp_idx)) (dur_target[dp_idx] / tr) else numeric(0L)
+          fw_tau <- eval_stratum_forward(shifted_onsets, dur_target, dp_idx, dp_div)
         } else {
-          # Local target resolution matrix K_tau for unit sources at target onset + lag
+          # Local target resolution matrix K_tau for unit sources at causal target onset + lag
           dur_tau <- if (source_model == "window") rep(w_src, m_target) else rep(0, m_target)
           shift_center <- if (source_model == "window") lags[li] - 0.5 * w_src else lags[li]
-          shifted_onsets <- pmin(max_run_time, pmax(offset, ev$onset[t_idx] + shift_center))
-          G_tau_unc <- hrf_event_design_cpp(n, tr, offset, shifted_onsets, dur_tau,
-            seq_len(m_target), m_target, hrf_k)[[1L]][rows, , drop = FALSE]
-          if (source_model == "window" && w_src > 0) {
-            G_tau_unc <- G_tau_unc / (w_src / tr)
-          }
+          shifted_onsets <- ev$onset[t_idx] + shift_center
+          win_div_tau <- if (source_model == "window" && w_src > 0) (w_src / tr) else 1.0
+          fw_tau <- eval_stratum_forward(shifted_onsets, dur_tau, win_div = win_div_tau)
         }
-        G_tau <- if (settings$scaling != "none") {
-          sweep(G_tau_unc, 2L, colMeans(G_tau_unc), "-")
-        } else {
-          G_tau_unc
+        G_tau_unc <- fw_tau$G_unc
+        G_tau <- fw_tau$G_cent
+        DG_tau_list[[li]] <- fw_tau$DG_cent
+
+        S_tau <- S_lags_model[[li]]
+        obs_frac_tau <- colSums(G_tau_unc^2) / g2_full_target
+        ok_tau <- (rowSums(!is.finite(S_tau)) == 0L) & is.finite(obs_frac_tau) & (obs_frac_tau >= 0.20)
+        ok_tau_list[[li]] <- ok_tau
+        Y_clean <- demixed_epochs[[li]][row_span, voxels, drop = FALSE]
+        if (any(!ok_tau)) {
+          Y_clean[!ok_tau, ] <- NA_real_
+          demixed_epochs[[li]][row_span[!ok_tau], voxels] <- NA_real_
         }
-        DG_tau_list[[li]] <- operator %*% G_tau
+        if (!any(ok_tau)) next
+        m_ok <- sum(ok_tau)
+        S_clean_tau <- S_tau[ok_tau, , drop = FALSE]
 
         if (!is.null(L_other)) {
           R_other_tau <- S_tau[ok_tau, , drop = FALSE] %*% DG_all_0[, o_idx, drop = FALSE]
@@ -1253,7 +1405,9 @@ decon_epoch_regression <- function(
         demix_tau <- solve_duration_demix_operator(
           S_tau[ok_tau, , drop = FALSE], operator,
           G_tau_unc[, ok_tau, drop = FALSE], G_tau[, ok_tau, drop = FALSE],
-          settings$scaling, demix_ridge, gain_floor
+          settings$scaling, demix_ridge, gain_floor,
+          DG_tau_unc = fw_tau$DG_unc[, ok_tau, drop = FALSE],
+          DG_tau_cent = fw_tau$DG_cent[, ok_tau, drop = FALSE]
         )
         K_norm <- demix_tau$K_norm
         g_vec <- diag(K_norm)
@@ -1267,10 +1421,12 @@ decon_epoch_regression <- function(
               abs(lags[li]) <= 1e-6 && !is.null(L_target_0)) {
             L_t0_ok <- L_target_0[ok_tau, , drop = FALSE]
             Y_clean[ok_tau, ] <- L_t0_ok %*% act_r[, voxels, drop = FALSE]
+            M_act_tau <- L_t0_ok
             B_demix_tau <- L_t0_ok %*% operator
           } else {
             Y_sub <- Y_clean[ok_tau, , drop = FALSE]
             B_sub_tau <- B_clean_tau
+            S_sub_act <- S_clean_tau
             if (source_model == "duration" && !is.null(alpha0_hat) && !is.null(DG_target_0_sum) && abs(lags[li]) > 1e-8) {
               k_base_0 <- as.numeric(S_tau[ok_tau, , drop = FALSE] %*% DG_target_0_sum)
               k_base_tau <- rowSums(K_norm)
@@ -1278,6 +1434,9 @@ decon_epoch_regression <- function(
               Y_sub <- Y_sub - outer(delta_base, alpha0_hat)
               if (!is.null(b_alpha0)) {
                 B_sub_tau <- B_sub_tau - tcrossprod(delta_base, b_alpha0)
+              }
+              if (!is.null(s_alpha0)) {
+                S_sub_act <- S_sub_act - tcrossprod(delta_base, s_alpha0)
               }
             }
             A_hat <- demix_tau$W %*% Y_sub
@@ -1288,13 +1447,16 @@ decon_epoch_regression <- function(
             )
             Q_tau <- diag(m_ok) - matrix(1 / m_ok, m_ok, m_ok)
             G_gain_tau <- sweep(Q_tau, 1L, demix_tau$eff_gain_vec, "/") + (diag(m_ok) - Q_tau)
+            M_act_tau <- G_gain_tau %*% (demix_tau$W %*% S_sub_act)
             B_demix_tau <- G_gain_tau %*% (demix_tau$W %*% B_sub_tau)
           }
         } else {
+          M_act_tau <- S_clean_tau
           B_demix_tau <- B_clean_tau
         }
         demixed_epochs[[li]][row_span, voxels] <- Y_clean
         B_demix_list[[li]] <- B_demix_tau
+        M_act_list[[li]] <- M_act_tau
       }
 
       # Cross-lag point-spread resolution matrix C_sym and optional within-trial de-mixing
@@ -1395,6 +1557,7 @@ decon_epoch_regression <- function(
         if (is.null(ok_tau) || !any(ok_tau)) next
         m_ok <- sum(ok_tau)
         B_demix_tau <- B_demix_list[[li]]
+        M_act_tau <- M_act_list[[li]]
 
         # Compute dimensionless trial innovation factor and error covariance for stratum (r, key, li)
         U_demix <- compute_ar1_operator_factor(B_demix_tau, rows, ar, center_obs = center_obs)
@@ -1404,7 +1567,24 @@ decon_epoch_regression <- function(
           Q_tau <- diag(m_ok) - matrix(1 / m_ok, m_ok, m_ok)
           V_demix_cent <- (Q_tau %*% V_demix %*% Q_tau) / (1 - 1 / m_ok)
         } else {
+          Q_tau <- matrix(1.0, 1L, 1L)
           V_demix_cent <- V_demix
+        }
+        if (m_ok <= 1L) {
+          M_post <- matrix(1.0, m_ok, m_ok)
+        } else if (!isTRUE(demix_target_trials) || isTRUE(demix_within_trial)) {
+          # Under multi-lag within-trial trajectory de-mixing (demix_within_trial = TRUE),
+          # W_lag combines readouts across multiple lags for a within-trial waveform rather
+          # than a single-lag Dirac source, and keeps X localized to trial i so off-peak
+          # boundary lags cannot couple trial i+1 non-target events into trial i's regressor.
+          M_post <- Q_tau
+        } else {
+          M_post <- Q_tau %*% (M_act_tau %*% DG_tau_list[[li]][, ok_tau, drop = FALSE]) %*% Q_tau
+        }
+        if (!is.null(U_ref_by_key) && li == li_ref_cor && m_ok >= 2L) {
+          U_c_ref <- sweep(U_demix, 1L, rowMeans(U_demix), "-")
+          cn_ref <- sqrt(pmax(colSums(U_c_ref^2), 1e-24))
+          U_ref_by_key[[key]] <- list(ok_tau = ok_tau, U_norm = sweep(U_c_ref, 2L, cn_ref, "/"))
         }
         d_demix_unit <- sqrt(pmax(0, diag(V_demix_cent)))
         se_demixed_epochs[[li]][row_span[ok_tau], voxels] <- outer(d_demix_unit, sig_eff_r[voxels])
@@ -1416,7 +1596,7 @@ decon_epoch_regression <- function(
           ac1_vec <- 0
         }
         error_ac1_epochs[[li]][row_span[ok_tau], voxels] <- matrix(ac1_vec, nrow = m_ok, ncol = length(voxels))
-        V_demix_blocks[[li]][[r]][[key]] <- list(ok_tau = ok_tau, V_cent = V_demix_cent)
+        V_demix_blocks[[li]][[r]][[key]] <- list(ok_tau = ok_tau, V_cent = V_demix_cent, M_post = M_post)
       }
 
       # Exact L x L cross-lag trial error covariance across lags in a single BLAS crossprod
@@ -1436,6 +1616,94 @@ decon_epoch_regression <- function(
         }
       }
     }
+
+    # Accumulate cross-unit trial error correlation across runs from task-free innovations
+    if (!is.null(unit_err_cor_accum) && !is.null(Z_unit_r)) {
+      R_innov_r <- crossprod(Z_unit_r)
+      R_innov_r <- 0.5 * (R_innov_r + t(R_innov_r))
+      diag(R_innov_r) <- 1.0
+      u_keys_r <- unique(keys[valid])
+      if (length(u_keys_r) >= 2L && !is.null(U_ref_by_key) && length(U_ref_by_key) >= 2L) {
+        O_unit_r <- matrix(1.0, n_units, n_units)
+        for (ia in seq_along(u_keys_r)) {
+          ka <- u_keys_r[ia]
+          ua <- U_ref_by_key[[ka]]
+          if (is.null(ua)) next
+          va <- which(keys == ka & valid)
+          for (ib in seq_len(ia - 1L)) {
+            kb <- u_keys_r[ib]
+            ub <- U_ref_by_key[[kb]]
+            if (is.null(ub)) next
+            vb <- which(keys == kb & valid)
+            ok_ab <- ua$ok_tau & ub$ok_tau
+            if (any(ok_ab)) {
+              pa <- ok_ab[ua$ok_tau]
+              pb <- ok_ab[ub$ok_tau]
+              ov_ab <- mean(colSums(ua$U_norm[, pa, drop = FALSE] * ub$U_norm[, pb, drop = FALSE]))
+              O_unit_r[va, vb] <- ov_ab
+              O_unit_r[vb, va] <- ov_ab
+            }
+          }
+        }
+        R_innov_r <- R_innov_r * O_unit_r
+        diag(R_innov_r) <- 1.0
+      }
+      w_df_r <- max(10.0, length(rows) - m_all - 2.0)
+      unit_err_cor_accum <- unit_err_cor_accum + w_df_r * R_innov_r
+      unit_err_df_tot <- unit_err_df_tot + w_df_r
+    }
+  }
+
+  unit_error_cor <- NULL
+  shared_loading_vec <- rep(0.0, n_units)
+  names(shared_loading_vec) <- unit_ids
+  if (!is.null(unit_err_cor_accum) && unit_err_df_tot > 0) {
+    R_u_raw <- unit_err_cor_accum / unit_err_df_tot
+    R_u_raw <- 0.5 * (R_u_raw + t(R_u_raw))
+    df_u <- max(20.0, unit_err_df_tot)
+    R_u_eb <- matrix(0.0, n_units, n_units, dimnames = list(unit_ids, unit_ids))
+    off_mask <- row(R_u_raw) != col(R_u_raw)
+    r_off <- pmin(0.995, pmax(-0.995, R_u_raw[off_mask]))
+    keep_off <- is.finite(r_off) & (abs(r_off) > 0.25 / sqrt(df_u))
+    if (any(keep_off)) {
+      r_k <- r_off[keep_off]
+      var_rk <- ((1.0 - r_k^2)^2) / df_u
+      r_sh <- r_k * (r_k^2 / pmax(r_k^2 + var_rk, 1e-12))
+      r_off_new <- numeric(length(r_off))
+      r_off_new[keep_off] <- pmin(0.98, pmax(-0.98, r_sh))
+      R_u_eb[off_mask] <- r_off_new
+    }
+    diag(R_u_eb) <- 1.0
+    eig_ue <- eigen(R_u_eb, symmetric = TRUE)
+    R_u_psd <- eig_ue$vectors %*% (pmax(eig_ue$values, 1e-4) * t(eig_ue$vectors))
+    du_psd <- sqrt(pmax(diag(R_u_psd), .Machine$double.eps))
+    unit_error_cor <- R_u_psd / outer(du_psd, du_psd)
+    unit_error_cor <- 0.5 * (unit_error_cor + t(unit_error_cor))
+    diag(unit_error_cor) <- 1.0
+    dimnames(unit_error_cor) <- list(unit_ids, unit_ids)
+
+    max_off <- max(abs(unit_error_cor[off_mask]))
+    if (is.finite(max_off) && max_off > 1e-6) {
+      if (n_units == 2L) {
+        r12 <- unit_error_cor[1L, 2L]
+        if (r12 >= 0) {
+          shared_loading_vec[] <- c(sqrt(r12), sqrt(r12))
+        } else {
+          shared_loading_vec[] <- c(sqrt(-r12), -sqrt(-r12))
+        }
+      } else {
+        R_pa <- unit_error_cor
+        diag(R_pa) <- apply(abs(unit_error_cor - diag(n_units)), 1L, max)
+        for (it_pa in seq_len(4L)) {
+          eg_pa <- eigen(0.5 * (R_pa + t(R_pa)), symmetric = TRUE)
+          lv_pa <- eg_pa$vectors[, 1L] * sqrt(max(0.0, eg_pa$values[1L]))
+          if (sum(lv_pa) < 0) lv_pa <- -lv_pa
+          lv_pa <- pmin(0.995, pmax(-0.995, lv_pa))
+          diag(R_pa) <- lv_pa^2
+        }
+        shared_loading_vec[] <- lv_pa
+      }
+    }
   }
 
   has_gain <- gain_count > 0L
@@ -1445,6 +1713,13 @@ decon_epoch_regression <- function(
   X_pool <- do.call(rbind, x_centered_list)
   coef_rows <- vector("list", n_lags * n_units * max(1L, n_terms))
   row_k <- 0L
+  lag_key_names <- sprintf("lag_%g", lags)
+  run_trial_operators <- if (isTRUE(return_panel)) {
+    stats::setNames(
+      lapply(unit_ids, function(uid) stats::setNames(vector("list", n_lags), lag_key_names)),
+      unit_ids
+    )
+  } else NULL
 
   for (li in seq_len(n_lags)) {
     Y_raw_lag <- raw_epochs[[li]]
@@ -1493,6 +1768,8 @@ decon_epoch_regression <- function(
       if (n_ok <= n_terms + 2L) {
         if (any(ok_s_dem)) {
           pw_epochs[[li]][ok_s_dem, vi] <- pw_op_epochs[[li]][ok_s_dem, vi]
+          fl_c <- 0.10 * stats::median(s2_dem_v[ok_s_dem])
+          pw_cohort_epochs[[li]][ok_s_dem, vi] <- 1 / (fl_c + s2_dem_v[ok_s_dem])
         }
         if (n_terms > 0L) {
           for (ti in seq_len(n_terms)) {
@@ -1538,29 +1815,36 @@ decon_epoch_regression <- function(
         next
       }
 
-      # Assemble per-run operator covariance blocks Omega_r = sigma_{e,r,v}^2 * V_{demix,cent}
-      # and compute both covariate-agnostic marginal and OLS-residual biological variance
-      # estimators tau2_bio. Combining tau2_bio with the diagonal of Omega_r yields
-      # Empirical-Bayes trial precision weights w_i = 1 / (tau2_eff + s_{demix,i}^2),
-      # preventing over-weighting high-gain trials when biological variability dominates.
+      # Assemble per-run centered operator covariance blocks Omega_cent_r = ((m_r - 1)/m_r) * Omega_r,
+      # post-demixing trial resolution operators M_post_r, and biological variance tau2_bio.
       Omega_r_list <- vector("list", n_runs)
+      Omega_cent_list <- vector("list", n_runs)
+      M_post_list <- vector("list", n_runs)
       rs_ok_list <- vector("list", n_runs)
+      ok_local_list <- vector("list", n_runs)
+      X_tilde_pool <- if (n_terms > 0L) matrix(NA_real_, total_trials, n_terms) else NULL
       xOx_sum <- if (n_terms > 0L) matrix(0, n_terms, n_terms) else NULL
-      tr_Omega <- 0
+      xM2x_sum <- if (n_terms > 0L) matrix(0, n_terms, n_terms) else NULL
+      tr_Omega_cent <- 0
+      tr_M2_marg <- 0
       ss_marg <- 0
-      tr_Omega_marg <- 0
       df_marg <- 0L
       ss_diff <- 0
       exp_diff_Om <- 0
+      exp_diff_M2 <- 0
       n_diff <- 0L
+      n_runs_active <- 0L
 
       for (r in seq_len(n_runs)) {
         rs <- starts[r]:ends[r]
         ok_r_local <- which(ok_v[rs])
         m_r <- length(ok_r_local)
         if (!m_r) next
+        n_runs_active <- n_runs_active + 1L
         rs_r <- rs[ok_r_local]
         rs_ok_list[[r]] <- rs_r
+        ok_local_list[[r]] <- ok_r_local
+        Q_mr <- if (m_r > 1L) (diag(m_r) - matrix(1.0 / m_r, m_r, m_r)) else matrix(0.0, 1L, 1L)
         key_rv <- if (!is.null(stratum_map[[r]])) stratum_map[[r]][vi] else NULL
         blk_r <- if (!is.null(key_rv)) V_demix_blocks[[li]][[r]][[key_rv]] else NULL
         if (!is.null(blk_r)) {
@@ -1569,60 +1853,96 @@ decon_epoch_regression <- function(
           valid_pos <- !is.na(pos_in_blk)
           if (all(valid_pos)) {
             Omega_r <- (sig_eff_mat[r, vi]^2) * blk_r$V_cent[pos_in_blk, pos_in_blk, drop = FALSE]
+            if (!is.null(blk_r$M_post)) {
+              if (length(pos_in_blk) == nrow(blk_r$M_post)) {
+                M_post_r <- blk_r$M_post
+              } else if (m_r > 1L) {
+                M_post_r <- Q_mr %*% blk_r$M_post[pos_in_blk, pos_in_blk, drop = FALSE] %*% Q_mr
+              } else {
+                M_post_r <- matrix(0.0, 1L, 1L)
+              }
+            } else {
+              M_post_r <- Q_mr
+            }
           } else {
             s2_sub <- s2_dem_v[rs_r]
             s2_sub[!is.finite(s2_sub)] <- 1
             Omega_r <- diag(s2_sub, m_r)
+            M_post_r <- Q_mr
           }
         } else {
           s2_sub <- s2_dem_v[rs_r]
           s2_sub[!is.finite(s2_sub)] <- 1
           Omega_r <- diag(s2_sub, m_r)
+          M_post_r <- Q_mr
+        }
+        Omega_cent_r <- if (m_r > 1L) {
+          ((m_r - 1.0) / m_r) * (Q_mr %*% Omega_r %*% Q_mr)
+        } else {
+          matrix(0.0, 1L, 1L)
         }
         Omega_r_list[[r]] <- Omega_r
-        tr_r <- sum(diag(Omega_r))
-        tr_Omega <- tr_Omega + tr_r
+        Omega_cent_list[[r]] <- Omega_cent_r
+        M_post_list[[r]] <- M_post_r
+        M2_r <- tcrossprod(M_post_r)
+
+        tr_Omega_cent <- tr_Omega_cent + sum(diag(Omega_cent_r))
+        tr_M2_marg <- tr_M2_marg + sum(diag(M2_r))
         if (m_r >= 2L) {
           yr_dem_r <- demixed_epochs[[li]][rs_r, vi]
           yr_c_r <- yr_dem_r - mean(yr_dem_r)
           ss_marg <- ss_marg + sum(yr_c_r^2)
-          tr_Omega_marg <- tr_Omega_marg + ((m_r - 1.0) / m_r) * tr_r
           df_marg <- df_marg + (m_r - 1L)
-          dy_r <- diff(yr_dem_r)
+          dy_r <- diff(yr_c_r)
           ss_diff <- ss_diff + sum(dy_r^2)
-          diag_Om <- diag(Omega_r)
-          off1_Om <- Omega_r[cbind(2:m_r, 1:(m_r - 1L))]
+          diag_Om <- diag(Omega_cent_r)
+          off1_Om <- Omega_cent_r[cbind(2:m_r, 1:(m_r - 1L))]
           exp_diff_Om <- exp_diff_Om + sum(diag_Om[-1L] + diag_Om[-m_r] - 2.0 * off1_Om)
+          diag_M2 <- diag(M2_r)
+          off1_M2 <- M2_r[cbind(2:m_r, 1:(m_r - 1L))]
+          exp_diff_M2 <- exp_diff_M2 + sum(diag_M2[-1L] + diag_M2[-m_r] - 2.0 * off1_M2)
           n_diff <- n_diff + (m_r - 1L)
         }
         if (n_terms > 0L) {
-          Xr_ok <- X_pool[rs_r, , drop = FALSE]
-          xOx_sum <- xOx_sum + crossprod(Xr_ok, Omega_r %*% Xr_ok)
+          Xr_raw_sub <- X_raw_pool[rs_r, , drop = FALSE]
+          Xr_cent_sub <- if (m_r > 1L) {
+            sweep(Xr_raw_sub, 2L, colMeans(Xr_raw_sub), "-")
+          } else {
+            matrix(0.0, 1L, n_terms)
+          }
+          Xr_tilde_sub <- M_post_r %*% Xr_cent_sub
+          X_tilde_pool[rs_r, ] <- Xr_tilde_sub
+          xOx_sum <- xOx_sum + crossprod(Xr_tilde_sub, Omega_cent_r %*% Xr_tilde_sub)
+          xM2x_sum <- xM2x_sum + crossprod(Xr_tilde_sub, M2_r %*% Xr_tilde_sub)
         }
       }
 
       s2_ok <- s2_dem_v[ok_v]
       s2_med <- if (any(is.finite(s2_ok) & s2_ok > 0)) stats::median(s2_ok[is.finite(s2_ok) & s2_ok > 0]) else 1
-      tau2_var <- if (df_marg >= 1L) max(0, (ss_marg - tr_Omega_marg) / df_marg) else 0
-      tau2_diff <- if (n_diff >= 1L) max(0, (ss_diff - exp_diff_Om) / (2.0 * n_diff)) else 0
+      tau2_var <- if (tr_M2_marg > 1e-6) max(0, (ss_marg - tr_Omega_cent) / tr_M2_marg) else 0
+      tau2_diff <- if (exp_diff_M2 > 1e-6) max(0, (ss_diff - exp_diff_Om) / exp_diff_M2) else 0
       mad_y <- stats::mad(y_dem_v[ok_v], constant = 1.4826, na.rm = TRUE)
-      tau2_mad <- if (is.finite(mad_y)) max(0, mad_y^2 - s2_med) else 0
+      s2_cent_med <- s2_med * max(0.5, df_marg / max(1, n_ok))
+      tau2_mad <- if (is.finite(mad_y)) max(0, mad_y^2 - s2_cent_med) else 0
       tau2_marginal <- 0.45 * tau2_var + 0.35 * tau2_diff + 0.20 * tau2_mad
 
       if (n_terms > 0L) {
         X_ok <- X_pool[ok_v, , drop = FALSE]
+        X_tilde_ok <- X_tilde_pool[ok_v, , drop = FALSE]
         xtx_raw <- crossprod(X_ok) + 1e-8 * diag(n_terms)
         xtx_inv_raw <- solve(xtx_raw)
         beta_raw_v <- as.numeric(xtx_inv_raw %*% crossprod(X_ok, y_raw_v[ok_v]))
-        beta_unw_v <- as.numeric(xtx_inv_raw %*% crossprod(X_ok, y_dem_v[ok_v]))
 
-        resid_unw <- y_dem_v[ok_v] - as.numeric(X_ok %*% beta_unw_v)
-        df_v <- max(1L, n_ok - n_terms - n_runs)
-        sigma2_unw <- sum(resid_unw^2) / df_v
-        se_unw_naive <- sqrt(pmax(diag(xtx_inv_raw) * sigma2_unw, .Machine$double.eps))
+        xtx_tilde <- crossprod(X_tilde_ok) + 1e-8 * diag(n_terms)
+        xtx_inv_tilde <- solve(xtx_tilde)
+        beta_unw_v <- as.numeric(xtx_inv_tilde %*% crossprod(X_tilde_ok, y_dem_v[ok_v]))
 
-        tr_proj_Omega <- max(0, tr_Omega - sum(diag(xtx_inv_raw %*% xOx_sum)))
-        tau2_resid <- max(0, (sum(resid_unw^2) - tr_proj_Omega) / df_v)
+        resid_unw <- y_dem_v[ok_v] - as.numeric(X_tilde_ok %*% beta_unw_v)
+        df_v <- max(1L, n_ok - n_terms - max(1L, n_runs_active))
+
+        tr_proj_Omega <- max(0, tr_Omega_cent - sum(diag(xtx_inv_tilde %*% xOx_sum)))
+        denom_resid <- max(1.0, tr_M2_marg - sum(diag(xtx_inv_tilde %*% xM2x_sum)))
+        tau2_resid <- max(0, (sum(resid_unw^2) - tr_proj_Omega) / denom_resid)
         tau2_bio <- if (identical(eff_tau2_mode, "marginal")) {
           tau2_marginal
         } else if (identical(eff_tau2_mode, "residual")) {
@@ -1631,7 +1951,7 @@ decon_epoch_regression <- function(
           0.65 * tau2_resid + 0.35 * tau2_marginal
         }
       } else {
-        df_v <- max(1L, n_ok - n_runs)
+        df_v <- max(1L, n_ok - max(1L, n_runs_active))
         tau2_bio <- tau2_marginal
       }
       tau2_bio_epochs[[li]][, vi] <- tau2_bio
@@ -1639,9 +1959,11 @@ decon_epoch_regression <- function(
 
       if (any(ok_s_dem)) {
         w_eb_all <- 1 / (tau2_eff + s2_dem_v[ok_s_dem])
+        pw_cohort_epochs[[li]][ok_s_dem, vi] <- w_eb_all
         pw_epochs[[li]][ok_s_dem, vi] <- w_eb_all / mean(w_eb_all)
         rel_epochs[[li]][ok_s_dem, vi] <- tau2_eff / (tau2_eff + s2_dem_v[ok_s_dem])
       } else {
+        pw_cohort_epochs[[li]][ok_v, vi] <- 1
         pw_epochs[[li]][ok_v, vi] <- 1
         rel_epochs[[li]][ok_v, vi] <- 1
       }
@@ -1658,7 +1980,8 @@ decon_epoch_regression <- function(
       }
 
       if (n_terms == 0L) {
-        if (isTRUE(whiten_panel)) {
+        if (isTRUE(whiten_panel) || !is.null(run_trial_operators)) {
+          run_ops_ul <- stats::setNames(vector("list", n_runs), fit$run_ids)
           for (r in seq_len(n_runs)) {
             rs_ok <- rs_ok_list[[r]]
             m_r <- length(rs_ok)
@@ -1666,16 +1989,31 @@ decon_epoch_regression <- function(
             yr_raw <- demixed_epochs[[li]][rs_ok, vi]
             yr_cent <- yr_raw - mean(yr_raw)
             Omega_r <- Omega_r_list[[r]]
-            tau2_zca <- max(tau2_eff, 0.15 * s2_med)
-            Sigma_tot_r <- Omega_r + diag(tau2_zca, m_r)
-            Phi_r <- compute_zca_whitening_matrix(Sigma_tot_r, eig_floor = 0.05, offdiag_scale = 0.85)
-            yr_zca <- as.numeric(Phi_r %*% yr_cent)
-            s2_zca_r <- pmax(0, rowSums((Phi_r %*% Omega_r) * Phi_r))
-            se_zca_r <- sqrt(s2_zca_r)
-            rel_zca_r <- tau2_eff / (tau2_eff + s2_zca_r)
-            whitened_y_epochs[[li]][rs_ok, vi] <- mean(yr_raw) + yr_zca
-            se_whitened_epochs[[li]][rs_ok, vi] <- se_zca_r
-            eb_whitened_y_epochs[[li]][rs_ok, vi] <- mean(yr_raw) + rel_zca_r * yr_zca
+            Omega_cent_r <- Omega_cent_list[[r]]
+            M_post_r <- M_post_list[[r]]
+            Phi_r <- NULL
+            if (isTRUE(whiten_panel)) {
+              tau2_zca <- max(tau2_eff, 0.15 * s2_med)
+              Sigma_tot_r <- Omega_cent_r + tau2_zca * tcrossprod(M_post_r)
+              Phi_r <- compute_zca_whitening_matrix(Sigma_tot_r, eig_floor = 0.08, offdiag_scale = 0.90)
+              yr_zca <- as.numeric(Phi_r %*% yr_cent)
+              s2_zca_r <- pmax(0, rowSums((Phi_r %*% Omega_r) * Phi_r))
+              se_zca_r <- sqrt(s2_zca_r)
+              rel_zca_r <- tau2_eff / (tau2_eff + s2_zca_r)
+              whitened_y_epochs[[li]][rs_ok, vi] <- mean(yr_raw) + yr_zca
+              se_whitened_epochs[[li]][rs_ok, vi] <- se_zca_r
+              eb_whitened_y_epochs[[li]][rs_ok, vi] <- mean(yr_raw) + rel_zca_r * yr_zca
+            }
+            if (!is.null(run_trial_operators)) {
+              run_ops_ul[[r]] <- list(
+                ok_r_local = ok_local_list[[r]],
+                M_post = M_post_r,
+                Phi_zca = Phi_r
+              )
+            }
+          }
+          if (!is.null(run_trial_operators)) {
+            run_trial_operators[[vi]][[li]] <- run_ops_ul
           }
         }
         row_k <- row_k + 1L
@@ -1699,13 +2037,14 @@ decon_epoch_regression <- function(
         next
       }
 
-      # Precision-weighted WLS and within-run ZCA-whitened GLS
+      # Resolution-restored precision-weighted WLS and within-run ZCA-whitened GLS
       X_w_ok <- matrix(0, n_ok, n_terms)
       y_w_ok <- numeric(n_ok)
       X_gls_ok <- matrix(0, n_ok, n_terms)
       y_gls_ok <- numeric(n_ok)
       w_ok <- numeric(n_ok)
       Sigma_tot_list <- vector("list", n_runs)
+      run_ops_ul <- if (!is.null(run_trial_operators)) stats::setNames(vector("list", n_runs), fit$run_ids) else NULL
       pos_cursor <- 0L
 
       for (r in seq_len(n_runs)) {
@@ -1719,34 +2058,46 @@ decon_epoch_regression <- function(
         w_ok[idx_span] <- wr
 
         yr_raw <- demixed_epochs[[li]][rs_ok, vi]
+        yr_cent <- yr_raw - mean(yr_raw)
         Xr_raw <- X_raw_pool[rs_ok, , drop = FALSE]
-        mu_y_w <- sum(wr * yr_raw) / sum(wr)
-        mu_X_w <- colSums(Xr_raw * wr) / sum(wr)
-        yr_w <- yr_raw - mu_y_w
-        Xr_w <- sweep(Xr_raw, 2L, mu_X_w, "-")
-        y_w_ok[idx_span] <- yr_w
-        X_w_ok[idx_span, ] <- Xr_w
+        Xr_tilde <- X_tilde_pool[rs_ok, , drop = FALSE]
+
+        Q_wr <- if (m_r > 1L) {
+          diag(m_r) - outer(rep(1.0, m_r), wr / sum(wr))
+        } else {
+          matrix(0.0, 1L, 1L)
+        }
+        y_w_ok[idx_span] <- as.numeric(Q_wr %*% yr_cent)
+        X_w_ok[idx_span, ] <- Q_wr %*% Xr_tilde
 
         Omega_r <- Omega_r_list[[r]]
+        Omega_cent_r <- Omega_cent_list[[r]]
+        M_post_r <- M_post_list[[r]]
         tau2_zca <- max(tau2_eff, 0.15 * s2_med)
-        Sigma_tot_r <- Omega_r + diag(tau2_zca, m_r)
-        Sigma_tot_list[[r]] <- list(idx = idx_span, Sigma = Sigma_tot_r, wr = wr)
+        Sigma_tot_r <- Omega_cent_r + tau2_zca * tcrossprod(M_post_r)
+        Sigma_w_r <- Q_wr %*% Sigma_tot_r %*% t(Q_wr)
 
-        yr_cent <- yr_raw - mean(yr_raw)
-        Xr_cent <- sweep(Xr_raw, 2L, colMeans(Xr_raw), "-")
-        rho_x_r <- if (m_r >= 4L) {
-          max(vapply(seq_len(n_terms), function(ti) {
-            xv <- Xr_cent[, ti]
-            if (stats::sd(xv) > 1e-10) abs(stats::cor(xv[-1L], xv[-m_r])) else 0.0
-          }, numeric(1L)), na.rm = TRUE)
-        } else {
-          1.0
-        }
-        if (!is.finite(rho_x_r)) rho_x_r <- 0.5
-        gamma_r <- min(1.0, max(0.25, 1.8 * rho_x_r))
-        Phi_r <- compute_zca_whitening_matrix(Sigma_tot_r, eig_floor = 0.05, offdiag_scale = gamma_r)
+        Phi_r <- compute_zca_whitening_matrix(Sigma_tot_r, eig_floor = 0.08, offdiag_scale = 0.90)
         yr_zca <- as.numeric(Phi_r %*% yr_cent)
-        Xr_zca <- Phi_r %*% Xr_cent
+        Xr_zca <- Phi_r %*% Xr_tilde
+        Sigma_zca_tot_r <- Phi_r %*% Sigma_tot_r %*% t(Phi_r)
+        Sigma_gls_r <- Q_wr %*% Sigma_zca_tot_r %*% t(Q_wr)
+
+        Sigma_tot_list[[r]] <- list(
+          idx = idx_span,
+          Sigma_unw = Sigma_tot_r,
+          Sigma_pw = Sigma_w_r,
+          Sigma_gls = Sigma_gls_r,
+          wr = wr
+        )
+        if (!is.null(run_ops_ul)) {
+          run_ops_ul[[r]] <- list(
+            ok_r_local = ok_local_list[[r]],
+            M_post = M_post_r,
+            Phi_zca = if (isTRUE(whiten_panel)) Phi_r else NULL
+          )
+        }
+
         if (isTRUE(whiten_panel)) {
           s2_zca_r <- pmax(0, rowSums((Phi_r %*% Omega_r) * Phi_r))
           se_zca_r <- sqrt(s2_zca_r)
@@ -1758,11 +2109,29 @@ decon_epoch_regression <- function(
             whitened_x_epochs[[li]][[ti]][rs_ok, vi] <- mean(Xr_raw[, ti]) + Xr_zca[, ti]
           }
         }
-        mu_y_gls <- sum(wr * yr_zca) / sum(wr)
-        mu_X_gls <- colSums(Xr_zca * wr) / sum(wr)
-        y_gls_ok[idx_span] <- yr_zca - mu_y_gls
-        X_gls_ok[idx_span, ] <- sweep(Xr_zca, 2L, mu_X_gls, "-")
+        y_gls_ok[idx_span] <- as.numeric(Q_wr %*% yr_zca)
+        X_gls_ok[idx_span, ] <- Q_wr %*% Xr_zca
       }
+      if (!is.null(run_trial_operators)) {
+        run_trial_operators[[vi]][[li]] <- run_ops_ul
+      }
+
+      # Covariance-propagated sandwich SE for unweighted estimator
+      meat_unw <- matrix(0, n_terms, n_terms)
+      tr_Sigma_unw <- 0
+      for (r in seq_len(n_runs)) {
+        st_r <- Sigma_tot_list[[r]]
+        if (is.null(st_r)) next
+        idx_r <- st_r$idx
+        X_u_r <- X_tilde_ok[idx_r, , drop = FALSE]
+        Sigma_u_r <- st_r$Sigma_unw
+        meat_u_r <- crossprod(X_u_r, Sigma_u_r %*% X_u_r)
+        meat_unw <- meat_unw + meat_u_r
+        tr_Sigma_unw <- tr_Sigma_unw + sum(diag(Sigma_u_r)) - sum(diag(xtx_inv_tilde %*% meat_u_r))
+      }
+      scale_unw <- max(0.25, sum(resid_unw^2) / max(tr_Sigma_unw, 1e-8))
+      cov_beta_unw <- scale_unw * (xtx_inv_tilde %*% meat_unw %*% xtx_inv_tilde)
+      se_unw_v <- sqrt(pmax(diag(cov_beta_unw), .Machine$double.eps))
 
       w_ok <- w_ok / mean(w_ok)
       WX_w <- X_w_ok * w_ok
@@ -1779,7 +2148,7 @@ decon_epoch_regression <- function(
         if (is.null(st_r)) next
         idx_r <- st_r$idx
         WX_r <- WX_w[idx_r, , drop = FALSE]
-        Sigma_r <- st_r$Sigma
+        Sigma_r <- st_r$Sigma_pw
         wr <- w_ok[idx_r]
         meat_r <- crossprod(WX_r, Sigma_r %*% WX_r)
         meat_pw <- meat_pw + meat_r
@@ -1789,16 +2158,30 @@ decon_epoch_regression <- function(
       cov_beta_pw <- scale_pw * (xwx_inv %*% meat_pw %*% xwx_inv)
       se_pw_v <- sqrt(pmax(diag(cov_beta_pw), .Machine$double.eps))
 
-      # ZCA-whitened block-GLS estimator
+      # ZCA-whitened block-GLS estimator with trace-calibrated post-ZCA sandwich covariance
       WX_gls <- X_gls_ok * w_ok
       xwx_gls <- crossprod(X_gls_ok, WX_gls) + 1e-8 * diag(n_terms)
       xwx_gls_inv <- solve(xwx_gls)
       beta_gls_v <- as.numeric(xwx_gls_inv %*% crossprod(WX_gls, y_gls_ok))
       resid_gls <- y_gls_ok - as.numeric(X_gls_ok %*% beta_gls_v)
-      sigma2_gls <- sum(w_ok * (resid_gls^2)) / df_v
-      se_gls_v <- sqrt(pmax(diag(xwx_gls_inv) * sigma2_gls, .Machine$double.eps))
+      meat_gls <- matrix(0, n_terms, n_terms)
+      tr_W_Sigma_gls <- 0
+      for (r in seq_len(n_runs)) {
+        st_r <- Sigma_tot_list[[r]]
+        if (is.null(st_r)) next
+        idx_r <- st_r$idx
+        WX_g_r <- WX_gls[idx_r, , drop = FALSE]
+        Sigma_g_r <- st_r$Sigma_gls
+        wr_g <- w_ok[idx_r]
+        meat_g_r <- crossprod(WX_g_r, Sigma_g_r %*% WX_g_r)
+        meat_gls <- meat_gls + meat_g_r
+        tr_W_Sigma_gls <- tr_W_Sigma_gls + sum(wr_g * diag(Sigma_g_r)) - sum(diag(xwx_gls_inv %*% meat_g_r))
+      }
+      scale_gls <- max(0.25, sum(w_ok * (resid_gls^2)) / max(tr_W_Sigma_gls, 1e-8))
+      cov_beta_gls <- scale_gls * (xwx_gls_inv %*% meat_gls %*% xwx_gls_inv)
+      se_gls_v <- sqrt(pmax(diag(cov_beta_gls), .Machine$double.eps))
 
-      t_unw_vec <- beta_unw_v / se_unw_naive
+      t_unw_vec <- beta_unw_v / se_unw_v
       t_pw_vec <- beta_pw_v / se_pw_v
       t_gls_vec <- beta_gls_v / se_gls_v
 
@@ -1812,25 +2195,26 @@ decon_epoch_regression <- function(
         t_corr_vec <- t_gls_vec
       } else {
         beta_corr_v <- beta_unw_v
-        se_corr_v <- se_unw_naive
+        se_corr_v <- se_unw_v
         t_corr_vec <- t_unw_vec
       }
       p_corr_vec <- 2 * stats::pt(abs(t_corr_vec), df = df_v, lower.tail = FALSE)
 
       for (ti in seq_len(n_terms)) {
         xk <- X_ok[, ti]
+        xk_tilde <- X_tilde_ok[, ti]
         r_raw_val <- if (stats::sd(xk) > 0 && stats::sd(y_raw_v[ok_v]) > 0) {
           stats::cor(xk, y_raw_v[ok_v])
         } else NA_real_
-        r_dem_val <- if (stats::sd(xk) > 0 && stats::sd(y_dem_v[ok_v]) > 0) {
-          stats::cor(xk, y_dem_v[ok_v])
+        r_dem_val <- if (stats::sd(xk_tilde) > 0 && stats::sd(y_dem_v[ok_v]) > 0) {
+          stats::cor(xk_tilde, y_dem_v[ok_v])
         } else NA_real_
         row_k <- row_k + 1L
         df_row <- data.frame(
           voxel = unit_ids[vi], lag = lags[li], term = term_names[ti],
           beta_raw = beta_raw_v[ti], beta_corrected = beta_corr_v[ti],
           beta_unweighted = beta_unw_v[ti], beta_weighted = beta_pw_v[ti], beta_gls = beta_gls_v[ti],
-          se_corrected = se_corr_v[ti], se_unweighted = se_unw_naive[ti],
+          se_corrected = se_corr_v[ti], se_unweighted = se_unw_v[ti],
           se_weighted = se_pw_v[ti], se_gls = se_gls_v[ti],
           r_raw = r_raw_val, r_demixed = r_dem_val,
           t_stat = t_corr_vec[ti], p_value = p_corr_vec[ti],
@@ -1970,6 +2354,7 @@ decon_epoch_regression <- function(
     evt_idx_vec <- unlist(target_idx_list, use.names = FALSE)
     onset_vec <- unlist(lapply(seq_len(n_runs), function(r) events[[r]]$onset[target_idx_list[[r]]]), use.names = FALSE)
     cov_full <- if (n_terms > 0L) as.data.frame(do.call(rbind, cov_list)) else NULL
+    shared_load_rep <- rep(as.numeric(shared_loading_vec), each = total_trials)
 
     panel_list <- vector("list", n_lags)
     for (li in seq_len(n_lags)) {
@@ -1987,10 +2372,12 @@ decon_epoch_regression <- function(
         se_demixed = as.numeric(se_demixed_epochs[[li]]),
         reliability_trial = as.numeric(rel_epochs[[li]]),
         precision_weight = as.numeric(pw_epochs[[li]]),
+        precision_weight_cohort = as.numeric(pw_cohort_epochs[[li]]),
         precision_weight_op = as.numeric(pw_op_epochs[[li]]),
         precision_weight_raw = as.numeric(pw_raw_epochs[[li]]),
         error_ac1 = as.numeric(error_ac1_epochs[[li]]),
-        tau2_bio = as.numeric(tau2_bio_epochs[[li]])
+        tau2_bio = as.numeric(tau2_bio_epochs[[li]]),
+        shared_noise_loading = shared_load_rep
       )
       if (isTRUE(aggregate_by_parcel)) {
         base_meta[["parcel"]] <- base_meta[["voxel"]]
@@ -2017,6 +2404,11 @@ decon_epoch_regression <- function(
     attr(panel_dt, "lag_error_cov") <- lag_error_cov
     attr(panel_dt, "lag_error_cor") <- lag_error_cor
     attr(panel_dt, "lag_resolution") <- lag_resolution
+    attr(panel_dt, "unit_error_cor") <- unit_error_cor
+    attr(panel_dt, "run_trial_operators") <- run_trial_operators
+    attr(panel_dt, "tr") <- fit$settings$tr
+    attr(panel_dt, "raw_gain_by_lag_unit") <- gain_by_lag_voxel
+    attr(panel_dt, "demix_target_trials") <- isTRUE(demix_target_trials)
   }
 
   list(
@@ -2031,6 +2423,7 @@ decon_epoch_regression <- function(
         se_demixed = se_demixed_epochs,
         reliability_trial = rel_epochs,
         precision_weight = pw_epochs,
+        precision_weight_cohort = pw_cohort_epochs,
         precision_weight_op = pw_op_epochs,
         error_ac1 = error_ac1_epochs,
         tau2_bio = tau2_bio_epochs,
@@ -2044,6 +2437,8 @@ decon_epoch_regression <- function(
     lag_error_cov = lag_error_cov,
     lag_error_cor = lag_error_cor,
     lag_resolution = lag_resolution,
+    unit_error_cor = unit_error_cor,
+    run_trial_operators = run_trial_operators,
     settings = list(
       target_condition = target_condition,
       lags = lags,
@@ -2171,14 +2566,30 @@ medusa_fit_mmom_fallback <- function(
   des_mom_1 <- crossprod(design)
   out_mom_1 <- as.numeric(crossprod(design, y))
 
+  psd_latent_gram <- function(M_obs, E_cov, c_val) {
+    # Subtract full unbiased error covariance (including off-diagonal shared predictor error),
+    # project latent Gram matrix onto PSD cone if small-sample noise induces negative curvature,
+    # and apply Fuller's (1 - c) modification strictly to the diagonal ridge so shared error
+    # covariance between predictors never leaks across columns when c < 1.
+    Sig_lat <- 0.5 * ((M_obs - E_cov) + t(M_obs - E_cov))
+    if (p > 2L) {
+      eg_s <- eigen(Sig_lat[pred_idx, pred_idx, drop = FALSE], symmetric = TRUE)
+      if (min(eg_s$values) < 0.0) {
+        Sig_lat[pred_idx, pred_idx] <- eg_s$vectors %*% (pmax(eg_s$values, 0.0) * t(eg_s$vectors))
+      }
+    }
+    D_err <- diag(diag(E_cov), p)
+    Sig_lat + (1.0 - c_val) * D_err
+  }
+
   eval_fixed <- function(alpha_1, corr_1, alpha_2, corr_2) {
     c1 <- if (identical(corr_1, "none") || max(abs(err_mom_1)) <= .Machine$double.eps) {
       1.0
     } else {
       max(0.0, medusa_mmom_correction(lam_1, nobs, alpha_1))
     }
-    S1_x <- des_mom_1 - c1 * err_cov_design_1
-    s1_xy <- out_mom_1 - c1 * exy_sum_1
+    S1_x <- psd_latent_gram(des_mom_1, err_cov_design_1, c1)
+    s1_xy <- out_mom_1 - exy_sum_1
     coef0 <- tryCatch(as.numeric(qr.solve(S1_x, s1_xy)), error = function(e) NULL)
     if (is.null(coef0) || any(!is.finite(coef0))) {
       return(list(converged = FALSE, S1_x = S1_x, c1 = c1, lam_1 = lam_1))
@@ -2216,9 +2627,8 @@ medusa_fit_mmom_fallback <- function(
     } else {
       max(0.0, medusa_mmom_correction(lam_2, nobs, alpha_2))
     }
-    corr_mom_2 <- w_mom - c2 * err_mom_2
-    S2_x <- corr_mom_2[2L:(p + 1L), 2L:(p + 1L), drop = FALSE]
-    s2_xy <- corr_mom_2[2L:(p + 1L), 1L]
+    S2_x <- psd_latent_gram(w_mom[2L:(p + 1L), 2L:(p + 1L), drop = FALSE], err_cov_design_2, c2)
+    s2_xy <- w_mom[2L:(p + 1L), 1L] - exy_sum_2
     coef2 <- tryCatch(as.numeric(qr.solve(S2_x, s2_xy)), error = function(e) NULL)
     if (is.null(coef2) || any(!is.finite(coef2))) {
       return(list(converged = FALSE, S1_x = S1_x, S2_x = S2_x, c1 = c1, c2 = c2, lam_1 = lam_1, lam_2 = lam_2))
@@ -2448,7 +2858,12 @@ medusa_fit_mmom <- function(
     err_xy = as.matrix(err_xy)
   )
 
-  if (requireNamespace("repair", quietly = TRUE)) {
+  has_offdiag_err_x <- FALSE
+  if (q >= 2L) {
+    ex_tot <- apply(abs(err_x), c(1L, 2L), sum)
+    has_offdiag_err_x <- any(ex_tot[row(ex_tot) != col(ex_tot)] > 1e-12)
+  }
+  if (max(abs(err_xy)) <= 1e-12 && !has_offdiag_err_x && requireNamespace("repair", quietly = TRUE)) {
     rfit <- tryCatch(
       repair::fit_mmom(
         data_list = data_list,
@@ -2540,6 +2955,22 @@ medusa_fit_mmom <- function(
 #'   \code{"voxel"}).
 #' @param id_col Column name identifying subjects in \code{panel_dt} (default
 #'   \code{"id"}).
+#' @param shared_error Policy for cross-parcel shared observation-error covariance
+#'   between seed and target readouts: \code{"auto"} (default; propagates Stage-2/3
+#'   Empirical-Bayes prewhitened innovation correlation \code{unit_error_cor} or
+#'   \code{shared_noise_loading}), \code{"zero"} (assumes zero cross-parcel noise
+#'   correlation while still propagating same-parcel cross-lag error correlation when
+#'   \code{control_target_seed_lag = TRUE}), or \code{"supplied"} (reads per-trial raw
+#'   seed--target error covariance from \code{err_xy_col}).
+#' @param err_xy_col Optional column name supplying per-trial raw seed--target error
+#'   covariance when \code{shared_error = "supplied"}.
+#' @param run_col Run identifier column name (default \code{"run"}).
+#' @param trial_col Within-run trial identifier column name (default \code{"trial"}).
+#' @param lag_col Within-trial lag column name (default \code{"evt_time"}).
+#' @param y_col Optional readout column override.
+#' @param se_col Optional trial standard-error column override.
+#' @param eb_col Optional Empirical-Bayes trial readout column override.
+#' @param modulator Optional alias for \code{covariates}.
 #' @param return_augmented_panel Logical; if \code{TRUE}, returns the merged
 #'   trial panel augmented with moment-preserving REPAIR predictor columns
 #'   (\code{seed_repair}, \code{ppi_repair}, \code{repair_weight}) that reproduce
@@ -2560,13 +2991,95 @@ decon_connectivity_repair <- function(
   control_target_seed_lag = FALSE,
   orthogonalize_seed_x = TRUE,
   method = c("mmoms", "mmom", "eb_predictor", "naive_gls", "naive_unweighted"),
+  shared_error = c("auto", "zero", "supplied"),
+  err_xy_col = NULL,
   use_whitened = NULL,
   region_col = NULL,
   id_col = "id",
+  run_col = "run",
+  trial_col = "trial",
+  lag_col = "evt_time",
+  y_col = NULL,
+  se_col = NULL,
+  eb_col = NULL,
+  modulator = NULL,
   return_augmented_panel = FALSE
 ) {
   method <- match.arg(method)
-  dt <- data.table::copy(data.table::as.data.table(panel_dt))
+  shared_error <- match.arg(shared_error)
+  if (is.null(covariates) && !is.null(modulator)) {
+    covariates <- modulator
+  }
+
+  # Unpack panel_dt (single decon_epoch_regression result, list of per-subject results/panels, or data.frame)
+  subj_unit_cor_map <- list()
+  subj_lag_cor_map <- list()
+  unit_cor_global <- NULL
+  lag_cor_global <- NULL
+  raw_gain_global <- NULL
+  demix_flag_global <- TRUE
+  tr_ref <- 1.0
+
+  if (is.list(panel_dt) && !is.data.frame(panel_dt)) {
+    if (!is.null(panel_dt$panel) && is.data.frame(panel_dt$panel)) {
+      p0 <- panel_dt$panel
+      unit_cor_global <- if (!is.null(panel_dt$unit_error_cor)) panel_dt$unit_error_cor else attr(p0, "unit_error_cor")
+      lag_cor_global <- if (!is.null(panel_dt$lag_error_cor)) panel_dt$lag_error_cor else attr(p0, "lag_error_cor")
+      raw_gain_global <- attr(p0, "raw_gain_by_lag_unit")
+      if (!is.null(panel_dt$settings$demix_target_trials)) {
+        demix_flag_global <- isTRUE(panel_dt$settings$demix_target_trials)
+      } else if (!is.null(attr(p0, "demix_target_trials"))) {
+        demix_flag_global <- isTRUE(attr(p0, "demix_target_trials"))
+      }
+      if (!is.null(attr(p0, "tr")) && is.finite(attr(p0, "tr"))) tr_ref <- as.numeric(attr(p0, "tr"))
+      dt <- data.table::copy(data.table::as.data.table(p0))
+    } else if (length(panel_dt) >= 1L) {
+      sub_names <- names(panel_dt)
+      if (is.null(sub_names)) sub_names <- sprintf("sub%03d", seq_along(panel_dt))
+      dt_parts <- vector("list", length(panel_dt))
+      for (idx_p in seq_along(panel_dt)) {
+        el <- panel_dt[[idx_p]]
+        if (is.list(el) && !is.data.frame(el) && !is.null(el$panel)) {
+          p_i <- el$panel
+          uc_i <- if (!is.null(el$unit_error_cor)) el$unit_error_cor else attr(p_i, "unit_error_cor")
+          lc_i <- if (!is.null(el$lag_error_cor)) el$lag_error_cor else attr(p_i, "lag_error_cor")
+          if (!is.null(el$settings$demix_target_trials)) demix_flag_global <- isTRUE(el$settings$demix_target_trials)
+        } else if (is.data.frame(el)) {
+          p_i <- el
+          uc_i <- attr(p_i, "unit_error_cor")
+          lc_i <- attr(p_i, "lag_error_cor")
+          if (!is.null(attr(p_i, "demix_target_trials"))) demix_flag_global <- isTRUE(attr(p_i, "demix_target_trials"))
+        } else {
+          stop("Unsupported element in `panel_dt` list passed to `decon_connectivity_repair()`.")
+        }
+        if (!is.null(attr(p_i, "tr")) && is.finite(attr(p_i, "tr"))) tr_ref <- as.numeric(attr(p_i, "tr"))
+        if (is.null(raw_gain_global) && !is.null(attr(p_i, "raw_gain_by_lag_unit"))) {
+          raw_gain_global <- attr(p_i, "raw_gain_by_lag_unit")
+        }
+        dt_i <- data.table::copy(data.table::as.data.table(p_i))
+        sid_i <- if (id_col %in% names(dt_i)) as.character(dt_i[[id_col]][1L]) else sub_names[idx_p]
+        if (!(id_col %in% names(dt_i))) dt_i[, (id_col) := sid_i]
+        if (!is.null(uc_i)) subj_unit_cor_map[[sid_i]] <- uc_i
+        if (!is.null(lc_i)) subj_lag_cor_map[[sid_i]] <- lc_i
+        dt_parts[[idx_p]] <- dt_i
+      }
+      dt <- data.table::rbindlist(dt_parts, fill = TRUE)
+    } else {
+      stop("Empty list supplied to `decon_connectivity_repair()`.")
+    }
+  } else {
+    unit_cor_global <- attr(panel_dt, "unit_error_cor")
+    lag_cor_global <- attr(panel_dt, "lag_error_cor")
+    raw_gain_global <- attr(panel_dt, "raw_gain_by_lag_unit")
+    if (!is.null(attr(panel_dt, "demix_target_trials"))) {
+      demix_flag_global <- isTRUE(attr(panel_dt, "demix_target_trials"))
+    }
+    if (!is.null(attr(panel_dt, "tr")) && is.finite(attr(panel_dt, "tr"))) {
+      tr_ref <- as.numeric(attr(panel_dt, "tr"))
+    }
+    dt <- data.table::copy(data.table::as.data.table(panel_dt))
+  }
+
   if (is.null(region_col)) {
     for (cand in c("region", "parcel", "voxel")) {
       if (cand %in% names(dt)) {
@@ -2581,8 +3094,24 @@ decon_connectivity_repair <- function(
   if (!(id_col %in% names(dt))) {
     dt[, (id_col) := "sub001"]
   }
-  if (!("run" %in% names(dt))) {
-    dt[, run := "run1"]
+  if (!(run_col %in% names(dt))) {
+    dt[, (run_col) := "run1"]
+  }
+  if (!(lag_col %in% names(dt))) {
+    alt_lag <- intersect(c("evt_time", "lag"), names(dt))[1L]
+    if (!is.na(alt_lag)) {
+      lag_col <- alt_lag
+    } else {
+      dt[, (lag_col) := 0.0]
+    }
+  }
+  if (!(trial_col %in% names(dt))) {
+    dt[, (trial_col) := seq_len(.N), by = c(id_col, run_col, region_col, lag_col)]
+  }
+  if (identical(shared_error, "supplied")) {
+    if (is.null(err_xy_col) || !(err_xy_col %in% names(dt))) {
+      stop("`shared_error = 'supplied'` requires a valid `err_xy_col` present in `panel_dt`.")
+    }
   }
   if (is.null(covariates)) {
     covariates <- if ("x" %in% names(dt)) "x" else character(0L)
@@ -2596,43 +3125,70 @@ decon_connectivity_repair <- function(
     use_whitened <- identical(method, "naive_gls")
   }
 
-  y_col <- if (isTRUE(use_whitened) && "decon_demixed_whitened" %in% names(dt)) {
-    "decon_demixed_whitened"
-  } else if ("decon_demixed" %in% names(dt)) {
-    "decon_demixed"
-  } else if ("beta_lss" %in% names(dt)) {
-    "beta_lss"
-  } else {
-    "decon_raw"
+  if (is.null(y_col) || !(y_col %in% names(dt))) {
+    y_col <- if (isTRUE(use_whitened) && "decon_demixed_whitened" %in% names(dt)) {
+      "decon_demixed_whitened"
+    } else if ("decon_demixed" %in% names(dt)) {
+      "decon_demixed"
+    } else if ("beta_lss" %in% names(dt)) {
+      "beta_lss"
+    } else {
+      "decon_raw"
+    }
   }
-  se_col <- if (isTRUE(use_whitened) && "se_whitened" %in% names(dt)) {
-    "se_whitened"
-  } else if ("se_demixed" %in% names(dt)) {
-    "se_demixed"
-  } else {
-    NULL
+  if (is.null(se_col) || !(se_col %in% names(dt))) {
+    se_col <- if (isTRUE(use_whitened) && "se_whitened" %in% names(dt)) {
+      "se_whitened"
+    } else if ("se_demixed" %in% names(dt)) {
+      "se_demixed"
+    } else if (identical(y_col, "decon_raw") && "se_raw" %in% names(dt)) {
+      "se_raw"
+    } else {
+      NULL
+    }
   }
-  eb_col <- if (isTRUE(use_whitened) && "decon_eb_whitened" %in% names(dt)) {
-    "decon_eb_whitened"
-  } else if ("decon_eb" %in% names(dt)) {
-    "decon_eb"
-  } else {
-    NULL
+  if (is.null(eb_col) || !(eb_col %in% names(dt))) {
+    eb_col <- if (isTRUE(use_whitened) && "decon_eb_whitened" %in% names(dt)) {
+      "decon_eb_whitened"
+    } else if ("decon_eb" %in% names(dt)) {
+      "decon_eb"
+    } else {
+      NULL
+    }
   }
 
-  seed_sub <- dt[get(region_col) == seed_region & abs(evt_time - seed_lag) < 1e-6]
-  targ_sub <- dt[get(region_col) == target_region & abs(evt_time - target_lag) < 1e-6]
+  all_lags_panel <- sort(unique(as.numeric(dt[[lag_col]])))
+
+  # Equalize gain ONLY when operating on un-demixed raw readouts (decon_demixed is already unit-gain restored)
+  get_raw_gain_scale <- function(reg_name, lag_val) {
+    if (!(identical(y_col, "decon_raw") || isFALSE(demix_flag_global))) return(1.0)
+    if (is.null(raw_gain_global) || !is.matrix(raw_gain_global)) return(1.0)
+    c_idx <- match(as.character(reg_name), colnames(raw_gain_global))
+    r_idx <- which(abs(all_lags_panel - lag_val) < 1e-6)[1L]
+    if (is.na(c_idx) || is.na(r_idx) || r_idx > nrow(raw_gain_global)) return(1.0)
+    gv <- as.numeric(raw_gain_global[r_idx, c_idx])
+    if (is.finite(gv) && gv > 0.05) gv else 1.0
+  }
+
+  seed_sub <- dt[as.character(dt[[region_col]]) == as.character(seed_region) &
+    abs(as.numeric(dt[[lag_col]]) - seed_lag) < 1e-6]
+  targ_sub <- dt[as.character(dt[[region_col]]) == as.character(target_region) &
+    abs(as.numeric(dt[[lag_col]]) - target_lag) < 1e-6]
   if (!nrow(seed_sub)) stop("No rows match seed_region = '", seed_region, "' at seed_lag = ", seed_lag)
   if (!nrow(targ_sub)) stop("No rows match target_region = '", target_region, "' at target_lag = ", target_lag)
 
+  g_seed_raw <- get_raw_gain_scale(seed_region, seed_lag)
+  g_targ_raw <- get_raw_gain_scale(target_region, target_lag)
+
   seed_keep <- data.table::data.table(
     id = seed_sub[[id_col]],
-    run = seed_sub[["run"]],
-    trial = seed_sub[["trial"]],
-    seed_val = as.numeric(seed_sub[[y_col]]),
-    se_seed = if (!is.null(se_col)) as.numeric(seed_sub[[se_col]]) else rep(0.0, nrow(seed_sub)),
-    seed_eb = if (!is.null(eb_col)) as.numeric(seed_sub[[eb_col]]) else NA_real_,
-    tau2_seed = if ("tau2_bio" %in% names(seed_sub)) as.numeric(seed_sub[["tau2_bio"]]) else NA_real_
+    run = seed_sub[[run_col]],
+    trial = seed_sub[[trial_col]],
+    seed_val = as.numeric(seed_sub[[y_col]]) / g_seed_raw,
+    se_seed = (if (!is.null(se_col)) as.numeric(seed_sub[[se_col]]) else rep(0.0, nrow(seed_sub))) / g_seed_raw,
+    seed_eb = if (!is.null(eb_col)) as.numeric(seed_sub[[eb_col]]) / g_seed_raw else NA_real_,
+    tau2_seed = if ("tau2_bio" %in% names(seed_sub)) as.numeric(seed_sub[["tau2_bio"]]) else NA_real_,
+    load_seed = if ("shared_noise_loading" %in% names(seed_sub)) as.numeric(seed_sub[["shared_noise_loading"]]) else NA_real_
   )
   for (cv in covariates) {
     cv_use <- if (isTRUE(use_whitened) && paste0(cv, "_whitened") %in% names(seed_sub)) {
@@ -2645,25 +3201,33 @@ decon_connectivity_repair <- function(
 
   targ_keep <- data.table::data.table(
     id = targ_sub[[id_col]],
-    run = targ_sub[["run"]],
-    trial = targ_sub[["trial"]],
-    targ_val = as.numeric(targ_sub[[y_col]]),
-    se_targ = if (!is.null(se_col)) as.numeric(targ_sub[[se_col]]) else rep(0.0, nrow(targ_sub)),
-    w_targ = if ("precision_weight" %in% names(targ_sub)) as.numeric(targ_sub[["precision_weight"]]) else rep(1.0, nrow(targ_sub))
+    run = targ_sub[[run_col]],
+    trial = targ_sub[[trial_col]],
+    targ_val = as.numeric(targ_sub[[y_col]]) / g_targ_raw,
+    se_targ = (if (!is.null(se_col)) as.numeric(targ_sub[[se_col]]) else rep(0.0, nrow(targ_sub))) / g_targ_raw,
+    w_targ = if ("precision_weight" %in% names(targ_sub)) as.numeric(targ_sub[["precision_weight"]]) else rep(1.0, nrow(targ_sub)),
+    load_targ = if ("shared_noise_loading" %in% names(targ_sub)) as.numeric(targ_sub[["shared_noise_loading"]]) else NA_real_,
+    err_xy_raw = if (identical(shared_error, "supplied")) {
+      as.numeric(targ_sub[[err_xy_col]]) / (g_seed_raw * g_targ_raw)
+    } else {
+      rep(NA_real_, nrow(targ_sub))
+    }
   )
 
   m_dt <- merge(targ_keep, seed_keep, by = c("id", "run", "trial"), sort = FALSE)
   has_t0 <- isTRUE(control_target_seed_lag) && abs(target_lag - seed_lag) > 1e-6
   if (has_t0) {
-    t0_sub <- dt[get(region_col) == target_region & abs(evt_time - seed_lag) < 1e-6]
+    t0_sub <- dt[as.character(dt[[region_col]]) == as.character(target_region) &
+      abs(as.numeric(dt[[lag_col]]) - seed_lag) < 1e-6]
     if (nrow(t0_sub) > 0L) {
+      g_t0_raw <- get_raw_gain_scale(target_region, seed_lag)
       t0_keep <- data.table::data.table(
         id = t0_sub[[id_col]],
-        run = t0_sub[["run"]],
-        trial = t0_sub[["trial"]],
-        targ_t0_val = as.numeric(t0_sub[[y_col]]),
-        se_targ_t0 = if (!is.null(se_col)) as.numeric(t0_sub[[se_col]]) else rep(0.0, nrow(t0_sub)),
-        targ_t0_eb = if (!is.null(eb_col)) as.numeric(t0_sub[[eb_col]]) else NA_real_,
+        run = t0_sub[[run_col]],
+        trial = t0_sub[[trial_col]],
+        targ_t0_val = as.numeric(t0_sub[[y_col]]) / g_t0_raw,
+        se_targ_t0 = (if (!is.null(se_col)) as.numeric(t0_sub[[se_col]]) else rep(0.0, nrow(t0_sub))) / g_t0_raw,
+        targ_t0_eb = if (!is.null(eb_col)) as.numeric(t0_sub[[eb_col]]) / g_t0_raw else NA_real_,
         tau2_targ_t0 = if ("tau2_bio" %in% names(t0_sub)) as.numeric(t0_sub[["tau2_bio"]]) else NA_real_
       )
       m_dt <- merge(m_dt, t0_keep, by = c("id", "run", "trial"), sort = FALSE)
@@ -2672,43 +3236,81 @@ decon_connectivity_repair <- function(
     }
   }
 
-  # Center target, seed, and covariates within (id, run)
-  m_dt[, targ_c := targ_val - mean(targ_val, na.rm = TRUE), by = .(id, run)]
-  m_dt[, seed_c_raw := seed_val - mean(seed_val, na.rm = TRUE), by = .(id, run)]
+  # Drop rows where paired seed/target readouts or covariates are missing (e.g., boundary-gated trials)
+  keep_finite <- is.finite(m_dt$seed_val) & is.finite(m_dt$targ_val)
+  if (has_t0) keep_finite <- keep_finite & is.finite(m_dt$targ_t0_val)
+  for (cv in covariates) {
+    keep_finite <- keep_finite & is.finite(m_dt[[cv]])
+  }
+  m_dt <- m_dt[keep_finite]
+  if (!nrow(m_dt)) {
+    stop("No complete finite paired (seed, target) trials remain after filtering.")
+  }
+
+  # Exact diagonal of (I - M_L M_L') diag(c_vec) (I - M_R M_R') for orthonormal M_L, M_R
+  proj_err_diag <- function(c_vec, M_L, M_R = M_L) {
+    c_use <- ifelse(is.finite(c_vec), c_vec, 0.0)
+    if (is.null(M_L) || ncol(M_L) == 0L) return(c_use)
+    h_L <- rowSums(M_L^2)
+    h_R <- if (identical(M_L, M_R)) h_L else rowSums(M_R^2)
+    cross_term <- rowSums((M_L %*% crossprod(M_L, c_use * M_R)) * M_R)
+    c_use * (1.0 - h_L - h_R) + cross_term
+  }
+
+  # Center target, seed, and covariates within (id, run) and propagate exact projection leverage into error variances
+  m_dt[, targ_c := targ_val - mean(targ_val), by = .(id, run)]
+  m_dt[, seed_c_raw := seed_val - mean(seed_val), by = .(id, run)]
   if (has_t0) {
-    m_dt[, targ_t0_c := targ_t0_val - mean(targ_t0_val, na.rm = TRUE), by = .(id, run)]
+    m_dt[, targ_t0_c := targ_t0_val - mean(targ_t0_val), by = .(id, run)]
   }
   for (cv in covariates) {
-    m_dt[, (paste0(cv, "_c")) := get(cv) - mean(get(cv), na.rm = TRUE), by = .(id, run)]
+    m_dt[, (paste0(cv, "_c")) := get(cv) - mean(get(cv)), by = .(id, run)]
   }
   cov_c_names <- if (length(covariates)) paste0(covariates, "_c") else character(0L)
 
-  # Orthogonalize seed_c with respect to error-free covariates within (id, run) when requested
-  if (isTRUE(orthogonalize_seed_x) && length(cov_c_names) > 0L) {
-    m_dt[, c("seed_c", "h_x_run") := {
-      X_r <- as.matrix(.SD)
-      ys <- seed_c_raw
-      ok_r <- is.finite(ys) & (rowSums(!is.finite(X_r)) == 0L)
-      if (sum(ok_r) > ncol(X_r) + 2L && any(apply(X_r[ok_r, , drop = FALSE], 2L, stats::sd) > 1e-10)) {
-        qr_x <- qr(X_r[ok_r, , drop = FALSE])
-        Q_x <- qr.Q(qr_x)
-        res_s <- ys
-        res_s[ok_r] <- ys[ok_r] - as.numeric(Q_x %*% crossprod(Q_x, ys[ok_r]))
-        h_vec <- rep(0.0, length(ys))
-        h_vec[ok_r] <- pmin(0.85, rowSums(Q_x^2))
-        list(res_s, h_vec)
+  m_dt[, c("seed_c", "h_x_run", "psi_seed_proj", "psi_targ_proj", "psi_t0_proj", "cov_proj_scale") := {
+    m_r <- .N
+    ys <- seed_c_raw
+    s2_s <- ifelse(is.finite(se_seed), se_seed^2, 0.0)
+    s2_y <- ifelse(is.finite(se_targ), se_targ^2, 0.0)
+    s2_t0 <- if (has_t0) ifelse(is.finite(se_targ_t0), se_targ_t0^2, 0.0) else rep(0.0, m_r)
+    if (m_r <= 1L) {
+      list(rep(0.0, m_r), rep(1.0, m_r), rep(0.0, m_r), rep(0.0, m_r), rep(0.0, m_r), rep(0.0, m_r))
+    } else {
+      M_0 <- matrix(1.0 / sqrt(m_r), nrow = m_r, ncol = 1L)
+      if (isTRUE(orthogonalize_seed_x) && length(cov_c_names) > 0L) {
+        X_r <- as.matrix(.SD[, cov_c_names, with = FALSE])
+        col_sd <- apply(X_r, 2L, stats::sd)
+        X_act <- X_r[, is.finite(col_sd) & col_sd > 1e-10, drop = FALSE]
+        if (ncol(X_act) > 0L && m_r > ncol(X_act) + 2L) {
+          qr_x <- qr(X_act)
+          rk_x <- qr_x$rank
+          Q_x <- qr.Q(qr_x)[, seq_len(rk_x), drop = FALSE]
+          res_s <- ys - as.numeric(Q_x %*% crossprod(Q_x, ys))
+          h_vec <- pmin(0.85, rowSums(Q_x^2))
+          M_s <- cbind(M_0, Q_x)
+        } else {
+          res_s <- ys
+          h_vec <- rep(0.0, m_r)
+          M_s <- M_0
+        }
       } else {
-        list(ys, rep(0.0, length(ys)))
+        res_s <- ys
+        h_vec <- rep(0.0, m_r)
+        M_s <- M_0
       }
-    }, by = .(id, run), .SDcols = cov_c_names]
-  } else {
-    m_dt[, seed_c := seed_c_raw]
-    m_dt[, h_x_run := 0.0]
-  }
+      psi_s_r <- pmax(0.0, proj_err_diag(s2_s, M_s, M_s))
+      psi_y_r <- pmax(0.0, proj_err_diag(s2_y, M_0, M_0))
+      psi_t0_r <- if (has_t0) pmax(0.0, proj_err_diag(s2_t0, M_0, M_0)) else rep(0.0, m_r)
+      # Exact unit-covariance projection factor for (seed_c, targ_c) and (seed_c, targ_t0_c)
+      cov_scale_r <- pmax(0.0, 1.0 - (1.0 / m_r) - h_vec)
+      list(res_s, h_vec, psi_s_r, psi_y_r, psi_t0_r, cov_scale_r)
+    }
+  }, by = .(id, run)]
 
   # Compute EB reliability factor per trial for role-specific EB predictor mode
   m_dt[, rel_seed_trial := {
-    s2 <- (1.0 - h_x_run) * (se_seed^2)
+    s2 <- psi_seed_proj
     ok_s <- is.finite(s2) & (s2 > 0)
     if (any(ok_s)) {
       v_obs <- stats::var(seed_c, na.rm = TRUE)
@@ -2721,7 +3323,7 @@ decon_connectivity_repair <- function(
   m_dt[, seed_eb_c := rel_seed_trial * seed_c]
   if (has_t0) {
     m_dt[, rel_t0_trial := {
-      s2 <- se_targ_t0^2
+      s2 <- psi_t0_proj
       ok_s <- is.finite(s2) & (s2 > 0)
       if (any(ok_s)) {
         v_obs <- stats::var(targ_t0_c, na.rm = TRUE)
@@ -2734,29 +3336,79 @@ decon_connectivity_repair <- function(
     m_dt[, targ_t0_eb_c := rel_t0_trial * targ_t0_c]
   }
 
+  # Helper to look up cross-lag operator error correlation between seed_lag and target_lag
+  ref_lag_cor_fallback <- NULL
+  get_cross_lag_cor <- function(sid_key, reg_key) {
+    if (abs(target_lag - seed_lag) < 1e-6) return(1.0)
+    lc_obj <- if (!is.null(subj_lag_cor_map[[sid_key]])) subj_lag_cor_map[[sid_key]] else lag_cor_global
+    R_mat <- NULL
+    if (is.matrix(lc_obj)) {
+      R_mat <- lc_obj
+    } else if (is.list(lc_obj) && !is.null(lc_obj[[as.character(reg_key)]])) {
+      R_mat <- lc_obj[[as.character(reg_key)]]
+    }
+    if (is.matrix(R_mat) && nrow(R_mat) == ncol(R_mat)) {
+      rn_num <- suppressWarnings(as.numeric(rownames(R_mat)))
+      i1 <- if (length(rn_num) == nrow(R_mat) && all(is.finite(rn_num))) {
+        which(abs(rn_num - seed_lag) < 1e-6)[1L]
+      } else if (nrow(R_mat) == length(all_lags_panel)) {
+        which(abs(all_lags_panel - seed_lag) < 1e-6)[1L]
+      } else NA_integer_
+      i2 <- if (length(rn_num) == nrow(R_mat) && all(is.finite(rn_num))) {
+        which(abs(rn_num - target_lag) < 1e-6)[1L]
+      } else if (nrow(R_mat) == length(all_lags_panel)) {
+        which(abs(all_lags_panel - target_lag) < 1e-6)[1L]
+      } else NA_integer_
+      if (!is.na(i1) && !is.na(i2)) {
+        rv <- as.numeric(R_mat[i1, i2])
+        if (is.finite(rv)) return(min(0.98, max(-0.98, rv)))
+      }
+    }
+    if (is.null(ref_lag_cor_fallback)) {
+      lags_pair <- sort(unique(c(seed_lag, target_lag)))
+      ref_ops_pair <- medusa_reference_lag_operators(lags = lags_pair, tr = tr_ref)
+      ref_lag_cor_fallback <<- as.numeric(ref_ops_pair$R_op[1L, 2L])
+    }
+    min(0.98, max(-0.98, ref_lag_cor_fallback))
+  }
+
+  # Helper to look up zero-lag cross-parcel prewhitened innovation correlation r_ST_0
+  get_cross_unit_cor <- function(sid_key, sub_df) {
+    if (identical(shared_error, "zero")) return(0.0)
+    if (identical(as.character(seed_region), as.character(target_region))) return(1.0)
+    uc_obj <- if (!is.null(subj_unit_cor_map[[sid_key]])) subj_unit_cor_map[[sid_key]] else unit_cor_global
+    if (is.matrix(uc_obj) &&
+        (as.character(seed_region) %in% rownames(uc_obj)) &&
+        (as.character(target_region) %in% colnames(uc_obj))) {
+      rv <- as.numeric(uc_obj[as.character(seed_region), as.character(target_region)])
+      if (is.finite(rv)) return(min(0.98, max(-0.98, rv)))
+    }
+    if ("load_seed" %in% names(sub_df) && "load_targ" %in% names(sub_df)) {
+      prod_load <- sub_df$load_seed * sub_df$load_targ
+      if (any(is.finite(prod_load))) {
+        rv <- stats::median(prod_load[is.finite(prod_load)])
+        if (is.finite(rv)) return(min(0.98, max(-0.98, rv)))
+      }
+    }
+    0.0
+  }
+
   subj_ids <- unique(m_dt$id)
   subj_rows <- vector("list", length(subj_ids))
   aug_panels <- if (isTRUE(return_augmented_panel)) vector("list", length(subj_ids)) else NULL
 
   for (si in seq_along(subj_ids)) {
     sid <- subj_ids[si]
-    sub_dt <- m_dt[id == sid]
+    sub_dt <- m_dt[m_dt$id == sid]
     n_i <- nrow(sub_dt)
 
     use_eb <- identical(method, "eb_predictor")
     s_vec <- if (use_eb) sub_dt$seed_eb_c else sub_dt$seed_c
-    psi_s <- if (method %in% c("mmoms", "mmom")) {
-      pmax(0.0, (1.0 - sub_dt$h_x_run) * (sub_dt$se_seed^2))
-    } else {
-      rep(0.0, n_i)
-    }
-    psi_y <- if (method %in% c("mmoms", "mmom")) {
-      pmax(0.0, sub_dt$se_targ^2)
-    } else {
-      rep(0.0, n_i)
-    }
+    psi_s <- if (method %in% c("mmoms", "mmom")) sub_dt$psi_seed_proj else rep(0.0, n_i)
+    psi_y <- if (method %in% c("mmoms", "mmom")) sub_dt$psi_targ_proj else rep(0.0, n_i)
+    psi_t0 <- if (has_t0 && method %in% c("mmoms", "mmom")) sub_dt$psi_t0_proj else rep(0.0, n_i)
 
-    # Build predictor matrix X_i and per-trial error covariance array err_x_i
+    # Build predictor matrix X_i and per-trial error covariances (err_x_i, err_xy_i)
     pred_list <- list(seed_c = s_vec)
     if (has_t0) {
       pred_list[["targ_t0_val"]] <- if (use_eb) sub_dt$targ_t0_eb_c else sub_dt$targ_t0_c
@@ -2771,25 +3423,63 @@ decon_connectivity_repair <- function(
     X_i <- do.call(cbind, pred_list)
     q_i <- ncol(X_i)
     err_x_i <- array(0.0, dim = c(q_i, q_i, n_i))
+    err_xy_i <- matrix(0.0, nrow = n_i, ncol = q_i)
     err_x_i[1L, 1L, ] <- psi_s
-    if (has_t0 && method %in% c("mmoms", "mmom")) {
-      err_x_i[2L, 2L, ] <- pmax(0.0, sub_dt$se_targ_t0^2)
-    }
-    if (isTRUE(test_ppi) && method %in% c("mmoms", "mmom")) {
-      x1_c <- sub_dt[[ cov_c_names[1L] ]]
-      idx_ppi <- q_i
-      err_x_i[1L, idx_ppi, ] <- x1_c * psi_s
-      err_x_i[idx_ppi, 1L, ] <- x1_c * psi_s
-      err_x_i[idx_ppi, idx_ppi, ] <- (x1_c^2) * psi_s
-    }
 
     if (method %in% c("mmoms", "mmom")) {
+      sid_chr <- as.character(sid)
+      r_lag_T <- get_cross_lag_cor(sid_chr, target_region)
+      r_lag_S <- get_cross_lag_cor(sid_chr, seed_region)
+      r_lag_ST <- 0.5 * (r_lag_S + r_lag_T)
+
+      if (identical(shared_error, "supplied")) {
+        c_sy_proj <- sub_dt$cov_proj_scale * ifelse(is.finite(sub_dt$err_xy_raw), sub_dt$err_xy_raw, 0.0)
+        lim_sy <- 0.98 * sqrt(pmax(0.0, psi_s * psi_y))
+        psi_sy <- pmin(lim_sy, pmax(-lim_sy, c_sy_proj))
+        r_ST_0 <- if (sum(psi_s * psi_y) > 1e-12) {
+          min(0.98, max(-0.98, sum(psi_sy) / sqrt(sum(psi_s) * sum(psi_y))))
+        } else 0.0
+      } else if (identical(shared_error, "auto")) {
+        r_ST_0 <- get_cross_unit_cor(sid_chr, sub_dt)
+        r_ST_eff <- if (abs(target_lag - seed_lag) < 1e-6) r_ST_0 else (r_ST_0 * r_lag_ST)
+        psi_sy <- r_ST_eff * sqrt(pmax(0.0, psi_s * psi_y))
+      } else {
+        r_ST_0 <- 0.0
+        psi_sy <- rep(0.0, n_i)
+      }
+      err_xy_i[, 1L] <- psi_sy
+
+      psi_s_t0 <- rep(0.0, n_i)
+      if (has_t0) {
+        err_x_i[2L, 2L, ] <- psi_t0
+        # Same-parcel cross-lag error covariance between target(seed_lag) and target(target_lag)
+        err_xy_i[, 2L] <- r_lag_T * sqrt(pmax(0.0, psi_t0 * psi_y))
+        if (abs(r_ST_0) > 0) {
+          psi_s_t0 <- r_ST_0 * sqrt(pmax(0.0, psi_s * psi_t0))
+          err_x_i[1L, 2L, ] <- psi_s_t0
+          err_x_i[2L, 1L, ] <- psi_s_t0
+        }
+      }
+      if (isTRUE(test_ppi)) {
+        x1_c <- sub_dt[[ cov_c_names[1L] ]]
+        idx_ppi <- q_i
+        err_x_i[1L, idx_ppi, ] <- x1_c * psi_s
+        err_x_i[idx_ppi, 1L, ] <- x1_c * psi_s
+        err_x_i[idx_ppi, idx_ppi, ] <- (x1_c^2) * psi_s
+        err_xy_i[, idx_ppi] <- x1_c * psi_sy
+        if (has_t0 && any(abs(psi_s_t0) > 0)) {
+          err_x_i[2L, idx_ppi, ] <- x1_c * psi_s_t0
+          err_x_i[idx_ppi, 2L, ] <- x1_c * psi_s_t0
+        }
+      }
+
       reg_pol <- if (identical(method, "mmoms")) "step_up" else "minimum"
       mfit <- medusa_fit_mmom(
         outcome = sub_dt$targ_c,
         predictors = X_i,
         err_x = err_x_i,
         err_y = psi_y,
+        err_xy = err_xy_i,
         regularization = reg_pol
       )
       if (isTRUE(mfit$converged)) {
@@ -2803,8 +3493,30 @@ decon_connectivity_repair <- function(
         mu_X_w <- colSums(X_i * w_raw) / sum(w_raw)
         X_i_wcent <- sweep(X_i, 2L, mu_X_w, "-")
         X_w_obs <- crossprod(X_i_wcent, X_i_wcent * w_raw)
+        # Moment-preserving predictor transform reproducing M-MOMS slopes (including err_xy subtraction) in WLS
+        b_mmom_vec <- as.numeric(cf$estimate)
+        y_wcent <- sub_dt$targ_c - sum(w_raw * sub_dt$targ_c) / sum(w_raw)
         R_mat <- tryCatch(qr.solve(X_w_obs, S2_pred), error = function(e) diag(q_i))
         X_rep <- X_i_wcent %*% R_mat
+        if (any(abs(err_xy_i) > 0)) {
+          # For X_rep = X_i_wcent %*% R_adj, WLS slope is solve(R_adj, b_wls_vec), so R_adj %*% b_mmom_vec == b_wls_vec
+          b_wls_vec <- tryCatch(
+            as.numeric(qr.solve(X_w_obs, crossprod(X_i_wcent, w_raw * y_wcent))),
+            error = function(e) NULL
+          )
+          b_norm2 <- sum(b_mmom_vec^2)
+          if (!is.null(b_wls_vec) && all(is.finite(b_wls_vec)) && is.finite(b_norm2) && b_norm2 > 1e-12) {
+            R_mat_adj <- R_mat + tcrossprod(b_wls_vec - as.numeric(R_mat %*% b_mmom_vec), b_mmom_vec) / b_norm2
+            X_rep_try <- X_i_wcent %*% R_mat_adj
+            b_check <- tryCatch(
+              as.numeric(qr.solve(crossprod(X_rep_try, X_rep_try * w_raw), crossprod(X_rep_try, w_raw * y_wcent))),
+              error = function(e) rep(NA_real_, q_i)
+            )
+            if (all(is.finite(b_check)) && max(abs(b_check - b_mmom_vec)) < 1e-6) {
+              X_rep <- X_rep_try
+            }
+          }
+        }
         colnames(X_rep) <- paste0(colnames(X_i), "_repair")
         subj_rows[[si]] <- data.table::data.table(
           id = sid,
@@ -2814,6 +3526,7 @@ decon_connectivity_repair <- function(
           statistic = cf$zstat,
           p.value = cf$pval,
           n_trials = n_i,
+          r_shared_error = r_ST_0,
           lambda_prelim = mfit$diagnostics$lambda_prelim,
           lambda_final = mfit$diagnostics$lambda_final,
           alpha_prelim = mfit$diagnostics$alpha_prelim,
@@ -2854,6 +3567,7 @@ decon_connectivity_repair <- function(
       statistic = as.numeric(sm_cf[keep_rows, "t value"]),
       p.value = as.numeric(sm_cf[keep_rows, "Pr(>|t|)"]),
       n_trials = n_i,
+      r_shared_error = 0.0,
       lambda_prelim = NA_real_,
       lambda_final = NA_real_,
       alpha_prelim = NA_real_,
@@ -2872,7 +3586,7 @@ decon_connectivity_repair <- function(
 
   subj_dt <- data.table::rbindlist(subj_rows, fill = TRUE)
 
-  # Group-level random-effects pooling with ancillary sample-size weights and HKSJ t_{S-1} calibration
+  # Group-level random-effects pooling with ancillary sample-size weights and unequal-weight HC2/HKSJ calibration
   # (avoids the downward covariance bias Cov(w_s, theta_s) < 0 caused by EIV sandwich SEs depending on theta_s^2)
   terms_u <- unique(subj_dt$term)
   grp_rows <- vector("list", length(terms_u))
@@ -2925,10 +3639,14 @@ decon_connectivity_repair <- function(
       rep(1.0, S_k)
     }
     w_anc <- w_anc / sum(w_anc)
+    sum_w2 <- sum(w_anc^2)
     mu_re <- sum(w_anc * theta_s)
-    var_hksj <- sum((w_anc^2) * ((theta_s - mu_re)^2)) * (S_k / (S_k - 1.0))
+    # Exact unequal-weight HC2/HKSJ leverage correction (reduces identically to S_k / (S_k - 1) for equal weights)
+    denom_hksj <- pmin(1.0 - w_anc, pmax(1.0 - 2.0 * w_anc + sum_w2, 1.0 / max(2.0, S_k)))
+    denom_hksj <- pmax(denom_hksj, 1.0 / max(2.0, 2.0 * S_k))
+    var_hksj <- sum((w_anc^2) * ((theta_s - mu_re)^2) / denom_hksj)
     se_re <- sqrt(max(var_hksj, .Machine$double.eps))
-    df_re <- S_k - 1.0
+    df_re <- max(1.0, (1.0 / max(sum_w2, .Machine$double.eps)) - 1.0)
     t_re <- mu_re / se_re
     p_re <- 2.0 * stats::pt(abs(t_re), df = df_re, lower.tail = FALSE)
     t_crit <- stats::qt(0.975, df = df_re)
@@ -2974,6 +3692,7 @@ decon_connectivity_repair <- function(
         control_target_seed_lag = control_target_seed_lag,
         orthogonalize_seed_x = orthogonalize_seed_x,
         method = method,
+        shared_error = shared_error,
         use_whitened = use_whitened
       )
     ),
@@ -3208,6 +3927,10 @@ medusa_smooth_deblur_trajectory <- function(
       beta = as.numeric(beta_vec),
       se = se_out,
       Sigma = Sigma_beta,
+      beta_deblur = as.numeric(beta_vec),
+      Sigma_deblur = Sigma_beta,
+      W_pre = diag(1, L),
+      S_smooth = diag(1, L),
       M_op = diag(1, L),
       eta_opt = 0,
       df_eff = L
@@ -3251,6 +3974,10 @@ medusa_smooth_deblur_trajectory <- function(
       beta = b_pre,
       se = se_out,
       Sigma = Sigma_pre,
+      beta_deblur = b_pre,
+      Sigma_deblur = Sigma_pre,
+      W_pre = W_pre,
+      S_smooth = diag(1, L),
       M_op = W_pre,
       eta_opt = 0,
       df_eff = sum(diag(W_pre))
@@ -3311,6 +4038,10 @@ medusa_smooth_deblur_trajectory <- function(
     beta = b_post,
     se = se_post,
     Sigma = Sigma_post,
+    beta_deblur = b_pre,
+    Sigma_deblur = Sigma_pre,
+    W_pre = W_pre,
+    S_smooth = best_S,
     M_op = M_total,
     eta_opt = best_eta,
     df_eff = sum(diag(best_S))
@@ -3542,8 +4273,13 @@ medusa_spline_latency <- function(
 #' @param contrasts Optional named list of lag contrast specifications. Each entry can be
 #'   either a numeric weight vector of length \eqn{L} or a list \code{list(early = c(t1, t2),
 #'   late = c(t3, t4))} specifying two lag windows to contrast (\code{late - early}).
-#' @param n_perm Number of correlated multivariate-\eqn{t} Monte Carlo draws for
-#'   simultaneous Max-\eqn{|T|} and 1D TFCE calibration (default \code{4000L}).
+#' @param contrast_source Trajectory source for linear window contrasts:
+#'   \code{"unsmoothed"} (default; evaluates contrasts on the cross-lag de-blurred
+#'   trajectory prior to P-spline smoothing so contrast point estimates and CIs are
+#'   free of P-spline shrinkage bias), \code{"raw"} (raw lag-by-lag estimates), or
+#'   \code{"multilag"} (P-spline smoothed trajectory).
+#' @param n_perm Number of correlated Monte Carlo studentized draws for
+#'   simultaneous Max-\eqn{|T|}, 1D TFCE, and omnibus calibration (default \code{4000L}).
 #' @param n_boot_latency Number of parametric bootstrap draws for continuous spline
 #'   latency SEs and confidence intervals (default \code{400L}).
 #' @param fine_dt Sub-grid spline evaluation step in seconds (default \code{0.01}).
@@ -3593,6 +4329,7 @@ medusa_multilag_infer <- function(
   demix_within_trial = FALSE,
   recalibrate_wt_lobe = FALSE,
   contrasts = NULL,
+  contrast_source = c("unsmoothed", "raw", "multilag"),
   n_perm = 4000L,
   n_boot_latency = 400L,
   fine_dt = 0.01,
@@ -3601,15 +4338,48 @@ medusa_multilag_infer <- function(
   seed = NULL
 ) {
   trajectory_mode <- match.arg(trajectory_mode)
+  contrast_source <- match.arg(contrast_source)
   polarity <- match.arg(polarity)
   if (!is.null(seed)) set.seed(as.integer(seed))
 
-  # 1. Unpack input object (decon_epoch_regression result, list of results, panel, or coef table)
+  subj_lag_ops <- list()
+  subj_trial_ops <- list()
+  global_trial_ops <- NULL
+
+  avg_named_mat_list <- function(mat_lists) {
+    mat_lists <- Filter(Negate(is.null), mat_lists)
+    if (!length(mat_lists)) return(NULL)
+    if (all(vapply(mat_lists, is.matrix, logical(1L)))) {
+      d0 <- dim(mat_lists[[1L]])
+      ok_m <- vapply(mat_lists, function(m) all(dim(m) == d0) && all(is.finite(m)), logical(1L))
+      if (!any(ok_m)) return(mat_lists[[1L]])
+      return(Reduce("+", mat_lists[ok_m]) / sum(ok_m))
+    }
+    all_keys <- unique(unlist(lapply(mat_lists, names)))
+    if (!length(all_keys)) return(mat_lists[[1L]])
+    out <- list()
+    for (k in all_keys) {
+      k_mats <- lapply(mat_lists, function(x) if (is.list(x)) x[[k]] else NULL)
+      k_mats <- Filter(is.matrix, k_mats)
+      if (!length(k_mats)) next
+      d0 <- dim(k_mats[[1L]])
+      ok_m <- vapply(k_mats, function(m) all(dim(m) == d0) && all(is.finite(m)), logical(1L))
+      out[[k]] <- if (any(ok_m)) Reduce("+", k_mats[ok_m]) / sum(ok_m) else k_mats[[1L]]
+    }
+    out
+  }
+
+  # 1. Unpack input object (decon_epoch_regression result, mixed_by result, list of results/panels, panel, or coef table)
   if (is.list(data) && !is.data.frame(data)) {
     if (!is.null(data$coefficients) && is.data.frame(data$coefficients)) {
       # Single decon_epoch_regression output
       if (is.null(lag_resolution)) lag_resolution <- data$lag_resolution
       if (is.null(lag_error_cor)) lag_error_cor <- data$lag_error_cor
+      global_trial_ops <- if (!is.null(data$run_trial_operators)) {
+        data$run_trial_operators
+      } else if (!is.null(data$panel)) {
+        attr(data$panel, "run_trial_operators")
+      } else NULL
       if (!is.null(data$settings$demix_within_trial)) {
         demix_within_trial <- isTRUE(data$settings$demix_within_trial)
       }
@@ -3622,41 +4392,76 @@ medusa_multilag_infer <- function(
         dt_in <- data.table::as.data.table(data$coefficients)
         input_kind <- "coef"
       }
-    } else if (length(data) >= 1L && is.list(data[[1L]]) &&
-               (!is.null(data[[1L]]$panel) || !is.null(data[[1L]]$coefficients))) {
-      # List of per-subject decon_epoch_regression or fit_subject_modern_medusa outputs
-      if (is.null(lag_resolution) && !is.null(data[[1L]]$lag_resolution)) {
-        lag_resolution <- data[[1L]]$lag_resolution
-      }
-      if (is.null(lag_error_cor) && !is.null(data[[1L]]$lag_error_cor)) {
-        lag_error_cor <- data[[1L]]$lag_error_cor
-      }
-      if (!is.null(data[[1L]]$settings$demix_within_trial)) {
-        demix_within_trial <- isTRUE(data[[1L]]$settings$demix_within_trial)
-      }
-      has_panels <- all(vapply(data, function(x) !is.null(x$panel) && is.data.frame(x$panel), logical(1L)))
-      if (has_panels) {
-        sub_names <- names(data)
-        if (is.null(sub_names)) sub_names <- sprintf("sub_%03d", seq_along(data))
-        dt_in <- data.table::rbindlist(lapply(seq_along(data), function(i) {
-          p_i <- data.table::as.data.table(data[[i]]$panel)
-          if (!("id" %in% names(p_i)) && !("subject" %in% names(p_i))) {
-            p_i[, id := sub_names[i]]
-          }
-          p_i
-        }), fill = TRUE)
-        input_kind <- "panel"
+    } else if ((!is.null(data$coef_df_reml) && is.data.frame(data$coef_df_reml)) ||
+               (!is.null(data$coef_df_ml) && is.data.frame(data$coef_df_ml))) {
+      # mixed_by() output object
+      cf_mb <- if (!is.null(data$coef_df_reml) && is.data.frame(data$coef_df_reml)) data$coef_df_reml else data$coef_df_ml
+      dt_in <- data.table::as.data.table(cf_mb)
+      input_kind <- "coef"
+    } else if (length(data) >= 1L && (is.data.frame(data[[1L]]) ||
+               (is.list(data[[1L]]) && (!is.null(data[[1L]]$panel) || !is.null(data[[1L]]$coefficients))))) {
+      # List of per-subject decon_epoch_regression outputs or per-subject panel data.tables
+      sub_names <- names(data)
+      if (is.null(sub_names)) sub_names <- sprintf("sub_%03d", seq_along(data))
+      is_df_list <- all(vapply(data, is.data.frame, logical(1L)))
+      if (is_df_list) {
+        c_res_list <- lapply(data, attr, "lag_resolution")
+        r_cor_list <- lapply(data, attr, "lag_error_cor")
+        if (is.null(lag_resolution)) lag_resolution <- avg_named_mat_list(c_res_list)
+        if (is.null(lag_error_cor)) lag_error_cor <- avg_named_mat_list(r_cor_list)
+        dt_parts <- vector("list", length(data))
+        for (i in seq_along(data)) {
+          p_i <- data.table::copy(data.table::as.data.table(data[[i]]))
+          sc_i <- intersect(c("id", "subject", "sub"), names(p_i))[1L]
+          sid_i <- if (!is.na(sc_i)) as.character(p_i[[sc_i]][1L]) else sub_names[i]
+          if (is.na(sc_i)) p_i[, id := sid_i]
+          subj_lag_ops[[sid_i]] <- list(C = attr(data[[i]], "lag_resolution"), R = attr(data[[i]], "lag_error_cor"))
+          subj_trial_ops[[sid_i]] <- attr(data[[i]], "run_trial_operators")
+          dt_parts[[i]] <- p_i
+        }
+        dt_in <- data.table::rbindlist(dt_parts, fill = TRUE)
+        input_kind <- if (any(c("decon_demixed", "decon_interp", "decon_raw", "decon_demixed_whitened") %in% names(dt_in))) "panel" else "coef"
       } else {
-        sub_names <- names(data)
-        if (is.null(sub_names)) sub_names <- sprintf("sub_%03d", seq_along(data))
-        dt_in <- data.table::rbindlist(lapply(seq_along(data), function(i) {
-          c_i <- data.table::as.data.table(data[[i]]$coefficients)
-          if (!("id" %in% names(c_i)) && !("subject" %in% names(c_i))) {
-            c_i[, id := sub_names[i]]
+        c_res_list <- lapply(data, function(x) if (!is.null(x$lag_resolution)) x$lag_resolution else if (!is.null(x$panel)) attr(x$panel, "lag_resolution") else NULL)
+        r_cor_list <- lapply(data, function(x) if (!is.null(x$lag_error_cor)) x$lag_error_cor else if (!is.null(x$panel)) attr(x$panel, "lag_error_cor") else NULL)
+        if (is.null(lag_resolution)) lag_resolution <- avg_named_mat_list(c_res_list)
+        if (is.null(lag_error_cor)) lag_error_cor <- avg_named_mat_list(r_cor_list)
+        if (!is.null(data[[1L]]$settings$demix_within_trial)) {
+          demix_within_trial <- isTRUE(data[[1L]]$settings$demix_within_trial)
+        }
+        if (!is.null(data[[1L]]$settings$readout_kernel)) readout_kernel <- data[[1L]]$settings$readout_kernel
+        if (!is.null(data[[1L]]$settings$readout_width)) readout_width <- data[[1L]]$settings$readout_width
+        has_panels <- all(vapply(data, function(x) !is.null(x$panel) && is.data.frame(x$panel), logical(1L)))
+        if (has_panels) {
+          dt_parts <- vector("list", length(data))
+          for (i in seq_along(data)) {
+            p_i <- data.table::copy(data.table::as.data.table(data[[i]]$panel))
+            sc_i <- intersect(c("id", "subject", "sub"), names(p_i))[1L]
+            sid_i <- if (!is.na(sc_i)) as.character(p_i[[sc_i]][1L]) else sub_names[i]
+            if (is.na(sc_i)) p_i[, id := sid_i]
+            subj_lag_ops[[sid_i]] <- list(C = c_res_list[[i]], R = r_cor_list[[i]])
+            subj_trial_ops[[sid_i]] <- if (!is.null(data[[i]]$run_trial_operators)) {
+              data[[i]]$run_trial_operators
+            } else {
+              attr(data[[i]]$panel, "run_trial_operators")
+            }
+            dt_parts[[i]] <- p_i
           }
-          c_i
-        }), fill = TRUE)
-        input_kind <- "coef"
+          dt_in <- data.table::rbindlist(dt_parts, fill = TRUE)
+          input_kind <- "panel"
+        } else {
+          dt_parts <- vector("list", length(data))
+          for (i in seq_along(data)) {
+            c_i <- data.table::copy(data.table::as.data.table(data[[i]]$coefficients))
+            sc_i <- intersect(c("id", "subject", "sub"), names(c_i))[1L]
+            sid_i <- if (!is.na(sc_i)) as.character(c_i[[sc_i]][1L]) else sub_names[i]
+            if (is.na(sc_i)) c_i[, id := sid_i]
+            subj_lag_ops[[sid_i]] <- list(C = c_res_list[[i]], R = r_cor_list[[i]])
+            dt_parts[[i]] <- c_i
+          }
+          dt_in <- data.table::rbindlist(dt_parts, fill = TRUE)
+          input_kind <- "coef"
+        }
       }
     } else {
       stop("Unsupported list input to `medusa_multilag_infer()`.")
@@ -3664,21 +4469,27 @@ medusa_multilag_infer <- function(
   } else if (is.data.frame(data)) {
     if (is.null(lag_resolution)) lag_resolution <- attr(data, "lag_resolution")
     if (is.null(lag_error_cor)) lag_error_cor <- attr(data, "lag_error_cor")
+    global_trial_ops <- attr(data, "run_trial_operators")
     dt_in <- data.table::as.data.table(data)
     if (any(c("decon_demixed", "decon_interp", "decon_raw", "decon_demixed_whitened") %in% names(dt_in))) {
       input_kind <- "panel"
-    } else if (any(c("beta_corrected", "estimate", "beta_weighted", "beta_raw") %in% names(dt_in))) {
+    } else if (any(c("beta_corrected", "beta_gls", "estimate", "beta_weighted", "beta_unweighted", "beta_raw") %in% names(dt_in))) {
       input_kind <- "coef"
     } else {
       stop("Data frame supplied to `medusa_multilag_infer()` must be a MEDuSA trial panel or coefficient table.")
     }
   } else {
-    stop("`data` must be a `decon_epoch_regression` result, list of results, or `data.frame`/`data.table`.")
+    stop("`data` must be a `decon_epoch_regression` result, list of results, `mixed_by` output, or `data.frame`/`data.table`.")
+  }
+
+  if (identical(input_kind, "coef") && ("effect" %in% names(dt_in))) {
+    dt_in <- dt_in[is.na(effect) | as.character(effect) == "fixed"]
   }
 
   # Identify unit column (region / parcel / voxel)
   unit_col <- intersect(c("region", "parcel", "voxel", "unit"), names(dt_in))[1L]
   if (is.na(unit_col)) {
+    dt_in <- data.table::copy(dt_in)
     dt_in[, unit := "unit_1"]
     unit_col <- "unit"
   }
@@ -3691,79 +4502,104 @@ medusa_multilag_infer <- function(
   if (L < 2L) stop("`medusa_multilag_infer()` requires at least 2 lags.")
   dt_lag <- stats::median(diff(lags))
 
-  # Construct or retrieve reference operators C_sym and R_op
+  # Construct or retrieve reference operators C_sym and R_op (unit-level and optional subject-specific)
   ref_ops <- NULL
-  get_unit_operators <- function(u_id) {
-    C_u <- if (is.matrix(lag_resolution) && all(dim(lag_resolution) == c(L, L))) {
-      lag_resolution
-    } else if (is.list(lag_resolution) && !is.null(lag_resolution[[as.character(u_id)]]) &&
-               all(dim(lag_resolution[[as.character(u_id)]]) == c(L, L))) {
-      lag_resolution[[as.character(u_id)]]
-    } else {
-      if (is.null(ref_ops)) {
-        ref_ops <<- medusa_reference_lag_operators(
-          lags = lags, tr = tr, readout_kernel = readout_kernel,
-          readout_width = readout_width, lambda = decon_lambda, rho = rho_ar1
-        )
-      }
-      ref_ops$C_sym
+  extract_op_mat <- function(op_obj, u_id) {
+    if (is.matrix(op_obj) && all(dim(op_obj) == c(L, L))) return(op_obj)
+    if (is.list(op_obj) && !is.null(op_obj[[as.character(u_id)]]) &&
+        all(dim(op_obj[[as.character(u_id)]]) == c(L, L))) {
+      return(op_obj[[as.character(u_id)]])
     }
-    R_u <- if (is.matrix(lag_error_cor) && all(dim(lag_error_cor) == c(L, L))) {
-      lag_error_cor
-    } else if (is.list(lag_error_cor) && !is.null(lag_error_cor[[as.character(u_id)]]) &&
-               all(dim(lag_error_cor[[as.character(u_id)]]) == c(L, L))) {
-      lag_error_cor[[as.character(u_id)]]
-    } else {
+    NULL
+  }
+  get_unit_operators <- function(u_id, sid_opt = NULL) {
+    C_u <- NULL
+    R_u <- NULL
+    if (!is.null(sid_opt) && !is.null(subj_lag_ops[[as.character(sid_opt)]])) {
+      C_u <- extract_op_mat(subj_lag_ops[[as.character(sid_opt)]]$C, u_id)
+      R_u <- extract_op_mat(subj_lag_ops[[as.character(sid_opt)]]$R, u_id)
+    }
+    if (is.null(C_u)) C_u <- extract_op_mat(lag_resolution, u_id)
+    if (is.null(R_u)) R_u <- extract_op_mat(lag_error_cor, u_id)
+    if (is.null(C_u) || is.null(R_u)) {
       if (is.null(ref_ops)) {
         ref_ops <<- medusa_reference_lag_operators(
           lags = lags, tr = tr, readout_kernel = readout_kernel,
           readout_width = readout_width, lambda = decon_lambda, rho = rho_ar1
         )
       }
-      ref_ops$R_op
+      if (is.null(C_u)) C_u <- ref_ops$C_sym
+      if (is.null(R_u)) R_u <- ref_ops$R_op
     }
     list(C_sym = C_u, R_op = R_u)
   }
 
-  # 2. If input is a trial-level panel, extract subject-by-lag slope and SE matrices
-  #    plus within-subject trial score cross-lag correlations
+  # 2. Identify covariates and columns
   if (identical(input_kind, "panel")) {
     has_w_y <- isTRUE(use_whitened) && ("decon_demixed_whitened" %in% names(dt_in)) &&
       any(is.finite(dt_in$decon_demixed_whitened))
-    y_col <- if (has_w_y) {
-      "decon_demixed_whitened"
-    } else if ("decon_demixed" %in% names(dt_in) && any(is.finite(dt_in$decon_demixed))) {
+    y_col_unw <- if ("decon_demixed" %in% names(dt_in) && any(is.finite(dt_in$decon_demixed))) {
       "decon_demixed"
     } else if ("decon_interp" %in% names(dt_in) && any(is.finite(dt_in$decon_interp))) {
       "decon_interp"
     } else {
       "decon_raw"
     }
+    y_col <- if (has_w_y) "decon_demixed_whitened" else y_col_unw
     w_col <- if ("precision_weight" %in% names(dt_in)) "precision_weight" else NULL
+    w_cohort_col <- if ("precision_weight_cohort" %in% names(dt_in)) "precision_weight_cohort" else w_col
 
     if (is.null(covariates)) {
       reserved_cols <- c(
         "id", "subject", "sub", "run", "trial", "event_index", "onset", "evt_time", "lag",
         "voxel", "parcel", "region", "unit", "decon_raw", "decon_demixed", "decon_eb",
         "decon_interp", "se_raw", "se_demixed", "reliability_trial", "precision_weight",
-        "precision_weight_op", "precision_weight_raw", "error_ac1", "tau2_bio",
+        "precision_weight_cohort", "precision_weight_op", "precision_weight_raw",
+        "error_ac1", "tau2_bio", "shared_noise_loading",
         "decon_demixed_whitened", "se_whitened", "decon_eb_whitened"
       )
       cand_covs <- setdiff(names(dt_in), reserved_cols)
       cand_covs <- cand_covs[!grepl("_whitened$", cand_covs)]
       cand_covs <- cand_covs[vapply(cand_covs, function(cn) is.numeric(dt_in[[cn]]), logical(1L))]
       covariates <- if (length(cand_covs) > 0L) cand_covs else "intercept"
+    } else {
+      keep_int <- intersect(covariates, "intercept")
+      keep_num <- intersect(setdiff(covariates, "intercept"), names(dt_in))
+      covariates <- unique(c(keep_int, keep_num))
+      if (!length(covariates)) stop("None of the requested `covariates` were found in `data`.")
     }
   } else {
-    est_col <- intersect(c("beta_corrected", "estimate", "beta_weighted", "beta_raw"), names(dt_in))[1L]
-    se_col <- intersect(c("se_corrected", "std.error", "se_weighted", "se_unweighted"), names(dt_in))[1L]
+    est_col <- intersect(c("beta_corrected", "beta_gls", "estimate", "beta_weighted", "beta_unweighted", "beta_raw"), names(dt_in))[1L]
+    se_col <- intersect(c("se_corrected", "se_gls", "std.error", "se_weighted", "se_unweighted"), names(dt_in))[1L]
     if (is.na(est_col)) stop("Could not find coefficient estimate column in `data`.")
-    if (!("term" %in% names(dt_in))) dt_in[, term := "x"]
-    covariates <- unique(as.character(dt_in$term))
+    if (!("term" %in% names(dt_in))) {
+      dt_in <- data.table::copy(dt_in)
+      dt_in[, term := "x"]
+    }
+    u_terms <- unique(as.character(dt_in$term))
+    u_terms <- u_terms[!is.na(u_terms) & nzchar(u_terms)]
+    if (is.null(covariates)) {
+      non_int <- setdiff(u_terms, "(Intercept)")
+      covariates <- if (length(non_int) > 0L) non_int else u_terms
+    } else {
+      covariates <- intersect(covariates, u_terms)
+    }
   }
 
   units <- unique(as.character(dt_in[[unit_col]]))
-  has_multi_subj <- !is.na(subj_col) && length(unique(dt_in[[subj_col]])) >= 2L
+
+  # Helper to look up run_trial_operators for (sid, u_id, li)
+  lag_key_names <- sprintf("lag_%g", lags)
+  get_run_trial_ops <- function(sid_chr, u_id_chr, li_idx) {
+    ops_root <- if (!is.null(subj_trial_ops[[sid_chr]])) subj_trial_ops[[sid_chr]] else global_trial_ops
+    if (is.null(ops_root) || !is.list(ops_root)) return(NULL)
+    ops_u <- ops_root[[u_id_chr]]
+    if (is.null(ops_u) && length(ops_root) == 1L) ops_u <- ops_root[[1L]]
+    if (is.null(ops_u) || !is.list(ops_u)) return(NULL)
+    if (!is.null(ops_u[[lag_key_names[li_idx]]])) return(ops_u[[lag_key_names[li_idx]]])
+    if (length(ops_u) >= li_idx) return(ops_u[[li_idx]])
+    NULL
+  }
 
   coef_out_list <- list()
   lat_out_list <- list()
@@ -3773,122 +4609,465 @@ medusa_multilag_infer <- function(
   cov_out_list <- list()
 
   for (u_id in units) {
-    dt_u <- dt_in[as.character(get(unit_col)) == u_id]
+    dt_u <- dt_in[as.character(dt_in[[unit_col]]) == u_id]
     ops_u <- get_unit_operators(u_id)
     C_u <- ops_u$C_sym
     R_op_u <- ops_u$R_op
+    CC_u <- tcrossprod(C_u)
+    d_cc_u <- sqrt(pmax(diag(CC_u), .Machine$double.eps))
+    R_res_u <- CC_u / outer(d_cc_u, d_cc_u)
+    R_res_u <- 0.5 * (R_res_u + t(R_res_u))
+    diag(R_res_u) <- 1.0
     cov_out_list[[u_id]] <- list()
 
-    for (tm in covariates) {
-      # Extract B_mat (S x L), SE_mat (S x L), df_vec, and empirical residual/score correlation R_emp
-      if (identical(input_kind, "panel")) {
-        s_ids <- if (!is.na(subj_col)) unique(as.character(dt_u[[subj_col]])) else "sub_1"
-        S_n <- length(s_ids)
-        B_mat <- matrix(NA_real_, S_n, L, dimnames = list(s_ids, as.character(lags)))
-        SE_mat <- matrix(NA_real_, S_n, L, dimnames = list(s_ids, as.character(lags)))
-        df_sub <- numeric(S_n)
-        score_cor_accum <- matrix(0, L, L)
-        score_cor_n <- 0L
+    # Precompute panel regressions jointly across covariates so correlated within-run predictors
+    # are partialed in multiple regression and Level-2 between-subject covariates are estimated across subjects
+    panel_fit_cache <- list()
+    if (identical(input_kind, "panel")) {
+      s_ids_u <- if (!is.na(subj_col)) unique(as.character(dt_u[[subj_col]])) else "sub_1"
+      S_u <- length(s_ids_u)
+      dt_u_l1 <- dt_u[abs(as.numeric(dt_u[[lag_col]]) - lags[1L]) < 1e-6]
+      if (nrow(dt_u_l1) == 0L) dt_u_l1 <- dt_u
 
-        tm_w <- paste0(tm, "_whitened")
-        x_col_use <- if (has_w_y && (tm_w %in% names(dt_u))) tm_w else tm
+      non_int_covs <- setdiff(covariates, "intercept")
+      cov_within <- character(0L)
+      cov_between_subj <- character(0L)
+      cov_between_run <- character(0L)
 
-        for (si in seq_len(S_n)) {
-          dt_su <- if (!is.na(subj_col)) dt_u[as.character(get(subj_col)) == s_ids[si]] else dt_u
-          # Matrix of trial-wise regression scores to capture within-subject cross-lag error correlation
-          has_run_trial <- all(c("run", "trial") %in% names(dt_su))
-          if (has_run_trial) {
-            rt_keys <- unique(paste(dt_su$run, dt_su$trial, sep = "_"))
-            score_mat <- matrix(NA_real_, length(rt_keys), L)
+      for (cv in non_int_covs) {
+        xv_all <- as.numeric(dt_u_l1[[cv]])
+        tot_sd <- stats::sd(xv_all, na.rm = TRUE)
+        if (!is.finite(tot_sd) || tot_sd <= 1e-12) next
+        # Compute within-(subject, run) variation
+        if ("run" %in% names(dt_u_l1)) {
+          sr_grp <- if (!is.na(subj_col)) paste(dt_u_l1[[subj_col]], dt_u_l1$run, sep = "||") else as.character(dt_u_l1$run)
+        } else {
+          sr_grp <- if (!is.na(subj_col)) as.character(dt_u_l1[[subj_col]]) else rep("g1", nrow(dt_u_l1))
+        }
+        xv_w <- xv_all - stats::ave(xv_all, sr_grp, FUN = function(z) mean(z, na.rm = TRUE))
+        w_sd <- stats::sd(xv_w, na.rm = TRUE)
+        if (is.finite(w_sd) && w_sd > 1e-7 * max(1.0, tot_sd)) {
+          cov_within <- c(cov_within, cv)
+        } else if (!is.na(subj_col) && S_u >= 2L) {
+          s_grp <- as.character(dt_u_l1[[subj_col]])
+          xv_ws <- xv_all - stats::ave(xv_all, s_grp, FUN = function(z) mean(z, na.rm = TRUE))
+          ws_sd <- stats::sd(xv_ws, na.rm = TRUE)
+          if (!is.finite(ws_sd) || ws_sd <= 1e-7 * max(1.0, tot_sd)) {
+            cov_between_subj <- c(cov_between_subj, cv)
           } else {
-            score_mat <- NULL
+            cov_between_run <- c(cov_between_run, cv)
           }
+        } else {
+          cov_between_run <- c(cov_between_run, cv)
+        }
+      }
+
+      # (A) Intercept and/or Level-2 between-subject mean extraction per (subject, lag)
+      need_subj_means <- ("intercept" %in% covariates) || (length(cov_between_subj) > 0L)
+      if (need_subj_means) {
+        B_int <- matrix(NA_real_, S_u, L, dimnames = list(s_ids_u, as.character(lags)))
+        SE_int <- matrix(NA_real_, S_u, L, dimnames = list(s_ids_u, as.character(lags)))
+        df_int <- numeric(S_u)
+        sc_int_accum <- matrix(0, L, L)
+        sc_int_n <- 0L
+        for (si in seq_len(S_u)) {
+          sid_i <- s_ids_u[si]
+          dt_su <- if (!is.na(subj_col)) dt_u[as.character(dt_u[[subj_col]]) == sid_i] else dt_u
+          has_rt <- all(c("run", "trial") %in% names(dt_su))
+          rt_keys <- if (has_rt) unique(paste(dt_su$run, dt_su$trial, sep = "_")) else NULL
+          score_mat <- if (has_rt) matrix(NA_real_, length(rt_keys), L) else NULL
           df_l_vec <- numeric(L)
           for (li in seq_len(L)) {
-            dt_sul <- dt_su[abs(as.numeric(get(lag_col)) - lags[li]) < 1e-6]
-            if (nrow(dt_sul) < 4L) next
-            yv <- as.numeric(dt_sul[[y_col]])
-            wv <- if (!is.null(w_col)) as.numeric(dt_sul[[w_col]]) else rep(1.0, length(yv))
+            lag_val <- lags[li]
+            dt_sul <- dt_su[abs(as.numeric(dt_su[[lag_col]]) - lag_val) < 1e-6]
+            if (nrow(dt_sul) < 3L) next
+            yv <- as.numeric(dt_sul[[y_col_unw]])
+            wv <- if (!is.null(w_cohort_col)) as.numeric(dt_sul[[w_cohort_col]]) else rep(1.0, length(yv))
             wv[!is.finite(wv) | wv <= 0] <- 1.0
-            if (identical(tm, "intercept")) {
-              ok_i <- is.finite(yv)
-              if (sum(ok_i) < 3L) next
-              w_ok <- wv[ok_i] / mean(wv[ok_i])
-              y_ok <- yv[ok_i]
-              b_hat <- sum(w_ok * y_ok) / sum(w_ok)
-              res_i <- y_ok - b_hat
-              df_i <- max(1L, sum(ok_i) - 1L)
-              se_hat <- sqrt(sum((w_ok^2) * (res_i^2)) / (df_i * (sum(w_ok)^2)) * sum(ok_i))
-              B_mat[si, li] <- b_hat
-              SE_mat[si, li] <- se_hat
-              df_l_vec[li] <- df_i
-              if (!is.null(score_mat)) {
-                k_ok <- paste(dt_sul$run[ok_i], dt_sul$trial[ok_i], sep = "_")
-                score_mat[match(k_ok, rt_keys), li] <- w_ok * res_i
-              }
-            } else {
-              xv <- as.numeric(dt_sul[[x_col_use]])
-              ok_i <- is.finite(yv) & is.finite(xv)
-              if (sum(ok_i) < 4L) next
-              w_ok <- wv[ok_i] / mean(wv[ok_i])
-              y_ok <- yv[ok_i]
-              x_ok <- xv[ok_i]
-              # Center within run if run column is present
-              if ("run" %in% names(dt_sul)) {
-                r_ok <- dt_sul$run[ok_i]
-                for (rk in unique(r_ok)) {
-                  idx_r <- which(r_ok == rk)
-                  if (length(idx_r) >= 2L) {
-                    wr <- w_ok[idx_r]
-                    y_ok[idx_r] <- y_ok[idx_r] - sum(wr * y_ok[idx_r]) / sum(wr)
-                    x_ok[idx_r] <- x_ok[idx_r] - sum(wr * x_ok[idx_r]) / sum(wr)
-                  }
-                }
-              } else {
-                y_ok <- y_ok - sum(w_ok * y_ok) / sum(w_ok)
-                x_ok <- x_ok - sum(w_ok * x_ok) / sum(w_ok)
-              }
-              sxx <- sum(w_ok * (x_ok^2))
-              if (sxx <= 1e-10) next
-              b_hat <- sum(w_ok * x_ok * y_ok) / sxx
-              res_i <- y_ok - x_ok * b_hat
-              n_runs_i <- if ("run" %in% names(dt_sul)) length(unique(dt_sul$run[ok_i])) else 1L
-              df_i <- max(1L, sum(ok_i) - 1L - n_runs_i)
-              # White/sandwich variance combined with model SE for small-sample stability
-              s2_ols <- sum(w_ok * (res_i^2)) / df_i
-              v_model <- s2_ols / sxx
-              v_hc <- sum((w_ok * x_ok * res_i)^2) / (sxx^2) * (sum(ok_i) / df_i)
-              se_hat <- sqrt(max(0.5 * v_model + 0.5 * v_hc, .Machine$double.eps))
-              B_mat[si, li] <- b_hat
-              SE_mat[si, li] <- se_hat
-              df_l_vec[li] <- df_i
-              if (!is.null(score_mat)) {
-                k_ok <- paste(dt_sul$run[ok_i], dt_sul$trial[ok_i], sep = "_")
-                score_mat[match(k_ok, rt_keys), li] <- (w_ok * x_ok * res_i) / sxx
-              }
+            ok_i <- is.finite(yv)
+            if (sum(ok_i) < 3L) next
+            w_ok <- wv[ok_i] / mean(wv[ok_i])
+            y_ok <- yv[ok_i]
+            b_hat <- sum(w_ok * y_ok) / sum(w_ok)
+            res_i <- y_ok - b_hat
+            df_i <- max(1L, sum(ok_i) - 1L)
+            # Account for lag-1 within-run autocorrelation of trial residuals when estimating mean SE
+            ac1_i <- if ("error_ac1" %in% names(dt_sul)) stats::median(as.numeric(dt_sul$error_ac1[ok_i]), na.rm = TRUE) else 0.0
+            if (!is.finite(ac1_i)) ac1_i <- 0.0
+            ac_infl <- max(0.5, min(3.0, (1.0 + ac1_i) / max(0.15, 1.0 - ac1_i)))
+            se_hat <- sqrt(sum((w_ok^2) * (res_i^2)) / (df_i * (sum(w_ok)^2)) * sum(ok_i) * ac_infl)
+            B_int[si, li] <- b_hat
+            SE_int[si, li] <- se_hat
+            df_l_vec[li] <- df_i
+            if (!is.null(score_mat)) {
+              k_ok <- paste(dt_sul$run[ok_i], dt_sul$trial[ok_i], sep = "_")
+              score_mat[match(k_ok, rt_keys), li] <- w_ok * res_i
             }
           }
-          df_sub[si] <- stats::median(df_l_vec[df_l_vec > 0], na.rm = TRUE)
+          df_int[si] <- if (any(df_l_vec > 0)) stats::median(df_l_vec[df_l_vec > 0]) else 10
           if (!is.null(score_mat)) {
             ok_rows <- rowSums(!is.finite(score_mat)) == 0L
             if (sum(ok_rows) >= 5L) {
               R_sc <- suppressWarnings(stats::cor(score_mat[ok_rows, , drop = FALSE]))
               if (all(is.finite(R_sc))) {
-                score_cor_accum <- score_cor_accum + R_sc
-                score_cor_n <- score_cor_n + 1L
+                sc_int_accum <- sc_int_accum + R_sc
+                sc_int_n <- sc_int_n + 1L
               }
             }
           }
         }
-        R_within <- if (score_cor_n >= 1L) {
-          0.65 * (score_cor_accum / score_cor_n) + 0.35 * R_op_u
-        } else {
-          R_op_u
+        R_within_int <- if (sc_int_n >= 1L) 0.65 * (sc_int_accum / sc_int_n) + 0.35 * R_op_u else R_op_u
+        diag(R_within_int) <- 1.0
+        if ("intercept" %in% covariates) {
+          panel_fit_cache[["intercept"]] <- list(
+            kind = "within",
+            B_mat = B_int,
+            SE_mat = SE_int,
+            df_sub = df_int,
+            R_within = R_within_int
+          )
         }
-        diag(R_within) <- 1.0
+
+        # Fit Level-2 between-subject multiple regression jointly across cov_between_subj
+        if (length(cov_between_subj) > 0L && S_u >= 3L) {
+          p_b <- length(cov_between_subj)
+          Z_subj <- matrix(NA_real_, S_u, p_b, dimnames = list(s_ids_u, cov_between_subj))
+          for (si in seq_len(S_u)) {
+            sid_i <- s_ids_u[si]
+            dt_su1 <- dt_u_l1[as.character(dt_u_l1[[subj_col]]) == sid_i]
+            if (nrow(dt_su1) == 0L) dt_su1 <- dt_u[as.character(dt_u[[subj_col]]) == sid_i]
+            for (jb in seq_len(p_b)) {
+              zv <- as.numeric(dt_su1[[cov_between_subj[jb]]])
+              zv <- zv[is.finite(zv)]
+              if (length(zv)) Z_subj[si, jb] <- mean(zv)
+            }
+          }
+          B_bs <- matrix(NA_real_, p_b, L, dimnames = list(cov_between_subj, as.character(lags)))
+          SE_bs <- matrix(NA_real_, p_b, L, dimnames = list(cov_between_subj, as.character(lags)))
+          Res_bs <- matrix(NA_real_, S_u, L, dimnames = list(s_ids_u, as.character(lags)))
+          S_eff_bs <- integer(L)
+          err_share_bs <- rep(NA_real_, L)
+          for (li in seq_len(L)) {
+            yi <- B_int[, li]
+            s2i <- SE_int[, li]^2
+            s2i[!is.finite(s2i) | s2i <= 0] <- stats::var(yi, na.rm = TRUE)
+            ok_s <- is.finite(yi) & (rowSums(!is.finite(Z_subj)) == 0L)
+            n_s_ok <- sum(ok_s)
+            if (n_s_ok <= p_b + 1L) next
+            S_eff_bs[li] <- n_s_ok
+            y_ok <- yi[ok_s]
+            Z_ok <- sweep(Z_subj[ok_s, , drop = FALSE], 2L, colMeans(Z_subj[ok_s, , drop = FALSE]), "-")
+            X_des <- cbind(1.0, Z_ok)
+            # Preliminary OLS to estimate residual between-subject variance tau2_b
+            b_ols <- tryCatch(qr.solve(X_des, y_ok), error = function(e) NULL)
+            if (is.null(b_ols)) next
+            e_ols <- y_ok - as.numeric(X_des %*% b_ols)
+            df_l2 <- max(1L, n_s_ok - p_b - 1L)
+            v_res <- sum(e_ols^2) / df_l2
+            mean_s2_ok <- mean(s2i[ok_s], na.rm = TRUE)
+            tau2_b <- max(0.0, v_res - mean_s2_ok)
+            err_share_bs[li] <- mean_s2_ok / max(tau2_b + mean_s2_ok, 1e-12)
+            w_s <- 1.0 / pmax(tau2_b + s2i[ok_s], 1e-8)
+            w_s <- w_s / mean(w_s)
+            WX <- X_des * w_s
+            xwx <- crossprod(X_des, WX) + 1e-10 * diag(p_b + 1L)
+            xwx_inv <- tryCatch(solve(xwx), error = function(e) NULL)
+            if (is.null(xwx_inv)) next
+            b_wls <- as.numeric(xwx_inv %*% crossprod(WX, y_ok))
+            e_wls <- y_ok - as.numeric(X_des %*% b_wls)
+            Res_bs[ok_s, li] <- e_wls
+            # HC2 leverage-adjusted sandwich variance
+            h_ii <- pmin(0.85, rowSums((X_des %*% xwx_inv) * WX))
+            meat_hc2 <- crossprod(WX, (WX * (e_wls^2) / pmax(1.0 - h_ii, 0.15)))
+            cov_hc2 <- xwx_inv %*% meat_hc2 %*% xwx_inv
+            meat_mod <- crossprod(WX, WX * (tau2_b + s2i[ok_s]))
+            cov_mod <- xwx_inv %*% meat_mod %*% xwx_inv
+            cov_tot <- if (df_l2 >= 3L) cov_hc2 else (0.70 * cov_hc2 + 0.30 * cov_mod)
+            B_bs[, li] <- b_wls[-1L]
+            SE_bs[, li] <- sqrt(pmax(diag(cov_tot)[-1L], .Machine$double.eps))
+          }
+          theta_err_bs <- stats::median(err_share_bs[is.finite(err_share_bs)], na.rm = TRUE)
+          if (!is.finite(theta_err_bs)) theta_err_bs <- 0.50
+          theta_err_bs <- min(1.0, max(0.0, theta_err_bs))
+          R_prior_bs <- theta_err_bs * R_within_int + (1.0 - theta_err_bs) * R_res_u
+          R_emp_bs <- suppressWarnings(stats::cor(Res_bs, use = "pairwise.complete.obs"))
+          if (is.null(dim(R_emp_bs)) || any(dim(R_emp_bs) != c(L, L))) R_emp_bs <- R_prior_bs
+          bad_r <- !is.finite(R_emp_bs)
+          if (any(bad_r)) R_emp_bs[bad_r] <- R_prior_bs[bad_r]
+          S_med_bs <- max(3L, as.integer(stats::median(S_eff_bs[S_eff_bs > 0], na.rm = TRUE)))
+          sh_bs <- min(0.75, max(0.20, (S_med_bs - 2.0) / (S_med_bs + 6.0)))
+          R_grp_bs <- 0.5 * ((sh_bs * R_emp_bs + (1.0 - sh_bs) * R_prior_bs) +
+                             t(sh_bs * R_emp_bs + (1.0 - sh_bs) * R_prior_bs))
+          diag(R_grp_bs) <- 1.0
+          eig_rbs <- eigen(R_grp_bs, symmetric = TRUE)
+          R_grp_bs <- eig_rbs$vectors %*% (pmax(eig_rbs$values, 0.02) * t(eig_rbs$vectors))
+          d_rbs <- sqrt(pmax(diag(R_grp_bs), .Machine$double.eps))
+          R_grp_bs <- R_grp_bs / outer(d_rbs, d_rbs)
+          diag(R_grp_bs) <- 1.0
+          df_bs <- max(2, S_med_bs - p_b - 1)
+          for (jb in seq_len(p_b)) {
+            cv_name <- cov_between_subj[jb]
+            panel_fit_cache[[cv_name]] <- list(
+              kind = "between_subj",
+              b_raw_grp = as.numeric(B_bs[jb, ]),
+              se_raw_grp = as.numeric(SE_bs[jb, ]),
+              R_grp = R_grp_bs,
+              R_within = R_within_int,
+              shrink_alpha = sh_bs,
+              df_grp = df_bs,
+              n_subjects = S_med_bs
+            )
+          }
+        }
+      }
+
+      # (B) Joint within-run trial-level multiple regression across ALL cov_within
+      if (length(cov_within) > 0L) {
+        p_w <- length(cov_within)
+        all_have_w <- has_w_y && all(paste0(cov_within, "_whitened") %in% names(dt_u))
+        B_w_list <- stats::setNames(
+          lapply(cov_within, function(z) matrix(NA_real_, S_u, L, dimnames = list(s_ids_u, as.character(lags)))),
+          cov_within
+        )
+        SE_w_list <- stats::setNames(
+          lapply(cov_within, function(z) matrix(NA_real_, S_u, L, dimnames = list(s_ids_u, as.character(lags)))),
+          cov_within
+        )
+        df_w_sub <- numeric(S_u)
+        sc_w_accum <- stats::setNames(lapply(cov_within, function(z) matrix(0, L, L)), cov_within)
+        sc_w_n <- stats::setNames(integer(p_w), cov_within)
+
+        for (si in seq_len(S_u)) {
+          sid_cur <- s_ids_u[si]
+          dt_su <- if (!is.na(subj_col)) dt_u[as.character(dt_u[[subj_col]]) == sid_cur] else dt_u
+          has_rt <- all(c("run", "trial") %in% names(dt_su))
+          rt_keys <- if (has_rt) unique(paste(dt_su$run, dt_su$trial, sep = "_")) else NULL
+          score_mats <- if (has_rt) lapply(cov_within, function(z) matrix(NA_real_, length(rt_keys), L)) else NULL
+          df_l_vec <- numeric(L)
+
+          for (li in seq_len(L)) {
+            lag_val <- lags[li]
+            dt_sul <- dt_su[abs(as.numeric(dt_su[[lag_col]]) - lag_val) < 1e-6]
+            if (nrow(dt_sul) < p_w + 3L) next
+            run_ops_ul <- if (!all_have_w) get_run_trial_ops(sid_cur, u_id, li) else NULL
+            has_phi_ops <- !is.null(run_ops_ul) && any(vapply(run_ops_ul, function(ro) !is.null(ro$Phi_zca), logical(1L)))
+            use_w_here <- all_have_w || (has_w_y && has_phi_ops)
+            y_col_here <- if (use_w_here) "decon_demixed_whitened" else y_col_unw
+
+            yv <- as.numeric(dt_sul[[y_col_here]])
+            wv <- if (!is.null(w_col)) as.numeric(dt_sul[[w_col]]) else rep(1.0, length(yv))
+            wv[!is.finite(wv) | wv <= 0] <- 1.0
+
+            X_mat <- matrix(NA_real_, nrow(dt_sul), p_w)
+            for (jw in seq_len(p_w)) {
+              cn_j <- if (all_have_w) paste0(cov_within[jw], "_whitened") else cov_within[jw]
+              X_mat[, jw] <- as.numeric(dt_sul[[cn_j]])
+            }
+
+            ok_i <- is.finite(yv) & (rowSums(!is.finite(X_mat)) == 0L)
+            if (sum(ok_i) < p_w + 3L) next
+            w_ok <- wv[ok_i] / mean(wv[ok_i])
+            y_ok <- yv[ok_i]
+            X_ok <- X_mat[ok_i, , drop = FALSE]
+
+            # Apply run-level post-demixing operator M_post (+ optional Phi_zca) when covariates were merged post-Stage-3,
+            # followed by exact weighted within-run centering Q_wr on both y and X
+            if ("run" %in% names(dt_sul)) {
+              r_ok <- as.character(dt_sul$run[ok_i])
+              tr_ok <- if ("trial" %in% names(dt_sul)) as.integer(dt_sul$trial[ok_i]) else NULL
+              u_runs <- unique(r_ok)
+              for (rk in u_runs) {
+                idx_r <- which(r_ok == rk)
+                m_r <- length(idx_r)
+                if (m_r < 2L) {
+                  y_ok[idx_r] <- 0.0
+                  X_ok[idx_r, ] <- 0.0
+                  next
+                }
+                if (!all_have_w && !is.null(run_ops_ul) && !is.null(run_ops_ul[[rk]])) {
+                  ro <- run_ops_ul[[rk]]
+                  ok_loc_idx <- if (is.logical(ro$ok_r_local)) which(ro$ok_r_local) else as.integer(ro$ok_r_local)
+                  if (!is.null(tr_ok) && length(ok_loc_idx) == m_r && all(tr_ok[idx_r] == ok_loc_idx) &&
+                      is.matrix(ro$M_post) && all(dim(ro$M_post) == c(m_r, m_r))) {
+                    Xr_c0 <- sweep(X_ok[idx_r, , drop = FALSE], 2L, colMeans(X_ok[idx_r, , drop = FALSE]), "-")
+                    Xr_til <- ro$M_post %*% Xr_c0
+                    if (use_w_here && is.matrix(ro$Phi_zca) && all(dim(ro$Phi_zca) == c(m_r, m_r))) {
+                      X_ok[idx_r, ] <- ro$Phi_zca %*% Xr_til
+                    } else {
+                      X_ok[idx_r, ] <- Xr_til
+                    }
+                  }
+                }
+                wr <- w_ok[idx_r]
+                sw <- sum(wr)
+                y_ok[idx_r] <- y_ok[idx_r] - sum(wr * y_ok[idx_r]) / sw
+                mu_xr <- colSums(X_ok[idx_r, , drop = FALSE] * wr) / sw
+                X_ok[idx_r, ] <- sweep(X_ok[idx_r, , drop = FALSE], 2L, mu_xr, "-")
+              }
+              n_runs_i <- length(u_runs)
+            } else {
+              sw <- sum(w_ok)
+              y_ok <- y_ok - sum(w_ok * y_ok) / sw
+              mu_x <- colSums(X_ok * w_ok) / sw
+              X_ok <- sweep(X_ok, 2L, mu_x, "-")
+              n_runs_i <- 1L
+            }
+
+            w_ok <- w_ok / mean(w_ok)
+            WX <- X_ok * w_ok
+            xwx <- crossprod(X_ok, WX)
+            col_e <- diag(xwx)
+            if (any(!is.finite(col_e)) || all(col_e <= 1e-10)) next
+            reg_diag <- 1e-10 * max(mean(col_e[col_e > 0]), 1.0)
+            xwx_inv <- tryCatch(solve(xwx + reg_diag * diag(p_w)), error = function(e) NULL)
+            if (is.null(xwx_inv)) next
+
+            b_hat <- as.numeric(xwx_inv %*% crossprod(WX, y_ok))
+            res_i <- y_ok - as.numeric(X_ok %*% b_hat)
+            df_i <- max(1L, sum(ok_i) - p_w - n_runs_i)
+            s2_ols <- sum(w_ok * (res_i^2)) / df_i
+            cov_model <- s2_ols * xwx_inv
+
+            h_ii <- pmin(0.85, rowSums((X_ok %*% xwx_inv) * WX))
+            u_sc <- WX * (res_i / sqrt(pmax(1.0 - h_ii, 0.15)))
+            meat_hc <- crossprod(u_sc)
+            # When fitting on unwhitened readouts, add lag-1 Bartlett autocorrelation cross-term within run
+            if (!use_w_here && sum(ok_i) >= 6L) {
+              if ("run" %in% names(dt_sul)) {
+                r_ok <- as.character(dt_sul$run[ok_i])
+                for (rk in unique(r_ok)) {
+                  ir <- which(r_ok == rk)
+                  if (length(ir) >= 3L) {
+                    U_r <- u_sc[ir, , drop = FALSE]
+                    G1_r <- crossprod(U_r[-1L, , drop = FALSE], U_r[-length(ir), , drop = FALSE])
+                    meat_hc <- meat_hc + 0.5 * (G1_r + t(G1_r))
+                  }
+                }
+              } else {
+                G1 <- crossprod(u_sc[-1L, , drop = FALSE], u_sc[-nrow(u_sc), , drop = FALSE])
+                meat_hc <- meat_hc + 0.5 * (G1 + t(G1))
+              }
+            }
+            cov_hc <- xwx_inv %*% meat_hc %*% xwx_inv
+            cov_comb <- 0.5 * cov_model + 0.5 * cov_hc
+            se_hat <- sqrt(pmax(diag(cov_comb), .Machine$double.eps))
+
+            for (jw in seq_len(p_w)) {
+              if (col_e[jw] > 1e-10) {
+                B_w_list[[jw]][si, li] <- b_hat[jw]
+                SE_w_list[[jw]][si, li] <- se_hat[jw]
+              }
+            }
+            df_l_vec[li] <- df_i
+            if (!is.null(score_mats)) {
+              k_ok <- paste(dt_sul$run[ok_i], dt_sul$trial[ok_i], sep = "_")
+              m_idx <- match(k_ok, rt_keys)
+              infl_mat <- (WX * res_i) %*% xwx_inv
+              for (jw in seq_len(p_w)) {
+                score_mats[[jw]][m_idx, li] <- infl_mat[, jw]
+              }
+            }
+          }
+          df_w_sub[si] <- if (any(df_l_vec > 0)) stats::median(df_l_vec[df_l_vec > 0]) else 12
+          if (!is.null(score_mats)) {
+            for (jw in seq_len(p_w)) {
+              sm_j <- score_mats[[jw]]
+              ok_rows <- rowSums(!is.finite(sm_j)) == 0L
+              if (sum(ok_rows) >= 5L) {
+                R_sc <- suppressWarnings(stats::cor(sm_j[ok_rows, , drop = FALSE]))
+                if (all(is.finite(R_sc))) {
+                  sc_w_accum[[jw]] <- sc_w_accum[[jw]] + R_sc
+                  sc_w_n[jw] <- sc_w_n[jw] + 1L
+                }
+              }
+            }
+          }
+        }
+        for (jw in seq_len(p_w)) {
+          cv_name <- cov_within[jw]
+          R_w_j <- if (sc_w_n[jw] >= 1L) 0.65 * (sc_w_accum[[jw]] / sc_w_n[jw]) + 0.35 * R_op_u else R_op_u
+          diag(R_w_j) <- 1.0
+          panel_fit_cache[[cv_name]] <- list(
+            kind = "within",
+            B_mat = B_w_list[[jw]],
+            SE_mat = SE_w_list[[jw]],
+            df_sub = df_w_sub,
+            R_within = R_w_j
+          )
+        }
+      }
+
+      # (C) Between-run covariates (constant within run, varying across runs within subject)
+      if (length(cov_between_run) > 0L && ("run" %in% names(dt_u))) {
+        for (cv_br in cov_between_run) {
+          B_br <- matrix(NA_real_, S_u, L, dimnames = list(s_ids_u, as.character(lags)))
+          SE_br <- matrix(NA_real_, S_u, L, dimnames = list(s_ids_u, as.character(lags)))
+          df_br <- rep(4, S_u)
+          for (si in seq_len(S_u)) {
+            sid_i <- s_ids_u[si]
+            dt_su <- if (!is.na(subj_col)) dt_u[as.character(dt_u[[subj_col]]) == sid_i] else dt_u
+            for (li in seq_len(L)) {
+              lag_val <- lags[li]
+              dt_sul <- dt_su[abs(as.numeric(dt_su[[lag_col]]) - lag_val) < 1e-6]
+              if (nrow(dt_sul) < 4L) next
+              rm_dt <- dt_sul[, .(
+                ym = mean(as.numeric(.SD[[y_col_unw]]), na.rm = TRUE),
+                xm = mean(as.numeric(.SD[[cv_br]]), na.rm = TRUE)
+              ), by = run, .SDcols = c(y_col_unw, cv_br)]
+              rm_dt <- rm_dt[is.finite(ym) & is.finite(xm)]
+              if (nrow(rm_dt) >= 3L && stats::sd(rm_dt$xm) > 1e-10) {
+                fit_r <- stats::lm(ym ~ xm, data = rm_dt)
+                cf_r <- summary(fit_r)$coefficients
+                if ("xm" %in% rownames(cf_r)) {
+                  B_br[si, li] <- cf_r["xm", "Estimate"]
+                  SE_br[si, li] <- cf_r["xm", "Std. Error"]
+                  df_br[si] <- max(1L, nrow(rm_dt) - 2L)
+                }
+              }
+            }
+          }
+          panel_fit_cache[[cv_br]] <- list(
+            kind = "within",
+            B_mat = B_br,
+            SE_mat = SE_br,
+            df_sub = df_br,
+            R_within = R_op_u
+          )
+        }
+      }
+    }
+
+    for (tm in covariates) {
+      is_between_subj_term <- FALSE
+      if (identical(input_kind, "panel")) {
+        pf <- panel_fit_cache[[tm]]
+        if (is.null(pf)) next
+        if (identical(pf$kind, "between_subj")) {
+          is_between_subj_term <- TRUE
+          b_raw_grp <- pf$b_raw_grp
+          se_raw_grp <- pf$se_raw_grp
+          if (any(!is.finite(b_raw_grp))) {
+            bad_b <- !is.finite(b_raw_grp)
+            b_raw_grp[bad_b] <- 0.0
+            med_se_b <- stats::median(se_raw_grp[is.finite(se_raw_grp) & se_raw_grp > 0], na.rm = TRUE)
+            se_raw_grp[bad_b | !is.finite(se_raw_grp) | se_raw_grp <= 0] <- if (is.finite(med_se_b)) 2.0 * med_se_b else 0.25
+          }
+          R_within <- pf$R_within
+          R_grp <- pf$R_grp
+          shrink_alpha <- pf$shrink_alpha
+          Sigma_raw_grp <- outer(se_raw_grp, se_raw_grp) * R_grp
+          df_grp <- pf$df_grp
+          S_n <- pf$n_subjects
+          B_mat_orig <- NULL
+        } else {
+          B_mat <- pf$B_mat
+          SE_mat <- pf$SE_mat
+          df_sub <- pf$df_sub
+          R_within <- pf$R_within
+        }
       } else {
         # Coefficient table input
-        dt_ut <- dt_u[as.character(term) == tm]
+        dt_ut <- dt_u[as.character(dt_u$term) == tm]
         if (nrow(dt_ut) == 0L) next
         s_ids <- if (!is.na(subj_col)) unique(as.character(dt_ut[[subj_col]])) else "sub_1"
         S_n <- length(s_ids)
@@ -3896,7 +5075,8 @@ medusa_multilag_infer <- function(
         SE_mat <- matrix(NA_real_, S_n, L, dimnames = list(s_ids, as.character(lags)))
         df_sub <- rep(24, S_n)
         for (si in seq_len(S_n)) {
-          dt_s <- if (!is.na(subj_col)) dt_ut[as.character(get(subj_col)) == s_ids[si]] else dt_ut
+          sid_i <- s_ids[si]
+          dt_s <- if (!is.na(subj_col)) dt_ut[as.character(dt_ut[[subj_col]]) == sid_i] else dt_ut
           ord <- match(lags, as.numeric(dt_s[[lag_col]]))
           B_mat[si, ] <- as.numeric(dt_s[[est_col]])[ord]
           if (!is.na(se_col)) {
@@ -3914,62 +5094,102 @@ medusa_multilag_infer <- function(
         R_within <- R_op_u
       }
 
-      ok_subj <- rowSums(!is.finite(B_mat)) == 0L
-      if (!any(ok_subj)) next
-      B_mat <- B_mat[ok_subj, , drop = FALSE]
-      SE_mat <- SE_mat[ok_subj, , drop = FALSE]
-      df_sub <- df_sub[ok_subj]
-      s_ids_ok <- rownames(B_mat)
-      S_n <- nrow(B_mat)
-      for (li in seq_len(L)) {
-        bad_se <- !is.finite(SE_mat[, li]) | SE_mat[, li] <= 0
-        if (any(bad_se)) {
-          SE_mat[bad_se, li] <- if (S_n >= 2L) stats::sd(B_mat[, li], na.rm = TRUE) else 0.10
-        }
-      }
+      if (!is_between_subj_term) {
+        # Retain all subjects with at least 1 observed lag (available-case pooling instead of listwise deletion)
+        ok_subj <- rowSums(is.finite(B_mat)) >= 1L
+        if (!any(ok_subj)) next
+        B_mat <- B_mat[ok_subj, , drop = FALSE]
+        SE_mat <- SE_mat[ok_subj, , drop = FALSE]
+        df_sub <- df_sub[ok_subj]
+        s_ids_ok <- rownames(B_mat)
+        S_n <- nrow(B_mat)
+        B_mat_orig <- B_mat
+        SE_mat_orig <- SE_mat
 
-      # 3. Group / Unit Mean Trajectory & Full L x L Cross-Lag Covariance
-      if (S_n >= 2L) {
-        # Random-effects precision weights across subjects per lag
-        b_raw_grp <- numeric(L)
-        se_raw_grp <- numeric(L)
-        W_subj <- matrix(1 / S_n, S_n, L)
         for (li in seq_len(L)) {
-          yi <- B_mat[, li]
-          s2i <- SE_mat[, li]^2
-          v_tot <- stats::var(yi)
-          tau2_b <- max(0, v_tot - mean(s2i))
-          wi <- 1 / pmax(tau2_b + s2i, 1e-8)
-          wi <- wi / sum(wi)
-          W_subj[, li] <- wi
-          b_raw_grp[li] <- sum(wi * yi)
-          # Standard error of precision-weighted group mean
-          res_y <- yi - b_raw_grp[li]
-          v_emp <- sum((wi^2) * (res_y^2)) * (S_n / max(1L, S_n - 1L))
-          v_mod <- sum((wi^2) * (tau2_b + s2i))
-          se_raw_grp[li] <- sqrt(max(0.75 * v_emp + 0.25 * v_mod, .Machine$double.eps))
+          ok_b_li <- is.finite(B_mat[, li])
+          bad_se <- ok_b_li & (!is.finite(SE_mat[, li]) | SE_mat[, li] <= 0)
+          if (any(bad_se)) {
+            sd_li <- if (sum(ok_b_li) >= 2L) stats::sd(B_mat[ok_b_li, li]) else NA_real_
+            SE_mat[bad_se, li] <- if (is.finite(sd_li) && sd_li > 0) sd_li else 0.10
+          }
         }
-        # Empirical between-subject cross-lag correlation shrunk toward operator correlation R_within
-        B_cent <- sweep(B_mat, 2L, b_raw_grp, "-")
-        R_emp_grp <- suppressWarnings(stats::cor(B_cent))
-        if (any(!is.finite(R_emp_grp))) R_emp_grp <- R_within
-        shrink_alpha <- min(0.75, max(0.20, (S_n - 2.0) / (S_n + 6.0)))
-        R_grp <- shrink_alpha * R_emp_grp + (1.0 - shrink_alpha) * R_within
-        R_grp <- 0.5 * (R_grp + t(R_grp))
-        diag(R_grp) <- 1.0
-        eig_R <- eigen(R_grp, symmetric = TRUE)
-        R_grp <- eig_R$vectors %*% (pmax(eig_R$values, 0.02) * t(eig_R$vectors))
-        d_rg <- sqrt(pmax(diag(R_grp), .Machine$double.eps))
-        R_grp <- R_grp / outer(d_rg, d_rg)
-        diag(R_grp) <- 1.0
-        Sigma_raw_grp <- outer(se_raw_grp, se_raw_grp) * R_grp
-        df_grp <- max(2, S_n - 1)
-      } else {
-        b_raw_grp <- as.numeric(B_mat[1L, ])
-        se_raw_grp <- as.numeric(SE_mat[1L, ])
-        R_grp <- R_within
-        Sigma_raw_grp <- outer(se_raw_grp, se_raw_grp) * R_grp
-        df_grp <- if (is.finite(df_sub[1L]) && df_sub[1L] >= 2) df_sub[1L] else 20
+
+        # 3. Group / Unit Mean Trajectory & Full L x L Cross-Lag Covariance (available-case per lag)
+        if (S_n >= 2L) {
+          b_raw_grp <- rep(NA_real_, L)
+          se_raw_grp <- rep(NA_real_, L)
+          S_per_lag <- integer(L)
+          err_share_grp <- rep(NA_real_, L)
+          for (li in seq_len(L)) {
+            ok_li <- is.finite(B_mat[, li]) & is.finite(SE_mat[, li]) & (SE_mat[, li] > 0)
+            n_li <- sum(ok_li)
+            S_per_lag[li] <- n_li
+            if (n_li >= 2L) {
+              yi <- B_mat[ok_li, li]
+              s2i <- SE_mat[ok_li, li]^2
+              v_tot <- stats::var(yi)
+              mean_s2_li <- mean(s2i)
+              tau2_b <- max(0, v_tot - mean_s2_li)
+              err_share_grp[li] <- mean_s2_li / max(tau2_b + mean_s2_li, 1e-12)
+              wi <- 1 / pmax(tau2_b + s2i, 1e-8)
+              wi <- wi / sum(wi)
+              b_raw_grp[li] <- sum(wi * yi)
+              res_y <- yi - b_raw_grp[li]
+              sum_w2_li <- sum(wi^2)
+              denom_li <- pmin(1.0 - wi, pmax(1.0 - 2.0 * wi + sum_w2_li, 1.0 / n_li))
+              v_emp <- sum((wi^2) * (res_y^2) / pmax(denom_li, 1.0 / (2.0 * n_li)))
+              v_mod <- sum((wi^2) * (tau2_b + s2i))
+              v_tot_grp <- if (n_li >= 3L) v_emp else (0.50 * v_emp + 0.50 * v_mod)
+              se_raw_grp[li] <- sqrt(max(v_tot_grp, .Machine$double.eps))
+            } else if (n_li == 1L) {
+              b_raw_grp[li] <- B_mat[ok_li, li]
+              se_raw_grp[li] <- SE_mat[ok_li, li]
+            }
+          }
+          if (!any(is.finite(b_raw_grp))) next
+          if (any(!is.finite(b_raw_grp))) {
+            bad_l <- !is.finite(b_raw_grp)
+            b_raw_grp[bad_l] <- 0.0
+            med_se_g <- stats::median(se_raw_grp[is.finite(se_raw_grp) & se_raw_grp > 0], na.rm = TRUE)
+            se_raw_grp[bad_l] <- if (is.finite(med_se_g)) 2.5 * med_se_g else 0.25
+          }
+          theta_err_grp <- stats::median(err_share_grp[is.finite(err_share_grp)], na.rm = TRUE)
+          if (!is.finite(theta_err_grp)) theta_err_grp <- 0.50
+          theta_err_grp <- min(1.0, max(0.0, theta_err_grp))
+          R_prior_grp <- theta_err_grp * R_within + (1.0 - theta_err_grp) * R_res_u
+          B_cent <- sweep(B_mat, 2L, b_raw_grp, "-")
+          R_emp_grp <- suppressWarnings(stats::cor(B_cent, use = "pairwise.complete.obs"))
+          if (is.null(dim(R_emp_grp)) || any(dim(R_emp_grp) != c(L, L))) R_emp_grp <- R_prior_grp
+          bad_rg <- !is.finite(R_emp_grp)
+          if (any(bad_rg)) R_emp_grp[bad_rg] <- R_prior_grp[bad_rg]
+          S_eff_med <- max(2L, as.integer(stats::median(S_per_lag[S_per_lag > 0], na.rm = TRUE)))
+          shrink_alpha <- min(0.75, max(0.20, (S_eff_med - 2.0) / (S_eff_med + 6.0)))
+          R_grp <- shrink_alpha * R_emp_grp + (1.0 - shrink_alpha) * R_prior_grp
+          R_grp <- 0.5 * (R_grp + t(R_grp))
+          diag(R_grp) <- 1.0
+          eig_R <- eigen(R_grp, symmetric = TRUE)
+          R_grp <- eig_R$vectors %*% (pmax(eig_R$values, 0.02) * t(eig_R$vectors))
+          d_rg <- sqrt(pmax(diag(R_grp), .Machine$double.eps))
+          R_grp <- R_grp / outer(d_rg, d_rg)
+          diag(R_grp) <- 1.0
+          Sigma_raw_grp <- outer(se_raw_grp, se_raw_grp) * R_grp
+          df_grp <- max(2, S_eff_med - 1)
+        } else {
+          b_raw_grp <- as.numeric(B_mat[1L, ])
+          se_raw_grp <- as.numeric(SE_mat[1L, ])
+          if (!any(is.finite(b_raw_grp))) next
+          if (any(!is.finite(b_raw_grp))) {
+            bad_l <- !is.finite(b_raw_grp)
+            b_raw_grp[bad_l] <- 0.0
+            med_se_1 <- stats::median(se_raw_grp[is.finite(se_raw_grp) & se_raw_grp > 0], na.rm = TRUE)
+            se_raw_grp[bad_l | !is.finite(se_raw_grp) | se_raw_grp <= 0] <- if (is.finite(med_se_1)) 2.5 * med_se_1 else 0.25
+          }
+          shrink_alpha <- 0.0
+          R_grp <- R_within
+          Sigma_raw_grp <- outer(se_raw_grp, se_raw_grp) * R_grp
+          df_grp <- if (is.finite(df_sub[1L]) && df_sub[1L] >= 2) df_sub[1L] else 20
+        }
       }
 
       # 4. Joint Cross-Lag Spectral De-Blurring + Correlated-SURE Boosted P-Spline
@@ -3986,18 +5206,31 @@ medusa_multilag_infer <- function(
       b_ml_grp <- sm_grp$beta
       se_ml_grp <- sm_grp$se
       Sigma_ml_grp <- sm_grp$Sigma
+      b_deblur_grp <- sm_grp$beta_deblur
+      Sigma_deblur_grp <- sm_grp$Sigma_deblur
 
       # 5. Subject-Level Smooth and Multivariate Empirical Bayes (EB) Trajectories
-      if (S_n >= 1L) {
+      if (!is_between_subj_term && S_n >= 1L) {
         B_smooth_subj <- matrix(0, S_n, L)
         Sigma_e_subj <- vector("list", S_n)
         for (si in seq_len(S_n)) {
-          Sigma_raw_si <- outer(SE_mat[si, ], SE_mat[si, ]) * R_within
+          ops_si <- get_unit_operators(u_id, sid_opt = s_ids_ok[si])
+          b_si_in <- B_mat[si, ]
+          se_si_in <- SE_mat[si, ]
+          miss_si <- !is.finite(b_si_in) | !is.finite(se_si_in) | (se_si_in <= 0)
+          if (any(miss_si)) {
+            b_si_in[miss_si] <- b_raw_grp[miss_si]
+            max_se_si <- max(se_si_in[!miss_si], na.rm = TRUE)
+            se_si_in[miss_si] <- if (is.finite(max_se_si) && max_se_si > 0) 3.0 * max_se_si else 0.50
+          }
+          R_si_use <- if (identical(ops_si$R_op, R_op_u)) R_within else (0.5 * R_within + 0.5 * ops_si$R_op)
+          diag(R_si_use) <- 1.0
+          Sigma_raw_si <- outer(se_si_in, se_si_in) * R_si_use
           sm_si <- medusa_smooth_deblur_trajectory(
-            beta_vec = B_mat[si, ],
+            beta_vec = b_si_in,
             Sigma_beta = Sigma_raw_si,
             lags = lags,
-            C_sym = C_u,
+            C_sym = ops_si$C_sym,
             tr = tr,
             demix_within_trial = demix_within_trial,
             recalibrate_wt_lobe = recalibrate_wt_lobe,
@@ -4031,8 +5264,8 @@ medusa_multilag_infer <- function(
             unit = u_id,
             term = tm,
             lag = lags,
-            estimate_raw = B_mat[si, ],
-            std.error_raw = SE_mat[si, ],
+            estimate_raw = B_mat_orig[si, ],
+            std.error_raw = SE_mat_orig[si, ],
             estimate_smooth = B_smooth_subj[si, ],
             estimate_eb = B_eb_subj[si, ]
           )
@@ -4062,10 +5295,7 @@ medusa_multilag_infer <- function(
         }
       }
 
-      # 6. Operator-Informed Simultaneous Cross-Lag Inference (Max-|T|, 1D TFCE, & Omnibus)
-      # Use raw lag-wise t-statistics coupled through the operator/empirical cross-lag
-      # correlation R_grp for pointwise & cluster-aware hypothesis testing, while also
-      # providing simultaneous bands for both raw and multi-lag trajectories.
+      # 6. Operator-Informed Simultaneous Cross-Lag Inference (Studentized Max-|T|, 1D TFCE, & Pivotal Omnibus)
       t_obs <- b_raw_grp / pmax(se_raw_grp, .Machine$double.eps)
       p_point <- 2.0 * stats::pt(abs(t_obs), df = df_grp, lower.tail = FALSE)
       p_bh <- stats::p.adjust(p_point, method = "BH")
@@ -4076,29 +5306,76 @@ medusa_multilag_infer <- function(
 
       eig_Rg <- eigen(R_grp, symmetric = TRUE)
       L_Rg <- eig_Rg$vectors %*% (sqrt(pmax(eig_Rg$values, 0)) * t(eig_Rg$vectors))
-      Z_null <- matrix(stats::rnorm(L * n_perm), nrow = L, ncol = n_perm)
-      chi_draws <- sqrt(stats::rchisq(n_perm, df = df_grp) / df_grp)
-      T_null <- sweep(L_Rg %*% Z_null, 2L, chi_draws, "/")
+
+      # Studentized finite-sample null simulation: re-estimates per-lag SEs and shrunk correlation R_grp^(b)
+      # under H0 so Max-|T|, TFCE, and Hotelling/Mahalanobis omnibus_p account for Wishart covariance uncertainty
+      m_df_sim <- max(3L, min(80L, as.integer(round(df_grp)) + 1L))
+      Z_rep <- matrix(stats::rnorm(m_df_sim * n_perm * L), nrow = m_df_sim * n_perm, ncol = L) %*% t(L_Rg)
+      dim(Z_rep) <- c(m_df_sim, n_perm, L)
+      # Vectorized sample means and sample variances across m_df_sim rows for all (n_perm x L)
+      Z_perm_L <- matrix(aperm(Z_rep, c(1L, 3L, 2L)), nrow = m_df_sim, ncol = L * n_perm)
+      mu_null_vec <- colMeans(Z_perm_L)
+      Z_cent_L <- sweep(Z_perm_L, 2L, mu_null_vec, "-")
+      se_null_vec <- sqrt(pmax(colSums(Z_cent_L^2) / (m_df_sim * (m_df_sim - 1.0)), .Machine$double.eps))
+      T_null <- matrix(mu_null_vec / se_null_vec, nrow = L, ncol = n_perm)
 
       max_t_null <- apply(abs(T_null), 2L, max)
       crit_maxT <- as.numeric(stats::quantile(max_t_null, probs = conf_level, na.rm = TRUE, names = FALSE))
       p_maxT <- vapply(abs(t_obs), function(tv) (1.0 + sum(max_t_null >= tv)) / (n_perm + 1.0), numeric(1L))
 
-      # 1D Threshold-Free Cluster Enhancement (TFCE) calibrated under correlated T_null
+      # 1D Threshold-Free Cluster Enhancement (TFCE) calibrated under correlated studentized T_null
       T_all <- cbind(t_obs, T_null)
       tfce_all <- medusa_tfce_1d_matrix(T_all, dt = dt_lag, E = 0.5, H = 2.0, dh = 0.10, two_sided = TRUE)
       tfce_obs <- tfce_all[, 1L]
       max_tfce_null <- apply(tfce_all[, -1L, drop = FALSE], 2L, max)
       p_tfce <- vapply(tfce_obs, function(sv) (1.0 + sum(max_tfce_null >= sv)) / (n_perm + 1.0), numeric(1L))
 
-      # Regularized Mahalanobis / Hotelling epoch omnibus test against H0: beta(tau) == 0 for all tau
-      eig_Sig <- eigen(Sigma_raw_grp, symmetric = TRUE)
-      lam_floor <- 0.03 * max(eig_Sig$values, 1e-8)
-      Sig_inv_reg <- eig_Sig$vectors %*% ((1.0 / pmax(eig_Sig$values, lam_floor)) * t(eig_Sig$vectors))
-      q_obs <- sum(b_raw_grp * as.numeric(Sig_inv_reg %*% b_raw_grp)) / L
-      B_null_draws <- sweep(T_null, 1L, se_raw_grp, "*")
-      q_null <- colSums(B_null_draws * (Sig_inv_reg %*% B_null_draws)) / L
-      omnibus_p <- (1.0 + sum(q_null >= q_obs)) / (n_perm + 1.0)
+      # Pivotal regularized studentized Mahalanobis / Hotelling epoch omnibus test against H0: beta(tau) == 0
+      compute_omni_stat <- function(t_vec, R_mat) {
+        eg <- eigen(R_mat, symmetric = TRUE)
+        l_fl <- 0.05 * max(eg$values, 1e-8)
+        R_inv <- eg$vectors %*% ((1.0 / pmax(eg$values, l_fl)) * t(eg$vectors))
+        sum(t_vec * as.numeric(R_inv %*% t_vec)) / L
+      }
+      q_obs <- compute_omni_stat(t_obs, R_grp)
+      B_omni <- min(as.integer(n_perm), 2000L)
+      q_null <- numeric(B_omni)
+      if (shrink_alpha > 0 && m_df_sim <= 60L) {
+        for (bi in seq_len(B_omni)) {
+          idx_bi <- ((bi - 1L) * L + 1L):(bi * L)
+          Zc_b <- Z_cent_L[, idx_bi, drop = FALSE]
+          sd_b <- sqrt(pmax(colSums(Zc_b^2), .Machine$double.eps))
+          Zn_b <- sweep(Zc_b, 2L, sd_b, "/")
+          R_emp_b <- crossprod(Zn_b)
+          R_b <- shrink_alpha * R_emp_b + (1.0 - shrink_alpha) * R_grp
+          R_b <- 0.5 * (R_b + t(R_b))
+          diag(R_b) <- 1.0
+          eg_rb <- eigen(R_b, symmetric = TRUE)
+          if (min(eg_rb$values) < 0.02) {
+            R_b <- eg_rb$vectors %*% (pmax(eg_rb$values, 0.02) * t(eg_rb$vectors))
+            d_b <- sqrt(pmax(diag(R_b), .Machine$double.eps))
+            R_b <- R_b / outer(d_b, d_b)
+            diag(R_b) <- 1.0
+          }
+          q_null[bi] <- compute_omni_stat(T_null[, bi], R_b)
+        }
+      } else {
+        eg_r0 <- eigen(R_grp, symmetric = TRUE)
+        l_fl0 <- 0.05 * max(eg_r0$values, 1e-8)
+        R_inv0 <- eg_r0$vectors %*% ((1.0 / pmax(eg_r0$values, l_fl0)) * t(eg_r0$vectors))
+        T_sub <- T_null[, seq_len(B_omni), drop = FALSE]
+        q_null <- colSums(T_sub * (R_inv0 %*% T_sub)) / L
+      }
+      omnibus_p <- (1.0 + sum(q_null >= q_obs)) / (B_omni + 1.0)
+
+      # Marra & Wood (2012) smoothing-bias-aware SE for simultaneous confidence bands around estimate_multilag
+      IL_mat <- diag(1, L)
+      ImS_grp <- IL_mat - sm_grp$S_smooth
+      diff_smooth_grp <- as.numeric(ImS_grp %*% b_deblur_grp)
+      var_diff_null <- pmax(0, diag(ImS_grp %*% Sigma_deblur_grp %*% t(ImS_grp)))
+      bias2_mw <- pmax(0, (diff_smooth_grp^2) - 0.5 * var_diff_null) +
+        0.25 * pmax(0, diag(Sigma_deblur_grp) - diag(Sigma_ml_grp))
+      se_ml_band <- sqrt(pmax(se_ml_grp^2 + bias2_mw, .Machine$double.eps))
 
       t_crit_pt <- stats::qt(1.0 - (1.0 - conf_level) / 2.0, df = df_grp)
       dt_coef <- data.table::data.table(
@@ -4125,8 +5402,8 @@ medusa_multilag_infer <- function(
         conf.high = b_raw_grp + t_crit_pt * se_raw_grp,
         conf.low.sim = b_raw_grp - crit_maxT * se_raw_grp,
         conf.high.sim = b_raw_grp + crit_maxT * se_raw_grp,
-        conf.low.multilag.sim = b_ml_grp - crit_maxT * se_ml_grp,
-        conf.high.multilag.sim = b_ml_grp + crit_maxT * se_ml_grp,
+        conf.low.multilag.sim = b_ml_grp - crit_maxT * se_ml_band,
+        conf.high.multilag.sim = b_ml_grp + crit_maxT * se_ml_band,
         omnibus_stat = q_obs,
         omnibus_p = omnibus_p,
         n_subjects = S_n
@@ -4165,7 +5442,22 @@ medusa_multilag_infer <- function(
       dt_lat[[unit_col]] <- u_id
       lat_out_list[[length(lat_out_list) + 1L]] <- dt_lat
 
-      # 8. Covariance-Propagated Multi-Lag Contrasts
+      # 8. Covariance-Propagated Multi-Lag Contrasts (evaluated on unsmoothed deblurred trajectory by default)
+      b_con_src <- if (identical(contrast_source, "unsmoothed")) {
+        b_deblur_grp
+      } else if (identical(contrast_source, "raw")) {
+        b_raw_grp
+      } else {
+        b_ml_grp
+      }
+      Sig_con_src <- if (identical(contrast_source, "unsmoothed")) {
+        Sigma_deblur_grp
+      } else if (identical(contrast_source, "raw")) {
+        Sigma_raw_grp
+      } else {
+        Sigma_ml_grp
+      }
+
       con_specs <- contrasts
       if (is.null(con_specs) && L >= 4L) {
         mid_tau <- stats::median(lags)
@@ -4194,8 +5486,8 @@ medusa_multilag_infer <- function(
           } else {
             next
           }
-          est_c <- sum(c_vec * b_ml_grp)
-          var_c <- as.numeric(crossprod(c_vec, Sigma_ml_grp %*% c_vec))
+          est_c <- sum(c_vec * b_con_src)
+          var_c <- as.numeric(crossprod(c_vec, Sig_con_src %*% c_vec))
           se_c <- sqrt(max(var_c, .Machine$double.eps))
           t_c <- est_c / se_c
           p_c <- 2.0 * stats::pt(abs(t_c), df = df_grp, lower.tail = FALSE)
@@ -4218,6 +5510,7 @@ medusa_multilag_infer <- function(
 
       cov_out_list[[u_id]][[tm]] <- list(
         Sigma_raw = Sigma_raw_grp,
+        Sigma_deblur = Sigma_deblur_grp,
         Sigma_multilag = Sigma_ml_grp,
         R_group = R_grp,
         C_sym = C_u,
@@ -4238,6 +5531,7 @@ medusa_multilag_infer <- function(
       settings = list(
         lags = lags,
         trajectory_mode = trajectory_mode,
+        contrast_source = contrast_source,
         demix_within_trial = demix_within_trial,
         n_perm = n_perm,
         n_boot_latency = n_boot_latency,

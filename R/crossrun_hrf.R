@@ -502,13 +502,16 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
   names(per_run) <- names(run_results) <- names(noise) <- names(design_manifest) <- names(event_manifest) <- names(bold)
   if (!is.null(spatial_groups)) names(spatial_groups) <- voxel_ids
   eff_noise_groups <- if (!is.null(noise_groups)) noise_groups else spatial_groups
+  if (!any(vapply(events, function(e) is.data.frame(e) && nrow(e) >= 1L, logical(1L))))
+    stop("At least one run must contain >= 1 event")
   for (r in seq_along(bold)) {
     y <- bold[[r]]; ev <- events[[r]]
-    checkmate::assert_data_frame(ev, min.rows = 1L)
+    checkmate::assert_data_frame(ev, min.rows = 0L)
     checkmate::assert_subset(c("onset", "condition"), names(ev))
     checkmate::assert_numeric(ev$onset, any.missing = FALSE, finite = TRUE)
     labels <- as.character(ev$condition)
-    if (anyNA(labels) || any(!nzchar(labels))) stop("Event conditions must be nonmissing and nonempty")
+    if (nrow(ev) > 0L && (anyNA(labels) || any(!nzchar(labels))))
+      stop("Event conditions must be nonmissing and nonempty")
     durations <- if (is.null(ev$duration)) rep(0, nrow(ev)) else ev$duration
     checkmate::assert_numeric(durations, lower = 0, any.missing = FALSE, finite = TRUE)
     checkmate::assert_matrix(nuisance[[r]], mode = "numeric", nrows = nrow(y))
@@ -522,6 +525,23 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
       if (noise_model == "ols") 0 else if (!is.null(noise_rho)) noise_rho[r] else NULL,
       spatial_coords = spatial_coords, spatial_fwhm = spatial_fwhm)
     rho_ref <- if (any(is.finite(noise[[r]]$rho))) stats::median(noise[[r]]$rho, na.rm = TRUE) else 0
+    if (nrow(ev) == 0L) {
+      result <- list(scores = matrix(NA_real_, ncol(kernels), ncol(y)),
+        signal_status = rep("no_events", ncol(y)))
+      if (evidence == "calibrated") for (field in c("task_p", "fallback_p", "incompatible_p"))
+        result[[field]] <- matrix(NA_real_, ncol(kernels), ncol(y))
+      z_obs <- z[mask, , drop = FALSE]
+      sv_z <- if (nrow(z_obs) > 0L && ncol(z_obs) > 0L) svd(z_obs, nv = 0)$d else numeric(0L)
+      rk_z <- if (length(sv_z) && sv_z[1L] > 0) sum(sv_z > 1e-8 * sv_z[1L]) else 0L
+      run_results[[r]] <- result
+      per_run[[r]] <- result$scores
+      design_manifest[[r]] <- data.frame(run = names(bold)[r], candidate = candidate_ids,
+        noise_rho = rho_ref, task_rank = rep(0L, ncol(kernels)), nuisance_rank = as.integer(rk_z),
+        n_observations = sum(mask), comparable = FALSE)
+      event_manifest[[r]] <- data.frame(run = names(bold)[r], voxel = voxel_ids,
+        status = result$signal_status)
+      next
+    }
     design <- hrf_build_run_design(y, ev, tr, offsets[r], kernels, z, mask,
       amplitude_model, rho_ref, batch_size, fallback_kernel)
     result <- list(scores = matrix(NA_real_, ncol(kernels), ncol(y)),
@@ -1056,6 +1076,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       penalty = penalty,
       ridge_floor = ridge_floor,
       observation_mask = observation_mask,
+      nuisance_mode = nuisance_mode,
+      tail_padding = tail_padding,
       backend = backend,
       gcv_rule = gcv_rule
     )
@@ -1068,8 +1090,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
     batch_size = as.integer(batch_size), operator_cache_mb = operator_cache_mb,
     hrf_selection = "frozen_crossrun", nuisance_mode = nuisance_mode,
     observation_mask = observation_mask, noise_model = hrf_fit$settings$noise_model)
-  activity <- scaling_tables <- vector("list", length(bold))
-  names(activity) <- names(scaling_tables) <- names(bold)
+  activity <- scaling_tables <- noise_innovations <- vector("list", length(bold))
+  names(activity) <- names(scaling_tables) <- names(noise_innovations) <- names(bold)
   operators <- new.env(parent = emptyenv())
   cached_design <- NULL
   cache_keys <- character(); cache_bytes <- 0
@@ -1094,6 +1116,10 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       status[status == "ok" & unknown] <- "noise_unidentified"
     }
     out <- matrix(NA_real_, n, ncol(y), dimnames = dimnames(y))
+    store_innov <- length(rows) >= 3L && ncol(y) <= 16384L
+    z_innov_r <- if (store_innov) {
+      matrix(0.0, length(rows), ncol(y), dimnames = list(NULL, colnames(y)))
+    } else NULL
     centers <- divisors <- noise_sds <- rep(NA_real_, ncol(y))
     # Group voxels into strata that share the exact same (kernel / weight vector, rho) pair.
     # Because the regularized GLS inverse operator M = (H' W' Q_Z W H + lambda P)^-1 H' W' Q_Z W
@@ -1108,8 +1134,11 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       ar_op <- if (!is.null(strat$get_ar)) strat$get_ar(columns[1L]) else ar
       ar_psi1 <- if (!is.null(strat$psi1)) strat$psi1[columns[1L]] else 0.0
       ar_psi2 <- if (!is.null(strat$psi2)) strat$psi2[columns[1L]] else 0.0
+      ar_psi3 <- if (!is.null(strat$psi3)) strat$psi3[columns[1L]] else 0.0
+      ar_psi4 <- if (!is.null(strat$psi4)) strat$psi4[columns[1L]] else 0.0
       k_vec <- as.numeric(strat$get_kernel(columns[1L]))
       x_gls_stratum <- NULL
+      x_trial_stratum <- NULL
       if (!is.null(hrf_fit$specification$events[[r]]) && length(rows) >= 20L) {
         mask_decon_bool <- seq_len(n) %in% rows
         nuis_r <- if (!is.null(hrf_fit$specification$nuisance)) hrf_fit$specification$nuisance[[r]] else matrix(numeric(), n, 0L)
@@ -1119,6 +1148,10 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
           hrf_fit$settings$tr, off_r, k_vec, z_r_base, mask_decon_bool)
         if (md_str$df_nominal >= 16L) {
           x_gls_stratum <- md_str$design[rows, , drop = FALSE]
+        }
+        if (!isTRUE(md_str$used_trial_design) && !is.null(md_str$trial_design) &&
+            ncol(md_str$trial_design) > 0L) {
+          x_trial_stratum <- md_str$trial_design[rows, , drop = FALSE]
         }
       }
       if (backend != "wiener") {
@@ -1137,13 +1170,23 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       }
       for (indices in split(columns, ceiling(seq_along(columns) / batch_size))) {
         y_blk <- y[rows, indices, drop = FALSE]
-        coh_nsd <- hrf_estimate_gls_noise_sd(y_blk, x_gls_stratum, rows, ar_op)
+        gls_res <- hrf_estimate_gls_noise_sd(
+          y_blk, x_gls_stratum, rows, ar_op,
+          return_innovations = store_innov,
+          trial_rows = x_trial_stratum
+        )
+        coh_nsd <- if (store_innov) gls_res$sd else gls_res
+        if (store_innov && !is.null(gls_res$z_unit)) {
+          z_innov_r[, indices] <- gls_res$z_unit
+        }
         scaled <- scale_decon_input(
           y_blk,
           scaling = scaling,
           noise_rho = ar,
           noise_psi1 = ar_psi1,
           noise_psi2 = ar_psi2,
+          noise_psi3 = ar_psi3,
+          noise_psi4 = ar_psi4,
           noise_sd_override = if (identical(scaling, "noise_sd")) coh_nsd else NULL
         )
         out[, indices] <- if (backend == "wiener") {
@@ -1159,9 +1202,16 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
     attr(out, "time_offset") <- hrf_fit$settings$time_offset[r]
     attr(out, "observation_mask") <- seq_len(n) %in% rows
     activity[[r]] <- out
+    noise_innovations[[r]] <- z_innov_r
     scaling_tables[[r]] <- data.frame(run = names(bold)[r], voxel = colnames(y),
       status = status, center = centers, scale = divisors, noise_sd = noise_sds,
       scaling = scaling, noise_rho = rho, n_observations = length(rows))
   }
-  list(activity = activity, scaling = scaling_tables, hrf_fit = hrf_fit, settings = settings)
+  list(
+    activity = activity,
+    scaling = scaling_tables,
+    hrf_fit = hrf_fit,
+    settings = settings,
+    noise_innovations = noise_innovations
+  )
 }
