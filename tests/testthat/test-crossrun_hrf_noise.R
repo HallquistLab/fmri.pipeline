@@ -1298,3 +1298,365 @@ test_that("fast-TR amendments: AR(1)xAR(2) cascade whitening, AR(3) second-diffe
   expect_lt(mean(b_wt), 0.85)
 })
 
+test_that("joint multi-lag trajectory modeling and operator-informed inference recover waveforms, sub-grid latency, and calibrated FWER", {
+  set.seed(202631)
+  tr <- 1.0
+  n_time <- 180L
+  n_trials <- 22L
+  lags <- seq(-2, 5, by = 1.0)
+  L <- length(lags)
+  lib <- hrf_library(tr, peak_delays = 6.0, dispersions = 1.0, undershoot_ratios = 6)
+  hrf_k <- lib[, 1L, drop = FALSE]
+
+  # Simulate 8 subjects x 2 runs with a sub-grid phasic peak at +1.35s (v1:v2),
+  # a sustained delayed response from +1s to +3s (v3:v4), and null noise (v5:v6)
+  n_subj <- 8L
+  subj_regs <- vector("list", n_subj)
+  names(subj_regs) <- sprintf("sub_%02d", seq_len(n_subj))
+
+  w_phasic_true <- 0.65 * exp(-0.5 * ((lags - 1.35) / 0.85)^2)
+  w_sust_true <- 0.60 * as.numeric(lags >= 1.0 & lags <= 3.0)
+
+  for (si in seq_len(n_subj)) {
+    bold_s <- list()
+    ev_s <- list()
+    cov_s <- list()
+    subj_scale <- 1.0 + stats::rnorm(1, 0, 0.12)
+    for (r in 1:2) {
+      onsets <- seq(14, by = 7.2, length.out = n_trials) + stats::runif(n_trials, -0.3, 0.3)
+      x_mod <- as.numeric(scale(stats::rnorm(n_trials)))
+      # Phasic source at onset + 1.35s
+      G_ph <- hrf_event_design_cpp(n_time, tr, 0, onsets + 1.35, rep(0, n_trials),
+        seq_len(n_trials), n_trials, hrf_k)[[1L]]
+      sig_ph <- as.numeric(G_ph %*% (0.8 + subj_scale * 0.65 * x_mod))
+      # Sustained source spanning onset + 1s..3s
+      G_su1 <- hrf_event_design_cpp(n_time, tr, 0, onsets + 1.0, rep(0, n_trials),
+        seq_len(n_trials), n_trials, hrf_k)[[1L]]
+      G_su2 <- hrf_event_design_cpp(n_time, tr, 0, onsets + 2.0, rep(0, n_trials),
+        seq_len(n_trials), n_trials, hrf_k)[[1L]]
+      G_su3 <- hrf_event_design_cpp(n_time, tr, 0, onsets + 3.0, rep(0, n_trials),
+        seq_len(n_trials), n_trials, hrf_k)[[1L]]
+      sig_su <- as.numeric((G_su1 + G_su2 + G_su3) %*% (0.8 + subj_scale * 0.60 * x_mod))
+
+      Y_r <- matrix(0, n_time, 6L, dimnames = list(NULL, paste0("v", 1:6)))
+      for (vi in 1:6) {
+        e_v <- as.numeric(stats::arima.sim(model = list(ar = 0.30), n = n_time, sd = 0.18))
+        base_v <- if (vi <= 2L) sig_ph else if (vi <= 4L) sig_su else rep(0, n_time)
+        Y_r[, vi] <- base_v + e_v
+      }
+      rn <- paste0("run", r)
+      bold_s[[rn]] <- Y_r
+      ev_s[[rn]] <- data.frame(onset = onsets, duration = 0, condition = "feedback")
+      cov_s[[rn]] <- data.frame(x = x_mod)
+    }
+    groups_s <- c(v1 = "R_phasic", v2 = "R_phasic", v3 = "R_sust", v4 = "R_sust", v5 = "R_null", v6 = "R_null")
+    fit_s <- estimate_crossrun_hrf(bold_s, ev_s, tr, lib, spatial_groups = groups_s,
+      noise_model = "ar1", evidence = "calibrated")
+    dec_s <- deconvolve_crossrun_hrf(bold_s, fit_s, lambda = 0.6, scaling = "noise_sd", penalty = "sobolev")
+    subj_regs[[si]] <- decon_epoch_regression(
+      dec_s, cov_s, events = ev_s, target_condition = "feedback",
+      lags = lags, readout_kernel = "triangle", readout_width = 1.5,
+      source_model = "impulse", demix_target_trials = TRUE, demix_within_trial = FALSE,
+      restore_scale = TRUE, aggregate_by_parcel = TRUE,
+      return_panel = TRUE, whiten_panel = TRUE
+    )
+  }
+
+  # 1. Verify Stage-3 cross-lag operator exports on single-subject regression output
+  reg1 <- subj_regs[[1L]]
+  expect_true(all(c("lag_error_cov", "lag_error_cor", "lag_resolution") %in% names(reg1)))
+  expect_true(all(c("beta_multilag", "se_multilag") %in% names(reg1$coefficients)))
+  R_op1 <- reg1$lag_error_cor[["R_phasic"]]
+  C_res1 <- reg1$lag_resolution[["R_phasic"]]
+  expect_equal(dim(R_op1), c(L, L))
+  expect_equal(dim(C_res1), c(L, L))
+  expect_lt(max(abs(R_op1 - t(R_op1))), 1e-10)
+  expect_lt(max(abs(diag(R_op1) - 1)), 1e-10)
+  expect_gt(min(eigen(R_op1, symmetric = TRUE, only.values = TRUE)$values), -1e-8)
+  expect_gt(R_op1[2L, 3L], 0.50)
+
+  # 2. Run Stage-4 medusa_multilag_infer across the 8 subjects
+  ml_res <- medusa_multilag_infer(
+    subj_regs,
+    contrasts = list(late_vs_early = list(early = c(-2, 0), late = c(1, 3))),
+    n_perm = 2000L,
+    n_boot_latency = 250L,
+    seed = 9912L
+  )
+  expect_s3_class(ml_res, "medusa_multilag")
+  cf_ml <- ml_res$coefficients
+
+  # 3. Verify waveform RMSE reduction of estimate_multilag over raw lag-by-lag estimate
+  cf_sust <- cf_ml[parcel == "R_sust"][order(lag)]
+  rmse_raw_sust <- sqrt(mean((cf_sust$estimate - w_sust_true)^2))
+  rmse_ml_sust <- sqrt(mean((cf_sust$estimate_multilag - w_sust_true)^2))
+  expect_lt(rmse_ml_sust, 0.65 * rmse_raw_sust)
+  expect_gt(stats::cor(cf_sust$estimate_multilag, w_sust_true), stats::cor(cf_sust$estimate, w_sust_true))
+
+  # 4. Verify continuous sub-grid spline peak latency recovery (+1.35s true shift on 1.0s lag grid)
+  lat_ph <- ml_res$latency[parcel == "R_phasic"]
+  expect_lt(abs(lat_ph$peak_lag - 1.35), abs(lat_ph$peak_lag_grid - 1.35) + 0.05)
+  expect_lt(abs(lat_ph$peak_lag - 1.35), 0.35)
+  expect_true(is.finite(lat_ph$peak_lag_se) && lat_ph$peak_lag_se > 0)
+  expect_lt(lat_ph$peak_lag_conf.low, 1.65)
+  expect_gt(lat_ph$peak_lag_conf.high, 1.05)
+
+  # 5. Verify Multivariate EB subject trajectories improve subject-level waveform RMSE
+  sub_sust <- ml_res$subjects[parcel == "R_sust"]
+  subj_rmse_raw <- sub_sust[, .(rmse = sqrt(mean((estimate_raw - w_sust_true)^2))), by = id]$rmse
+  subj_rmse_eb <- sub_sust[, .(rmse = sqrt(mean((estimate_eb - w_sust_true)^2))), by = id]$rmse
+  expect_lt(mean(subj_rmse_eb), 0.65 * mean(subj_rmse_raw))
+
+  # 6. Verify simultaneous Max-|T| and 1D TFCE detect active parcels while controlling null parcel
+  expect_lt(min(cf_ml[parcel == "R_phasic"]$p_tfce), 0.05)
+  expect_lt(min(cf_ml[parcel == "R_sust"]$p_tfce), 0.05)
+  expect_gt(min(cf_ml[parcel == "R_null"]$p_maxT), 0.05)
+  expect_gt(min(cf_ml[parcel == "R_null"]$p_tfce), 0.05)
+
+  # 7. Verify covariance-propagated multi-lag contrast detects positive late - early difference
+  con_sust <- ml_res$contrasts[parcel == "R_sust" & contrast == "late_vs_early"]
+  expect_gt(con_sust$estimate, 0.20)
+  expect_lt(con_sust$p.value, 0.01)
+})
+
+test_that("post-selection HRF noise refit eliminates non-canonical boundary lock while preserving target-run exclusion and RNG state", {
+  set.seed(20261110L)
+  n_obs <- 320L
+  tr <- 0.65
+  lib <- hrf_library(tr, preset = "medusa")
+  pars <- attr(lib, "parameters")
+  idx_fast <- which.min(abs(pars$peak_delay - 4.5) + abs(pars$dispersion - 0.9))
+  idx_slow <- which.min(abs(pars$peak_delay - 7.5) + abs(pars$dispersion - 1.1))
+  idx_can <- which.min(abs(pars$peak_delay - 6.0) + abs(pars$dispersion - 1.0))
+
+  ar_true <- c(0.65, 0.25, -0.35)
+  info_true <- fmri.pipeline:::hrf_ar_cascade_info(ar_true, max_lag = 24L)
+  groups <- stats::setNames(rep(c("Fast", "Slow", "Null"), each = 8L), paste0("v", 1:24))
+  sd_true <- rep(0.16, 24L)
+
+  bold <- events <- list()
+  for (r in 1:3) {
+    ons <- seq(8, n_obs * tr - 20, by = 7.2)
+    nt <- length(ons)
+    ev_df <- data.frame(onset = ons, duration = 0, condition = "task")
+    des_f <- fmri.pipeline:::hrf_event_design_cpp(n_obs, tr, 0, ons, rep(0, nt),
+      seq_len(nt), nt, lib[, idx_fast, drop = FALSE])[[1L]]
+    des_s <- fmri.pipeline:::hrf_event_design_cpp(n_obs, tr, 0, ons, rep(0, nt),
+      seq_len(nt), nt, lib[, idx_slow, drop = FALSE])[[1L]]
+    ym <- matrix(0, n_obs, 24L, dimnames = list(NULL, names(groups)))
+    for (v in 1:24) {
+      eps <- as.numeric(stats::arima.sim(model = list(ar = info_true$phi), n = n_obs, sd = sd_true[v] * sqrt(info_true$sig_u2)))
+      amps <- stats::rnorm(nt, 1.4, 0.35)
+      sig <- if (v <= 8L) as.numeric(des_f %*% amps) else if (v <= 16L) as.numeric(des_s %*% amps) else rep(0, n_obs)
+      ym[, v] <- 100 + sig + eps
+    }
+    bold[[paste0("run", r)]] <- ym
+    events[[paste0("run", r)]] <- ev_df
+  }
+
+  seed_before <- .Random.seed
+  fit <- estimate_crossrun_hrf(bold, events, tr, lib, spatial_groups = groups,
+    pooling = "parcel", fallback_kernel = idx_can, amplitude_model = "trial",
+    selection_mode = "soft_average", return_scores = TRUE)
+  expect_identical(.Random.seed, seed_before)
+
+  for (g in c("Fast", "Slow", "Null")) {
+    v1 <- which(groups == g)[1L]
+    nr <- fit$noise$run1[v1, ]
+    expect_false(grepl("boundary", nr$method))
+    acf_hat <- fmri.pipeline:::hrf_ar_cascade_info(
+      c(nr$rho, nr$psi1, nr$psi2, nr$psi3, nr$psi4), max_lag = 24L
+    )$acf
+    expect_lt(sqrt(mean((acf_hat[2:25] - info_true$acf[2:25])^2)), 0.04)
+  }
+
+  # Strict target-run exclusion: corrupting run1 BOLD and shifting run1 events cannot alter run1 HRF selection
+  bold_pert <- bold
+  ev_pert <- events
+  bold_pert$run1[,] <- NA_real_
+  ev_pert$run1$onset <- ev_pert$run1$onset + 500
+  fit_pert <- estimate_crossrun_hrf(bold_pert, ev_pert, tr, lib, spatial_groups = groups,
+    pooling = "parcel", fallback_kernel = idx_can, amplitude_model = "trial",
+    selection_mode = "soft_average", return_scores = TRUE)
+  expect_identical(fit_pert$selections$run1, fit$selections$run1)
+  expect_identical(fit_pert$scores$run1, fit$scores$run1)
+  expect_identical(fit_pert$parcels$run1, fit$parcels$run1)
+  expect_identical(fit_pert$selected_kernels$run1, fit$selected_kernels$run1)
+})
+
+test_that("hrf_whitening_matrix and compute_ar1_operator_cov are exact on contiguous and gapped AR(p) grids", {
+  n_tot <- 180L
+  mask <- rep(TRUE, n_tot)
+  mask[c(22:27, 78:82, 135:140)] <- FALSE
+  rows_gap <- which(mask)
+  rows_contig <- seq_len(n_tot)
+
+  for (ar_vec in list(c(0.65, 0.22, -0.32), c(0.58, 0.18, -0.26, 0.09, -0.12))) {
+    info <- fmri.pipeline:::hrf_ar_cascade_info(ar_vec, max_lag = n_tot - 1L)
+    for (rows in list(rows_contig, rows_gap)) {
+      m <- length(rows)
+      V_sub <- matrix(info$acf[abs(outer(rows, rows, "-")) + 1L], m, m)
+      W_u <- fmri.pipeline:::hrf_whitening_matrix(rows, ar_vec, unit_marginal = TRUE)
+      M_u <- W_u %*% V_sub %*% t(W_u)
+      expect_lt(max(abs(M_u - diag(m))), 1e-12)
+
+      W_s <- fmri.pipeline:::hrf_whitening_matrix(rows, ar_vec, unit_marginal = FALSE)
+      M_s <- W_s %*% V_sub %*% t(W_s)
+      expect_lt(max(abs(M_s - info$sig_u2 * diag(m))), 1e-12)
+    }
+
+    set.seed(42L)
+    B <- matrix(stats::rnorm(14L * n_tot), 14L, n_tot)
+    for (rows in list(rows_contig, rows_gap)) {
+      m <- length(rows)
+      V_sub <- matrix(info$acf[abs(outer(rows, rows, "-")) + 1L], m, m)
+      B_sub <- B[, rows, drop = FALSE]
+      B_c <- B_sub - rowMeans(B_sub)
+      cov_exact <- B_c %*% V_sub %*% t(B_c)
+      cov_op <- fmri.pipeline:::compute_ar1_operator_cov(B, rows, ar_vec, center_obs = TRUE)
+      expect_lt(max(abs(cov_op - cov_exact)), 1e-11)
+    }
+  }
+
+  # Pure AR(1) backward-compatibility scaling: W %*% V_ar1 %*% t(W) == (1 - rho^2) * I
+  rho1 <- 0.70
+  V_ar1 <- rho1^abs(outer(rows_gap, rows_gap, "-"))
+  W_ar1 <- fmri.pipeline:::hrf_whitening_matrix(rows_gap, rho1)
+  expect_lt(max(abs(W_ar1 %*% V_ar1 %*% t(W_ar1) - (1 - rho1^2) * diag(length(rows_gap)))), 1e-12)
+})
+
+test_that("spike-robust GLS noise_sd eliminates task curvature inflation, resists 8-sigma spikes, and preserves scale equivariance", {
+  set.seed(20261111L)
+  n_obs <- 300L
+  tr <- 0.65
+  nv <- 12L
+  lib <- hrf_library(tr, preset = "medusa")
+  pars <- attr(lib, "parameters")
+  idx_fast <- which.min(abs(pars$peak_delay - 4.5) + abs(pars$dispersion - 0.9))
+  idx_can <- which.min(abs(pars$peak_delay - 6.0) + abs(pars$dispersion - 1.0))
+  ar_true <- c(0.62, 0.20, -0.30)
+  info <- fmri.pipeline:::hrf_ar_cascade_info(ar_true, max_lag = 20L)
+  sd_true <- seq(0.025, 0.045, length.out = nv)
+  groups <- stats::setNames(rep("FastActive", nv), paste0("v", 1:nv))
+
+  bold <- bold_spiked <- events <- list()
+  for (r in 1:2) {
+    ons <- seq(8, n_obs * tr - 18, by = 6.8)
+    nt <- length(ons)
+    ev_df <- data.frame(onset = ons, duration = 0, condition = "fb")
+    des <- fmri.pipeline:::hrf_event_design_cpp(n_obs, tr, 0, ons, rep(0, nt),
+      seq_len(nt), nt, lib[, idx_fast, drop = FALSE])[[1L]]
+    ym <- ym_sp <- matrix(0, n_obs, nv, dimnames = list(NULL, names(groups)))
+    for (v in seq_len(nv)) {
+      eps <- as.numeric(stats::arima.sim(model = list(ar = info$phi), n = n_obs, sd = sd_true[v] * sqrt(info$sig_u2)))
+      sig <- as.numeric(des %*% stats::rnorm(nt, 1.5, 0.35))
+      ym[, v] <- 100 + sig + eps
+      ym_sp[, v] <- ym[, v]
+      sp_idx <- c(45L, 95L, 155L, 215L, 265L)
+      ym_sp[sp_idx, v] <- ym_sp[sp_idx, v] + c(1, -1, 1, -1, 1) * 8.5 * sd_true[v]
+    }
+    bold[[paste0("run", r)]] <- ym
+    bold_spiked[[paste0("run", r)]] <- ym_sp
+    events[[paste0("run", r)]] <- ev_df
+  }
+
+  fit <- estimate_crossrun_hrf(bold, events, tr, lib, spatial_groups = groups,
+    pooling = "parcel", fallback_kernel = idx_can, amplitude_model = "trial", selection_mode = "soft_average")
+  dec <- deconvolve_crossrun_hrf(bold, fit, lambda = 0.25, scaling = "noise_sd", penalty = "sobolev")
+
+  raw_d2_sd <- fmri.pipeline:::estimate_decon_noise_sd(
+    bold$run1, fit$noise$run1$rho, fit$noise$run1$psi1, fit$noise$run1$psi2
+  )
+  # Raw second-difference SD is inflated by fast-HRF task curvature, whereas GLS noise_sd is unbiased
+  expect_gt(stats::median(raw_d2_sd / sd_true), 1.15)
+  expect_lt(abs(stats::median(dec$scaling$run1$noise_sd / sd_true) - 1.0), 0.06)
+  expect_lt(
+    abs(stats::median(dec$scaling$run1$noise_sd / sd_true) - 1.0),
+    0.35 * abs(stats::median(raw_d2_sd / sd_true) - 1.0)
+  )
+
+  # Affine scale equivariance on rescaled BOLD passed to deconvolve_crossrun_hrf
+  bold_scaled <- lapply(bold, function(y) 3.5 * y + 250.0)
+  dec_scaled <- deconvolve_crossrun_hrf(bold_scaled, fit, lambda = 0.25, scaling = "noise_sd", penalty = "sobolev")
+  expect_equal(dec_scaled$scaling$run1$noise_sd, 3.5 * dec$scaling$run1$noise_sd, tolerance = 1e-10)
+  expect_equal(dec_scaled$activity$run1, dec$activity$run1, tolerance = 1e-10)
+
+  # Spike robustness under 5 un-scrubbed 8.5-sigma motion spikes
+  fit_sp <- estimate_crossrun_hrf(bold_spiked, events, tr, lib, spatial_groups = groups,
+    pooling = "parcel", fallback_kernel = idx_can, amplitude_model = "trial", selection_mode = "soft_average")
+  dec_sp <- deconvolve_crossrun_hrf(bold_spiked, fit_sp, lambda = 0.25, scaling = "noise_sd", penalty = "sobolev")
+  expect_lt(abs(stats::median(dec_sp$scaling$run1$noise_sd / sd_true) - 1.0), 0.10)
+})
+
+test_that("SUSAN bilateral spatial/similarity noise pooling and noise_groups separate heterogeneous tissue strata while preserving homogeneous parcels", {
+  set.seed(20261112L)
+  n_obs <- 300L
+  tr <- 0.65
+  lib <- hrf_library(tr, preset = "medusa")
+  pars <- attr(lib, "parameters")
+  idx_fast <- which.min(abs(pars$peak_delay - 4.5) + abs(pars$dispersion - 0.9))
+  idx_can <- which.min(abs(pars$peak_delay - 6.0) + abs(pars$dispersion - 1.0))
+
+  coords <- rbind(
+    cbind(rep(2:5, length.out = 20L), rep(1:5, each = 4L), 1),
+    cbind(rep(6, 6L), 1:6, 1),
+    cbind(rep(0, 4L), 1:4, 1)
+  )
+  rownames(coords) <- paste0("v", 1:30)
+  groups <- stats::setNames(rep("P1", 30L), rownames(coords))
+  tissues <- c(rep("GM", 20L), rep("CSF", 6L), rep("WM", 4L))
+  ar_map <- list(GM = c(0.55, 0.15, -0.25), CSF = c(0.88, 0.05, -0.10), WM = c(0.15, 0.0, 0.0))
+  sd_map <- c(GM = 0.18, CSF = 0.65, WM = 0.11)
+
+  bold_het <- bold_hom <- events <- list()
+  info_gm <- fmri.pipeline:::hrf_ar_cascade_info(ar_map$GM, max_lag = 24L)
+  for (r in 1:2) {
+    ons <- seq(8, n_obs * tr - 18, by = 7.5)
+    nt <- length(ons)
+    ev_df <- data.frame(onset = ons, duration = 0, condition = "task")
+    des <- fmri.pipeline:::hrf_event_design_cpp(n_obs, tr, 0, ons, rep(0, nt),
+      seq_len(nt), nt, lib[, idx_fast, drop = FALSE])[[1L]]
+    ym_het <- ym_hom <- matrix(0, n_obs, 30L, dimnames = list(NULL, rownames(coords)))
+    for (v in 1:30) {
+      ts <- tissues[v]
+      inf_v <- fmri.pipeline:::hrf_ar_cascade_info(ar_map[[ts]], max_lag = 10L)
+      eps_het <- as.numeric(stats::arima.sim(model = list(ar = inf_v$phi), n = n_obs, sd = sd_map[ts] * sqrt(inf_v$sig_u2)))
+      eps_hom <- as.numeric(stats::arima.sim(model = list(ar = info_gm$phi), n = n_obs, sd = sd_map[["GM"]] * sqrt(info_gm$sig_u2)))
+      sig <- if (ts == "GM") as.numeric(des %*% stats::rnorm(nt, 0.50, 0.20)) else rep(0, n_obs)
+      ym_het[, v] <- 100 + sig + eps_het
+      ym_hom[, v] <- 100 + as.numeric(des %*% stats::rnorm(nt, 0.50, 0.20)) + eps_hom
+    }
+    bold_het[[paste0("run", r)]] <- ym_het
+    bold_hom[[paste0("run", r)]] <- ym_hom
+    events[[paste0("run", r)]] <- ev_df
+  }
+
+  # Homogeneous GM parcel stays unsplit (1 uniform noise stratum)
+  fit_hom <- estimate_crossrun_hrf(bold_hom, events, tr, lib, spatial_groups = groups,
+    spatial_coords = coords, pooling = "parcel", fallback_kernel = idx_can,
+    amplitude_model = "trial", selection_mode = "soft_average")
+  expect_equal(length(unique(fit_hom$noise$run1$rho)), 1L)
+  expect_true(all(fit_hom$noise$run1$method == "pooled_reml"))
+
+  # Heterogeneous GM/CSF/WM parcel activates SUSAN bilateral pooling (<= 3 strata) while keeping 1 HRF parcel
+  fit_het <- estimate_crossrun_hrf(bold_het, events, tr, lib, spatial_groups = groups,
+    spatial_coords = coords, pooling = "parcel", fallback_kernel = idx_can,
+    amplitude_model = "trial", selection_mode = "soft_average")
+  expect_true(all(grepl("^susan_", fit_het$noise$run1$method)))
+  expect_lte(length(unique(fit_het$noise$run1$rho)), 3L)
+  expect_gte(length(unique(fit_het$noise$run1$rho)), 2L)
+  expect_equal(nrow(fit_het$parcels$run1), 1L)
+  expect_gt(mean(fit_het$noise$run1$rho[tissues == "CSF"]), mean(fit_het$noise$run1$rho[tissues == "GM"]) + 0.15)
+  expect_lt(mean(fit_het$noise$run1$rho[tissues == "WM"]), mean(fit_het$noise$run1$rho[tissues == "GM"]) - 0.15)
+
+  # Explicit noise_groups decouples noise strata from HRF spatial_groups
+  ng_explicit <- stats::setNames(tissues, rownames(coords))
+  fit_ng <- estimate_crossrun_hrf(bold_het, events, tr, lib, spatial_groups = groups,
+    noise_groups = ng_explicit, pooling = "parcel", fallback_kernel = idx_can,
+    amplitude_model = "trial", selection_mode = "soft_average")
+  expect_equal(sort(unique(fit_ng$noise$run1$group)), c("CSF", "GM", "WM"))
+  expect_equal(nrow(fit_ng$parcels$run1), 1L)
+})
+
+
+

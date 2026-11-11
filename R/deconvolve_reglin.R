@@ -627,7 +627,8 @@ scale_decon_input <- function(
   scaling = NULL,
   noise_rho = NULL,
   noise_psi1 = NULL,
-  noise_psi2 = NULL
+  noise_psi2 = NULL,
+  noise_sd_override = NULL
 ) {
   scaling <- resolve_decon_scaling(scaling, normalize, demean)
   center <- if (scaling == "none") rep(0, ncol(y)) else colMeans(y)
@@ -636,12 +637,17 @@ scale_decon_input <- function(
     divisor <- apply(y, 2L, stats::sd)
     divisor[!is.finite(divisor) | divisor <= .Machine$double.eps] <- 1
   } else if (scaling == "noise_sd") {
-    divisor <- estimate_decon_noise_sd(
-      y,
-      noise_rho = noise_rho,
-      noise_psi1 = noise_psi1,
-      noise_psi2 = noise_psi2
-    )
+    if (!is.null(noise_sd_override)) {
+      divisor <- rep_len(as.numeric(noise_sd_override), ncol(y))
+      divisor[!is.finite(divisor) | divisor <= .Machine$double.eps] <- 1
+    } else {
+      divisor <- estimate_decon_noise_sd(
+        y,
+        noise_rho = noise_rho,
+        noise_psi1 = noise_psi1,
+        noise_psi2 = noise_psi2
+      )
+    }
   } else if (scaling == "psc") {
     spread <- apply(y, 2L, stats::sd)
     if (any(!is.finite(center) | center <= sqrt(.Machine$double.eps) * spread)) {
