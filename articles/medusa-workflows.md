@@ -1,16 +1,18 @@
-# MEDuSA workflows: from BOLD runs to an analysis-ready trial panel
+# MEDuSA workflows: from BOLD runs to group inference
 
 ## Choose the route that answers your question
 
 Read the [conceptual
 primer](https://hallquistlab.github.io/fmri.pipeline/articles/medusa-concepts.md)
 first if HRF selection, regularization, or resolution matrices are
-unfamiliar. This vignette documents the MEDuSA API through PR \#55 and
-the operator precision-weight/whitening extensions. It uses a small
-synthetic dataset so the core workflow runs without an imaging dataset,
-AFNI, a scheduler, or external files. Blocks labeled **recipe; not
-executed** require your study inputs. All other R chunks execute when
-the vignette is rendered.
+unfamiliar. This vignette uses the MEDuSA API as merged in [PR
+62](https://github.com/HallquistLab/fmri.pipeline/pull/62). That
+revision added post-selection noise refitting, robust GLS marginal noise
+scaling, exact covariance for retained samples across censor gaps, and
+joint trajectory inference. It uses a small synthetic dataset so the
+core workflow runs without an imaging dataset, AFNI, a scheduler, or
+external files. Blocks labeled **recipe; not executed** require your
+study inputs. All other R chunks execute when the vignette is rendered.
 
 | Goal | Route | Important boundary |
 |----|----|----|
@@ -34,7 +36,7 @@ absent.
 
 ## A small learning-task example
 
-We simulate three runs from one participant, with cue, decision, and
+We start with three runs from one participant, with cue, decision, and
 feedback events. Decision duration is RT; feedback is brief. Six voxels
 differ in effect magnitude; three use the canonical HRF and three an
 earlier candidate. The true feedback RPE slope is known, which lets us
@@ -78,43 +80,53 @@ ar_noise <- function(n, rho, sigma) {
                              sd = sigma * sqrt(1 - rho^2)))
 }
 
-bold <- events <- covariates <- decision_covariates <- rt_by_run <- list()
-for (r in run_ids) {
-  cue <- seq(6, by = 9.5, length.out = n_trials)
-  decision <- cue + runif(n_trials, 1.0, 1.6)
-  value <- as.numeric(scale(rnorm(n_trials)))
-  rt <- pmin(2.5, pmax(0.5, 1.4 - 0.25 * value + rnorm(n_trials, sd = 0.2)))
-  feedback <- decision + rt + runif(n_trials, 0.8, 1.5)
-  rpe <- as.numeric(scale(rnorm(n_trials)))
-  # Keep the event table sorted; event_index will refer to these exact rows.
-  ev <- rbind(
-    data.frame(onset = cue, duration = 0, condition = "cue", trial_id = 1:n_trials),
-    data.frame(onset = decision, duration = rt, condition = "decision", trial_id = 1:n_trials),
-    data.frame(onset = feedback, duration = 0, condition = "feedback", trial_id = 1:n_trials)
-  )
-  ev <- ev[order(ev$onset), ]
-  rownames(ev) <- NULL
-  E <- vapply(seq_len(nrow(ev)), function(i) {
-    source_column(ev$onset[i], ev$duration[i], n_time, tr)
-  }, numeric(n_time))
-  Y <- vapply(seq_along(voxel_ids), function(v) {
-    amplitude <- ifelse(ev$condition == "cue", 0.8,
-                        ifelse(ev$condition == "decision",
-                               1.0 + 0.35 * value[ev$trial_id],
-                               0.6 + true_beta[v] * rpe[ev$trial_id]))
-    source <- as.numeric(E %*% amplitude)
-    100 + forward_bold(source, candidates[, true_kernel_index[v]]) + ar_noise(n_time, 0.35, 0.04)
-  }, numeric(n_time))
-  colnames(Y) <- voxel_ids
-  bold[[r]] <- Y
-  events[[r]] <- ev
-  # Rows must match the selected event records, not all events in the run.
-  fi <- ev$trial_id[ev$condition == "feedback"]
-  di <- ev$trial_id[ev$condition == "decision"]
-  covariates[[r]] <- data.frame(rpe = rpe[fi])
-  decision_covariates[[r]] <- data.frame(value = value[di])
-  rt_by_run[[r]] <- rt[di]
+simulate_participant <- function(beta = true_beta) {
+  bold <- events <- covariates <- decision_covariates <- rt_by_run <- list()
+  for (r in run_ids) {
+    cue <- seq(6, by = 9.5, length.out = n_trials)
+    decision <- cue + runif(n_trials, 1.0, 1.6)
+    value <- as.numeric(scale(rnorm(n_trials)))
+    rt <- pmin(2.5, pmax(0.5, 1.4 - 0.25 * value + rnorm(n_trials, sd = 0.2)))
+    feedback <- decision + rt + runif(n_trials, 0.8, 1.5)
+    rpe <- as.numeric(scale(rnorm(n_trials)))
+    # Keep the event table sorted; event_index will refer to these exact rows.
+    ev <- rbind(
+      data.frame(onset = cue, duration = 0, condition = "cue", trial_id = 1:n_trials),
+      data.frame(onset = decision, duration = rt, condition = "decision", trial_id = 1:n_trials),
+      data.frame(onset = feedback, duration = 0, condition = "feedback", trial_id = 1:n_trials)
+    )
+    ev <- ev[order(ev$onset), ]
+    rownames(ev) <- NULL
+    E <- vapply(seq_len(nrow(ev)), function(i) {
+      source_column(ev$onset[i], ev$duration[i], n_time, tr)
+    }, numeric(n_time))
+    Y <- vapply(seq_along(voxel_ids), function(v) {
+      amplitude <- ifelse(ev$condition == "cue", 0.8,
+                          ifelse(ev$condition == "decision",
+                                 1.0 + 0.35 * value[ev$trial_id],
+                                 0.6 + beta[v] * rpe[ev$trial_id]))
+      source <- as.numeric(E %*% amplitude)
+      100 + forward_bold(source, candidates[, true_kernel_index[v]]) + ar_noise(n_time, 0.35, 0.04)
+    }, numeric(n_time))
+    colnames(Y) <- voxel_ids
+    bold[[r]] <- Y
+    events[[r]] <- ev
+    # Rows must match the selected event records, not all events in the run.
+    fi <- ev$trial_id[ev$condition == "feedback"]
+    di <- ev$trial_id[ev$condition == "decision"]
+    covariates[[r]] <- data.frame(rpe = rpe[fi])
+    decision_covariates[[r]] <- data.frame(value = value[di])
+    rt_by_run[[r]] <- rt[di]
+  }
+  list(bold = bold, events = events, covariates = covariates,
+       decision_covariates = decision_covariates, rt_by_run = rt_by_run)
 }
+sim <- simulate_participant()
+bold <- sim$bold
+events <- sim$events
+covariates <- sim$covariates
+decision_covariates <- sim$decision_covariates
+rt_by_run <- sim$rt_by_run
 stopifnot(identical(names(bold), names(events)),
           identical(names(bold), names(covariates)),
           all(vapply(bold, function(y) identical(colnames(y), voxel_ids), logical(1))))
@@ -385,44 +397,23 @@ knitr::kable(feedback_fit$summary, digits = 3)
 | 3 | rpe | 0.033 | -0.115 | -0.104 | -0.121 | -0.115 | -0.115 | 0.370 | -0.337 | 0.038 | 0.233 | 0.249 | -0.045 | 6 |
 | 4 | rpe | -0.005 | -0.117 | -0.127 | -0.114 | -0.117 | -0.117 | -0.036 | -0.254 | 0.127 | 0.233 | 0.256 | -0.057 | 6 |
 
-The function models non-target cue/decision contributions
-(`demix_other_events = TRUE`), the operator’s trial-to-trial cross-talk
-(`demix_target_trials = TRUE`), and within-trial multi-lag smearing
-across the requested `-2..+4 s` lag grid (`demix_within_trial = TRUE`).
-By default (`demix_ridge = 0.05`, i.e., `>= 0.03`), non-target events
-are subtracted using a condition-mean operator that removes preceding
-cue/decision bleed without inflating target-trial variance; when
-non-target events carry strong trial-varying parametric confounds that
-correlate with the target predictor, setting `demix_ridge = 0.02`
-(`< 0.03`) activates a 2nd-order iterated Tikhonov joint $`(T, O)`$
-de-mixing operator. Target-trial overlap is inverted via a 2nd-order
-Tikhonov operator (`solve_duration_demix_operator()`) with per-trial
-effective gain restoration. The function also propagates the exact
-run-specific AR(1) observation noise covariance through the readout and
-unmixing operators to compute per-trial standard errors (`se_raw`,
-`se_demixed`), Empirical-Bayes stabilized inverse-variance precision
-weights (`precision_weight`), covariance-propagated sandwich standard
-errors (`se_weighted`), and null-mode-damped, Bartlett-adaptive
-ZCA-whitened GLS slopes (`beta_gls`, `se_gls`). When analyzing parcels
-or ROIs, setting `aggregate_by_parcel = TRUE` (using `parcel_groups` or
-the HRF fit’s `spatial_groups`) aggregates voxels by inverse measurement
-variance and propagates empirical within-parcel spatial noise
-correlation before Stage-3 regression and ZCA whitening, calibrating
-`tau2_bio`, `precision_weight`, and `decon_demixed_whitened` directly on
-the high-SNR parcel series while reducing Stage-3/4 compute by $`V/G`$.
-Furthermore, `covariates` can be omitted (`covariates = NULL`), in which
-case
-[`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md)
-uses covariate-agnostic marginal biological variance estimation
-(`tau2_mode = "marginal"`) and returns the de-mixed, precision-weighted,
-and ZCA-whitened trial panel (`return_panel = TRUE`) for two-stage
-[`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md)
-behavioral modeling or region-to-region connectivity
-(`R2 ~ R1_seed * x`). For multiple predictors, supply a data frame or
-matrix per run with consistent column names/order; do not add a constant
-intercept column to those centered predictors. Non-target events should
-remain in `events`, even though covariate rows refer only to feedback
-records.
+The correction uses the specified source model and readout to reduce
+mixing from other event types, overlapping target trials, and, with
+`demix_within_trial = TRUE`, neighboring lags. With the default
+`demix_ridge = 0.05`, non-target subtraction uses condition-mean
+sources. Trial-varying cue effects can survive it. A smaller value below
+0.03 requests a joint regularized correction and changes its bias and
+variance. Compare under your event schedule before choosing it.
+
+MEDuSA propagates the fitted temporal covariance through the frozen
+inverse and readout to compute conditional `se_raw` and `se_demixed`. PR
+62 supports a stationary AR cascade where warranted, using the exact
+covariance subset on the retained acquisition indices. Parcel
+aggregation occurs before epoch fitting and uses a working spatial noise
+scale. The resulting trial SE conditions on the fitted HRFs, nuisance
+specification, regularization, and parcel weights. Preserve non-target
+events in the event table and align each covariate row to its target
+event.
 
 `restore_scale = TRUE` reports effects in original input units under the
 unit-sum HRF convention. It reverses the scaling divisor; it does not
@@ -431,9 +422,11 @@ amplitudes. `beta_raw` is the uncorrected readout under this same
 inverse, not the historical Bush pipeline. `beta_corrected` includes
 model-based de-mixing, gain correction, and (when
 `weighting = "precision"`, the default) Empirical-Bayes precision
-weighting; `beta_gls` applies full within-run ZCA whitening of the trial
-error covariance matrix. Correlations in a multi-predictor result are
-marginal correlations with each predictor, not partial correlations.
+weighting; `beta_gls` uses the function’s GLS path for the supplied
+covariates. The optional exported ZCA columns use a regularized
+transform of the working trial covariance. Correlations in a
+multi-predictor result are marginal correlations with each predictor,
+not partial correlations.
 
 ``` r
 
@@ -640,70 +633,160 @@ investigate missing estimates, and never silently discard a participant
 with sparse support. `summary` averages across usable voxels and is
 descriptive; it is not a population analysis.
 
-### Handoff to group models
+## Run the workflow across participants
 
-**Multi-participant recipe; not executed.** Repeat the participant
-workflow and retain one panel per participant, with ID/session and event
-mappings added as above. `participant_panels` below refers to those
-completed panels, not replications of this simulation.
-
-Across our five-pillar Monte Carlo validation suite, the **recommended
-primary group specification** combines **both** within-run ZCA-whitened
-panel columns (`decon_demixed_whitened ~ rpe_whitened`, exported when
-`whiten_panel = TRUE`) **and** Empirical-Bayes precision weights
-(`weights = "precision_weight"`) in
-[`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md).
-Because `compute_zca_whitening_matrix()` applies null-mode-damped,
-Bartlett-adaptive ZCA whitening to the within-run *correlation* matrix
-while preserving trial variance scale, pairing
-`decon_demixed_whitened ~ rpe_whitened` with
-`weights = "precision_weight"` simultaneously accounts for (a)
-between-run and per-trial heteroskedastic noise precision and (b)
-within-run off-diagonal trial error autocorrelation (`error_ac1`).
+This example generates independent participants with varying RPE slopes,
+repeats the three preprocessing calls, and preserves two independently
+specified teaching parcels. The scientific contrast is the
+feedback-onset RPE slope in `Parcel_A`. The fixed teaching penalty
+matches the single-participant walkthrough above.
 
 ``` r
 
-all_panels <- data.table::rbindlist(participant_panels, use.names = TRUE)
-all_panels[, run_id := interaction(id, run, drop = TRUE)]
-all_panels[, rpe_within := rpe - mean(rpe), by = .(id, run)]
-stopifnot(data.table::uniqueN(all_panels$id) > 1L)
+set.seed(5412)
+parcel_ids <- setNames(rep(c("Parcel_A", "Parcel_B"), each = 3L), voxel_ids)
+lags_group <- -2:4
+participant_ids <- sprintf("sim%02d", seq_len(12L))
+fit_one <- function(id) {
+  subject <- simulate_participant(true_beta + rnorm(1L, sd = .12))
+  fit <- estimate_crossrun_hrf(
+    subject$bold, subject$events, tr, candidates, amplitude_model = "trial",
+    noise_model = "ar1", evidence = "calibrated"
+  )
+  dec <- deconvolve_crossrun_hrf(
+    subject$bold, fit, lambda = .1, scaling = "noise_sd", penalty = "sobolev",
+    nuisance_mode = "ignore", observation_mask = "fit"
+  )
+  ep <- decon_epoch_regression(
+    dec, subject$covariates, target_condition = "feedback", lags = lags_group,
+    parcel_groups = parcel_ids, restore_scale = TRUE,
+    demix_within_trial = FALSE, tau2_mode = "marginal", return_panel = TRUE
+  )
+  panel_i <- data.table::copy(ep$panel)
+  panel_i[, id := id]
+  for (run_i in names(subject$events)) {
+    observed <- panel_i[run == run_i]
+    records <- subject$events[[run_i]][observed$event_index, ]
+    stopifnot(all(records$condition == "feedback"),
+              isTRUE(all.equal(observed$onset, records$onset)))
+  }
+  stopifnot(!anyDuplicated(panel_i[, .(id, run, event_index, evt_time, parcel)]),
+            all(panel_i$precision_weight > 0), all(is.finite(panel_i$se_demixed)))
+  ep$panel <- panel_i
+  ep
+}
+subject_epochs <- setNames(lapply(participant_ids, fit_one), participant_ids)
+group_panel <- data.table::rbindlist(lapply(subject_epochs, "[[", "panel"))
+group_panel[, rpe_within := rpe - mean(rpe), by = .(id, run, parcel, evt_time)]
+```
 
-# Recommended Primary Specification (Modern MEDuSA ZCA + PW):
-# Combines null-mode-damped within-run ZCA correlation whitening with
-# Empirical-Bayes inverse-variance precision weights across runs and trials.
-group_results_zca_pw <- mixed_by(
-  data = all_panels,
-  model_formulae = list(rpe = decon_demixed_whitened ~ rpe_whitened +
-                         (1 + rpe_whitened | id) + (1 | run_id)),
-  split_on = c("voxel", "evt_time"),
-  weights = "precision_weight",
-  engine = "lme4", ncores = 1L
+``` r
+
+planned <- group_panel[parcel == "Parcel_A" & evt_time == 0]
+stopifnot(data.table::uniqueN(planned$id) == length(participant_ids),
+          nrow(planned) == length(participant_ids) * length(run_ids) * n_trials)
+group_result <- mixed_by(
+  planned, model_formulae = list(
+    feedback = decon_demixed ~ rpe_within + (1 + rpe_within || id) + (1 | id:run)
+  ),
+  weights = "precision_weight", calculate = "parameter_estimates_reml",
+  padjust_by = NULL, return_models = TRUE
 )
+#> Using model_formulae to setup model_set
+#> Registered S3 method overwritten by 'formula.tools':
+#>   method               from         
+#>   as.character.formula fmri.pipeline
+#> Starting processing of data splits
+#> Loading required package: Matrix
+#> 
+#> Attaching package: 'lmerTest'
+#> The following object is masked from 'package:lme4':
+#> 
+#>     lmer
+#> The following object is masked from 'package:stats':
+#> 
+#>     step
+#> 
+#> Attaching package: 'data.table'
+#> The following object is masked from 'package:base':
+#> 
+#>     %notin%
+#> 
+#> Attaching package: 'dplyr'
+#> The following objects are masked from 'package:data.table':
+#> 
+#>     between, first, last
+#> The following objects are masked from 'package:stats':
+#> 
+#>     filter, lag
+#> The following objects are masked from 'package:base':
+#> 
+#>     intersect, setdiff, setequal, union
+#> Welcome to emmeans.
+#> Caution: You lose important information if you filter this package's results.
+#> See '? untidy'
+group_fit <- group_result$models$model[[1L]]$reml
+knitr::kable(subset(group_result$coef_df_reml, term == "rpe_within")[
+  , c("estimate", "std.error", "df", "p.value"), with = FALSE], digits = 3)
+```
 
-# Alternative Specification (Precision-Weighted Unwhitened):
-# Propagates per-trial inverse-variance precision weights on the unwhitened
-# de-mixed scale when trial predictors have negligible serial autocorrelation.
-group_results_pw <- mixed_by(
-  data = all_panels,
-  model_formulae = list(rpe = decon_demixed ~ rpe_within +
-                         (1 + rpe_within | id) + (1 | run_id)),
-  split_on = c("voxel", "evt_time"),
-  weights = "precision_weight",
-  engine = "lme4", ncores = 1L
+| estimate | std.error |  df | p.value |
+|---------:|----------:|----:|--------:|
+|    0.531 |     0.022 |  11 |       0 |
+
+``` r
+
+lme4::isSingular(group_fit)
+#> [1] FALSE
+```
+
+The weights model relative conditional residual spread through the
+inverse weight. They do not remove within-run dependence. A transformed
+analysis needs the matched response and predictor columns from the same
+parcel and lag, plus a check of remaining dependence. Inspect
+singularity, residuals, and participant support before interpreting the
+fixed-effect SE. This example has one planned test. If you examine more
+parcels or lags, define the test family before fitting.
+
+### Joint trajectory inference after PR 62
+
+The named subject results retain resolution and error-correlation
+summaries. This path pools per-subject, within-run slopes for one
+predictor at a time. The example uses `"none"` to keep the raw lag
+estimand and reports one prespecified parcel. The default list route
+takes the operator summaries from the first participant. Inspect whether
+they represent the sample or pass explicit common operators.
+
+``` r
+
+trajectory <- medusa_multilag_infer(
+  subject_epochs, covariates = "rpe", use_whitened = FALSE,
+  trajectory_mode = "none", tr = tr, n_perm = 1999L,
+  n_boot_latency = 0L, seed = 5420L
+)
+knitr::kable(
+  subset(trajectory$coefficients, parcel == "Parcel_A")[
+    , c("lag", "estimate", "conf.low.sim", "conf.high.sim", "p_maxT"), with = FALSE],
+  digits = 3
 )
 ```
 
-While `weights = "precision_weight"` and `whiten_panel = TRUE` propagate
-the operator-induced heteroskedasticity and within-run error covariance
-conditioned on the frozen HRF and penalty, mixed-model standard errors
-still condition on the selected HRF, regularization parameter, and
-behavioral model. Validate interval coverage and active-null behavior
-for the intended study design. Keep folds/runs/trials clustered within
-participants. Prespecify the lag/region family and its multiplicity
-correction; neither HRF evidence gates nor descriptive epoch p-values
-provide that correction. Do not treat voxels as independent participant
-replicates. A parcel analysis requires an explicit, independently
-defined voxel-to-parcel mapping and aggregation strategy.
+| lag | estimate | conf.low.sim | conf.high.sim | p_maxT |
+|----:|---------:|-------------:|--------------:|-------:|
+|  -2 |    0.275 |        0.224 |         0.326 |  0.000 |
+|  -1 |    0.445 |        0.386 |         0.503 |  0.000 |
+|   0 |    0.531 |        0.466 |         0.597 |  0.000 |
+|   1 |    0.491 |        0.428 |         0.554 |  0.000 |
+|   2 |    0.347 |        0.299 |         0.395 |  0.000 |
+|   3 |    0.169 |        0.140 |         0.198 |  0.000 |
+|   4 |    0.029 |        0.001 |         0.057 |  0.043 |
+
+`n_perm` counts correlated parametric null draws. The raw band and
+Max-\|T\| tests cover the lags within one parcel–term trajectory. TFCE
+and omnibus inference use that same family. Claims across parcels or
+terms need a study-wide procedure. Save the full `subject_epochs`
+objects and analysis settings, including the lag grid, parcel labels,
+and random seed.
 
 **Saving recipe; not executed.** Keeping only the panel loses the fitted
 operator context needed for audits.
@@ -831,19 +914,19 @@ input modes are not supported by the voxelwise Bush route. This recipe
 uses a fixed canonical HRF. The file wrapper can also tune supplied
 candidates within a run, but that is not leave-one-run-out HRF learning.
 
-## Summary of recommended best-practice settings
+## Settings and checks at each handoff
 
-Based on the five-pillar MEDuSA simulation validation suite, the table
-below summarizes the recommended settings for empirical studies:
+| Handoff | Settings to record | Check before proceeding |
+|----|----|----|
+| Input to HRF/noise fit | TR, offsets, masks, candidate library, `spatial_groups` and optional `noise_groups` | Confirm clocks, retained acquisition indices, target-run exclusion for HRF selection, and fallback strata. |
+| HRF/noise fit to inverse | `lambda` or tuning grid, penalty, nuisance mode, scaling | In PR 62, noise-SD scaling estimates **marginal observation** SD via leverage-adjusted robust GLS residuals. Examine estimated scales, fit residuals, and adaptive penalty diagnostics. |
+| Inverse to event measurements | Source duration and units, readout, demixing, target condition and lag grid | Verify event-row identity, time support, and effective gains. Check rate versus integrated activity for duration models. |
+| Event measurements to parcel panel | Parcel labels, `restore_scale`, `tau2_mode`, `whiten_panel` | Audit usable voxels and retained trials by run. Keep amplitudes, measurement SEs, and working precision weights in their stated units. |
+| Panel to group claim | Participant/run effects, predictors, weights, trajectory mode, test family | Check participant counts, residual dependence, singularity, and whether the test applies to one lag, one trajectory, or a whole study family. |
 
-| Pipeline Step | Function | Recommended Arguments | Why It Matters |
-|----|----|----|----|
-| **1. Cross-Run HRF Learning** | [`hrf_library()`](https://hallquistlab.github.io/fmri.pipeline/reference/hrf_library.md) + [`estimate_crossrun_hrf()`](https://hallquistlab.github.io/fmri.pipeline/reference/estimate_crossrun_hrf.md) | `hrf_library(tr, preset = "medusa")` ($`0.5\text{ s}`$ delay grid, $`K=27`$); `noise_model = "ar1"`, `evidence = "calibrated"`, `selection_mode = "soft_average"`, `spatial_groups = parcel_ids`, `pooling = "parcel"` (or `"voxel"` with `spatial_strength = 0.02`) | Interpolates sub-grid vascular delays and nonlinear Balloon hemodynamics via Empirical-Bayes Boltzmann kernel averaging (`selection_mode = "soft_average"`), reducing HRF RMSE by 8–22% and neural latency error by 20–35% over hard selection without the runtime cost of $`0.25\text{ s}`$ grids. |
-| **2. Continuous Deconvolution** | [`deconvolve_crossrun_hrf()`](https://hallquistlab.github.io/fmri.pipeline/reference/deconvolve_crossrun_hrf.md) | `scaling = "noise_sd"`, `penalty = "sobolev"`, `backend = "cpp"` | Scales runs by AR(1) innovation noise SD rather than total `"zscore"` variance (which compresses high-signal runs and absorbs drift/motion variance); Sobolev penalty controls both high-frequency ringing and low-frequency drift. |
-| **3a. Punctate / Impulse Epochs** | [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md) | `source_model = "impulse"`, `readout_kernel = "triangle"`, `demix_other_events = TRUE`, `demix_target_trials = TRUE`, `restore_scale = TRUE`, `weighting = "gls"`, `whiten_panel = TRUE`, `return_panel = TRUE` | Removes preceding event bleed via condition-mean de-mixing (`demix_ridge = 0.05`, or `< 0.03` when non-target events carry strong trial-varying confounds) and restores per-trial target gain via 2nd-order Tikhonov inversion. |
-| **3b. Multi-Lag Waveforms $`\beta(\tau)`$** | [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md) | Same as 3a + `demix_within_trial = TRUE` (`within_trial_ridge = 0.06`) across $`\ge 3`$ lags spaced at $`1\times\text{TR}`$ | Sharpens within-trial temporal waveform profiles across lags by inverting the lag-by-lag point-spread matrix (automatically scales `within_trial_ridge` by $`(\text{TR}/\Delta\tau)^2`$ if `lags` is sampled finer than $`1\times\text{TR}`$). |
-| **3c. Variable-Duration (RT) Epochs** | [`decon_epoch_regression()`](https://hallquistlab.github.io/fmri.pipeline/reference/decon_epoch_regression.md) | Same as 3a + `source_model = "duration"`, `trial_durations = rt_by_run`, `duration_scale = "rate"` | Eliminates reaction-time duration confounding (preventing both destructive signal cancellation when $`r(x, \text{RT}) < 0`$ and 100% false-positive rate inflation when $`r(x, \text{RT}) > 0`$). |
-| **4. Group Mixed-Effects Model** | [`mixed_by()`](https://hallquistlab.github.io/fmri.pipeline/reference/mixed_by.md) | `decon_demixed_whitened ~ x_whitened + (1 + x_whitened \| id) + (1 \| run_id)`, `weights = "precision_weight"` | Combines Empirical-Bayes precision weights across heteroskedastic runs/trials with null-mode-damped, Bartlett-adaptive within-run ZCA correlation whitening. |
+Earlier MEDuSA documents may use pre-PR 62 noise scaling or approximate
+gap handling. Use the installed version’s help for argument names and
+preserve the software revision alongside the fitted objects.
 
 ## Before interpreting a result
 

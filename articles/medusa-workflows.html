@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-<title>MEDuSA workflows: from BOLD runs to an analysis-ready trial panel • fmri.pipeline</title>
+<title>MEDuSA workflows: from BOLD runs to group inference • fmri.pipeline</title>
 <script src="../deps/jquery-3.6.0/jquery-3.6.0.min.js"></script><meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
 <link href="../deps/bootstrap-5.3.8/bootstrap.min.css" rel="stylesheet">
 <script src="../deps/bootstrap-5.3.8/bootstrap.bundle.min.js"></script><link href="../deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="../deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
-<script src="../deps/headroom-0.11.0/headroom.min.js"></script><script src="../deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="../deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="../deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="../deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="../deps/search-1.0.0/fuse.min.js"></script><script src="../deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="../pkgdown.js"></script><meta property="og:title" content="MEDuSA workflows: from BOLD runs to an analysis-ready trial panel">
+<script src="../deps/headroom-0.11.0/headroom.min.js"></script><script src="../deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="../deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="../deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="../deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="../deps/search-1.0.0/fuse.min.js"></script><script src="../deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="../pkgdown.js"></script><meta property="og:title" content="MEDuSA workflows: from BOLD runs to group inference">
 </head>
 <body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
@@ -38,7 +38,7 @@
     <li><a class="dropdown-item" href="../articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="../articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="../articles/medusa-concepts.html">MEDuSA: from blurred BOLD signals to trial-level questions</a></li>
-    <li><a class="dropdown-item" href="../articles/medusa-workflows.html">MEDuSA workflows: from BOLD runs to an analysis-ready trial panel</a></li>
+    <li><a class="dropdown-item" href="../articles/medusa-workflows.html">MEDuSA workflows: from BOLD runs to group inference</a></li>
     <li><a class="dropdown-item" href="../articles/quickstart.html">fmri.pipeline quick start guide</a></li>
   </ul>
 </li>
@@ -62,7 +62,7 @@
 <div class="row">
   <main id="main" class="col-md-9"><div class="page-header">
 
-      <h1>MEDuSA workflows: from BOLD runs to an analysis-ready trial panel</h1>
+      <h1>MEDuSA workflows: from BOLD runs to group inference</h1>
                         <h4 data-toc-skip class="author">fmri.pipeline
 contributors</h4>
             
@@ -78,10 +78,12 @@ contributors</h4>
 </h2>
 <p>Read the <a href="medusa-concepts.html">conceptual primer</a> first
 if HRF selection, regularization, or resolution matrices are unfamiliar.
-This vignette documents the MEDuSA API through PR #55 and the operator
-precision-weight/whitening extensions. It uses a small synthetic dataset
-so the core workflow runs without an imaging dataset, AFNI, a scheduler,
-or external files. Blocks labeled <strong>recipe; not executed</strong>
+This vignette uses the MEDuSA API as merged in <a href="https://github.com/HallquistLab/fmri.pipeline/pull/62" class="external-link">PR 62</a>.
+That revision added post-selection noise refitting, robust GLS marginal
+noise scaling, exact covariance for retained samples across censor gaps,
+and joint trajectory inference. It uses a small synthetic dataset so the
+core workflow runs without an imaging dataset, AFNI, a scheduler, or
+external files. Blocks labeled <strong>recipe; not executed</strong>
 require your study inputs. All other R chunks execute when the vignette
 is rendered.</p>
 <table class="table">
@@ -141,12 +143,12 @@ fails early if they are absent.</p>
 <div class="section level2">
 <h2 id="a-small-learning-task-example">A small learning-task example<a class="anchor" aria-label="anchor" href="#a-small-learning-task-example"></a>
 </h2>
-<p>We simulate three runs from one participant, with cue, decision, and
-feedback events. Decision duration is RT; feedback is brief. Six voxels
-differ in effect magnitude; three use the canonical HRF and three an
-earlier candidate. The true feedback RPE slope is known, which lets us
-compare recovery rather than rewarding an estimator simply for producing
-a large correlation.</p>
+<p>We start with three runs from one participant, with cue, decision,
+and feedback events. Decision duration is RT; feedback is brief. Six
+voxels differ in effect magnitude; three use the canonical HRF and three
+an earlier candidate. The true feedback RPE slope is known, which lets
+us compare recovery rather than rewarding an estimator simply for
+producing a large correlation.</p>
 <div class="section level3">
 <h3 id="create-events-covariates-and-observed-bold">Create events, covariates, and observed BOLD<a class="anchor" aria-label="anchor" href="#create-events-covariates-and-observed-bold"></a>
 </h3>
@@ -183,43 +185,53 @@ not evidence of sub-TR resolution.</p>
 <span>                             sd <span class="op">=</span> <span class="va">sigma</span> <span class="op">*</span> <span class="fu"><a href="https://rdrr.io/r/base/MathFun.html" class="external-link">sqrt</a></span><span class="op">(</span><span class="fl">1</span> <span class="op">-</span> <span class="va">rho</span><span class="op">^</span><span class="fl">2</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="op">}</span></span>
 <span></span>
-<span><span class="va">bold</span> <span class="op">&lt;-</span> <span class="va">events</span> <span class="op">&lt;-</span> <span class="va">covariates</span> <span class="op">&lt;-</span> <span class="va">decision_covariates</span> <span class="op">&lt;-</span> <span class="va">rt_by_run</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="op">)</span></span>
-<span><span class="kw">for</span> <span class="op">(</span><span class="va">r</span> <span class="kw">in</span> <span class="va">run_ids</span><span class="op">)</span> <span class="op">{</span></span>
-<span>  <span class="va">cue</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq</a></span><span class="op">(</span><span class="fl">6</span>, by <span class="op">=</span> <span class="fl">9.5</span>, length.out <span class="op">=</span> <span class="va">n_trials</span><span class="op">)</span></span>
-<span>  <span class="va">decision</span> <span class="op">&lt;-</span> <span class="va">cue</span> <span class="op">+</span> <span class="fu"><a href="https://rdrr.io/r/stats/Uniform.html" class="external-link">runif</a></span><span class="op">(</span><span class="va">n_trials</span>, <span class="fl">1.0</span>, <span class="fl">1.6</span><span class="op">)</span></span>
-<span>  <span class="va">value</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/scale.html" class="external-link">scale</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/stats/Normal.html" class="external-link">rnorm</a></span><span class="op">(</span><span class="va">n_trials</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
-<span>  <span class="va">rt</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmin</a></span><span class="op">(</span><span class="fl">2.5</span>, <span class="fu"><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmax</a></span><span class="op">(</span><span class="fl">0.5</span>, <span class="fl">1.4</span> <span class="op">-</span> <span class="fl">0.25</span> <span class="op">*</span> <span class="va">value</span> <span class="op">+</span> <span class="fu"><a href="https://rdrr.io/r/stats/Normal.html" class="external-link">rnorm</a></span><span class="op">(</span><span class="va">n_trials</span>, sd <span class="op">=</span> <span class="fl">0.2</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
-<span>  <span class="va">feedback</span> <span class="op">&lt;-</span> <span class="va">decision</span> <span class="op">+</span> <span class="va">rt</span> <span class="op">+</span> <span class="fu"><a href="https://rdrr.io/r/stats/Uniform.html" class="external-link">runif</a></span><span class="op">(</span><span class="va">n_trials</span>, <span class="fl">0.8</span>, <span class="fl">1.5</span><span class="op">)</span></span>
-<span>  <span class="va">rpe</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/scale.html" class="external-link">scale</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/stats/Normal.html" class="external-link">rnorm</a></span><span class="op">(</span><span class="va">n_trials</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
-<span>  <span class="co"># Keep the event table sorted; event_index will refer to these exact rows.</span></span>
-<span>  <span class="va">ev</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/cbind.html" class="external-link">rbind</a></span><span class="op">(</span></span>
-<span>    <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>onset <span class="op">=</span> <span class="va">cue</span>, duration <span class="op">=</span> <span class="fl">0</span>, condition <span class="op">=</span> <span class="st">"cue"</span>, trial_id <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="va">n_trials</span><span class="op">)</span>,</span>
-<span>    <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>onset <span class="op">=</span> <span class="va">decision</span>, duration <span class="op">=</span> <span class="va">rt</span>, condition <span class="op">=</span> <span class="st">"decision"</span>, trial_id <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="va">n_trials</span><span class="op">)</span>,</span>
-<span>    <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>onset <span class="op">=</span> <span class="va">feedback</span>, duration <span class="op">=</span> <span class="fl">0</span>, condition <span class="op">=</span> <span class="st">"feedback"</span>, trial_id <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="va">n_trials</span><span class="op">)</span></span>
-<span>  <span class="op">)</span></span>
-<span>  <span class="va">ev</span> <span class="op">&lt;-</span> <span class="va">ev</span><span class="op">[</span><span class="fu"><a href="https://rdrr.io/r/base/order.html" class="external-link">order</a></span><span class="op">(</span><span class="va">ev</span><span class="op">$</span><span class="va">onset</span><span class="op">)</span>, <span class="op">]</span></span>
-<span>  <span class="fu"><a href="https://rdrr.io/r/base/colnames.html" class="external-link">rownames</a></span><span class="op">(</span><span class="va">ev</span><span class="op">)</span> <span class="op">&lt;-</span> <span class="cn">NULL</span></span>
-<span>  <span class="va">E</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">vapply</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq_len</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="va">ev</span><span class="op">)</span><span class="op">)</span>, <span class="kw">function</span><span class="op">(</span><span class="va">i</span><span class="op">)</span> <span class="op">{</span></span>
-<span>    <span class="fu">source_column</span><span class="op">(</span><span class="va">ev</span><span class="op">$</span><span class="va">onset</span><span class="op">[</span><span class="va">i</span><span class="op">]</span>, <span class="va">ev</span><span class="op">$</span><span class="va">duration</span><span class="op">[</span><span class="va">i</span><span class="op">]</span>, <span class="va">n_time</span>, <span class="va">tr</span><span class="op">)</span></span>
-<span>  <span class="op">}</span>, <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">numeric</a></span><span class="op">(</span><span class="va">n_time</span><span class="op">)</span><span class="op">)</span></span>
-<span>  <span class="va">Y</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">vapply</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq_along</a></span><span class="op">(</span><span class="va">voxel_ids</span><span class="op">)</span>, <span class="kw">function</span><span class="op">(</span><span class="va">v</span><span class="op">)</span> <span class="op">{</span></span>
-<span>    <span class="va">amplitude</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/ifelse.html" class="external-link">ifelse</a></span><span class="op">(</span><span class="va">ev</span><span class="op">$</span><span class="va">condition</span> <span class="op">==</span> <span class="st">"cue"</span>, <span class="fl">0.8</span>,</span>
-<span>                        <span class="fu"><a href="https://rdrr.io/r/base/ifelse.html" class="external-link">ifelse</a></span><span class="op">(</span><span class="va">ev</span><span class="op">$</span><span class="va">condition</span> <span class="op">==</span> <span class="st">"decision"</span>,</span>
-<span>                               <span class="fl">1.0</span> <span class="op">+</span> <span class="fl">0.35</span> <span class="op">*</span> <span class="va">value</span><span class="op">[</span><span class="va">ev</span><span class="op">$</span><span class="va">trial_id</span><span class="op">]</span>,</span>
-<span>                               <span class="fl">0.6</span> <span class="op">+</span> <span class="va">true_beta</span><span class="op">[</span><span class="va">v</span><span class="op">]</span> <span class="op">*</span> <span class="va">rpe</span><span class="op">[</span><span class="va">ev</span><span class="op">$</span><span class="va">trial_id</span><span class="op">]</span><span class="op">)</span><span class="op">)</span></span>
-<span>    <span class="va">source</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="va">E</span> <span class="op"><a href="https://rdrr.io/r/base/matmult.html" class="external-link">%*%</a></span> <span class="va">amplitude</span><span class="op">)</span></span>
-<span>    <span class="fl">100</span> <span class="op">+</span> <span class="fu">forward_bold</span><span class="op">(</span><span class="va">source</span>, <span class="va">candidates</span><span class="op">[</span>, <span class="va">true_kernel_index</span><span class="op">[</span><span class="va">v</span><span class="op">]</span><span class="op">]</span><span class="op">)</span> <span class="op">+</span> <span class="fu">ar_noise</span><span class="op">(</span><span class="va">n_time</span>, <span class="fl">0.35</span>, <span class="fl">0.04</span><span class="op">)</span></span>
-<span>  <span class="op">}</span>, <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">numeric</a></span><span class="op">(</span><span class="va">n_time</span><span class="op">)</span><span class="op">)</span></span>
-<span>  <span class="fu"><a href="https://rdrr.io/r/base/colnames.html" class="external-link">colnames</a></span><span class="op">(</span><span class="va">Y</span><span class="op">)</span> <span class="op">&lt;-</span> <span class="va">voxel_ids</span></span>
-<span>  <span class="va">bold</span><span class="op">[[</span><span class="va">r</span><span class="op">]</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="va">Y</span></span>
-<span>  <span class="va">events</span><span class="op">[[</span><span class="va">r</span><span class="op">]</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="va">ev</span></span>
-<span>  <span class="co"># Rows must match the selected event records, not all events in the run.</span></span>
-<span>  <span class="va">fi</span> <span class="op">&lt;-</span> <span class="va">ev</span><span class="op">$</span><span class="va">trial_id</span><span class="op">[</span><span class="va">ev</span><span class="op">$</span><span class="va">condition</span> <span class="op">==</span> <span class="st">"feedback"</span><span class="op">]</span></span>
-<span>  <span class="va">di</span> <span class="op">&lt;-</span> <span class="va">ev</span><span class="op">$</span><span class="va">trial_id</span><span class="op">[</span><span class="va">ev</span><span class="op">$</span><span class="va">condition</span> <span class="op">==</span> <span class="st">"decision"</span><span class="op">]</span></span>
-<span>  <span class="va">covariates</span><span class="op">[[</span><span class="va">r</span><span class="op">]</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>rpe <span class="op">=</span> <span class="va">rpe</span><span class="op">[</span><span class="va">fi</span><span class="op">]</span><span class="op">)</span></span>
-<span>  <span class="va">decision_covariates</span><span class="op">[[</span><span class="va">r</span><span class="op">]</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>value <span class="op">=</span> <span class="va">value</span><span class="op">[</span><span class="va">di</span><span class="op">]</span><span class="op">)</span></span>
-<span>  <span class="va">rt_by_run</span><span class="op">[[</span><span class="va">r</span><span class="op">]</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="va">rt</span><span class="op">[</span><span class="va">di</span><span class="op">]</span></span>
+<span><span class="va">simulate_participant</span> <span class="op">&lt;-</span> <span class="kw">function</span><span class="op">(</span><span class="va">beta</span> <span class="op">=</span> <span class="va">true_beta</span><span class="op">)</span> <span class="op">{</span></span>
+<span>  <span class="va">bold</span> <span class="op">&lt;-</span> <span class="va">events</span> <span class="op">&lt;-</span> <span class="va">covariates</span> <span class="op">&lt;-</span> <span class="va">decision_covariates</span> <span class="op">&lt;-</span> <span class="va">rt_by_run</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="op">)</span></span>
+<span>  <span class="kw">for</span> <span class="op">(</span><span class="va">r</span> <span class="kw">in</span> <span class="va">run_ids</span><span class="op">)</span> <span class="op">{</span></span>
+<span>    <span class="va">cue</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq</a></span><span class="op">(</span><span class="fl">6</span>, by <span class="op">=</span> <span class="fl">9.5</span>, length.out <span class="op">=</span> <span class="va">n_trials</span><span class="op">)</span></span>
+<span>    <span class="va">decision</span> <span class="op">&lt;-</span> <span class="va">cue</span> <span class="op">+</span> <span class="fu"><a href="https://rdrr.io/r/stats/Uniform.html" class="external-link">runif</a></span><span class="op">(</span><span class="va">n_trials</span>, <span class="fl">1.0</span>, <span class="fl">1.6</span><span class="op">)</span></span>
+<span>    <span class="va">value</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/scale.html" class="external-link">scale</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/stats/Normal.html" class="external-link">rnorm</a></span><span class="op">(</span><span class="va">n_trials</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
+<span>    <span class="va">rt</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmin</a></span><span class="op">(</span><span class="fl">2.5</span>, <span class="fu"><a href="https://rdrr.io/r/base/Extremes.html" class="external-link">pmax</a></span><span class="op">(</span><span class="fl">0.5</span>, <span class="fl">1.4</span> <span class="op">-</span> <span class="fl">0.25</span> <span class="op">*</span> <span class="va">value</span> <span class="op">+</span> <span class="fu"><a href="https://rdrr.io/r/stats/Normal.html" class="external-link">rnorm</a></span><span class="op">(</span><span class="va">n_trials</span>, sd <span class="op">=</span> <span class="fl">0.2</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
+<span>    <span class="va">feedback</span> <span class="op">&lt;-</span> <span class="va">decision</span> <span class="op">+</span> <span class="va">rt</span> <span class="op">+</span> <span class="fu"><a href="https://rdrr.io/r/stats/Uniform.html" class="external-link">runif</a></span><span class="op">(</span><span class="va">n_trials</span>, <span class="fl">0.8</span>, <span class="fl">1.5</span><span class="op">)</span></span>
+<span>    <span class="va">rpe</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/scale.html" class="external-link">scale</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/stats/Normal.html" class="external-link">rnorm</a></span><span class="op">(</span><span class="va">n_trials</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
+<span>    <span class="co"># Keep the event table sorted; event_index will refer to these exact rows.</span></span>
+<span>    <span class="va">ev</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/cbind.html" class="external-link">rbind</a></span><span class="op">(</span></span>
+<span>      <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>onset <span class="op">=</span> <span class="va">cue</span>, duration <span class="op">=</span> <span class="fl">0</span>, condition <span class="op">=</span> <span class="st">"cue"</span>, trial_id <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="va">n_trials</span><span class="op">)</span>,</span>
+<span>      <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>onset <span class="op">=</span> <span class="va">decision</span>, duration <span class="op">=</span> <span class="va">rt</span>, condition <span class="op">=</span> <span class="st">"decision"</span>, trial_id <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="va">n_trials</span><span class="op">)</span>,</span>
+<span>      <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>onset <span class="op">=</span> <span class="va">feedback</span>, duration <span class="op">=</span> <span class="fl">0</span>, condition <span class="op">=</span> <span class="st">"feedback"</span>, trial_id <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="va">n_trials</span><span class="op">)</span></span>
+<span>    <span class="op">)</span></span>
+<span>    <span class="va">ev</span> <span class="op">&lt;-</span> <span class="va">ev</span><span class="op">[</span><span class="fu"><a href="https://rdrr.io/r/base/order.html" class="external-link">order</a></span><span class="op">(</span><span class="va">ev</span><span class="op">$</span><span class="va">onset</span><span class="op">)</span>, <span class="op">]</span></span>
+<span>    <span class="fu"><a href="https://rdrr.io/r/base/colnames.html" class="external-link">rownames</a></span><span class="op">(</span><span class="va">ev</span><span class="op">)</span> <span class="op">&lt;-</span> <span class="cn">NULL</span></span>
+<span>    <span class="va">E</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">vapply</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq_len</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="va">ev</span><span class="op">)</span><span class="op">)</span>, <span class="kw">function</span><span class="op">(</span><span class="va">i</span><span class="op">)</span> <span class="op">{</span></span>
+<span>      <span class="fu">source_column</span><span class="op">(</span><span class="va">ev</span><span class="op">$</span><span class="va">onset</span><span class="op">[</span><span class="va">i</span><span class="op">]</span>, <span class="va">ev</span><span class="op">$</span><span class="va">duration</span><span class="op">[</span><span class="va">i</span><span class="op">]</span>, <span class="va">n_time</span>, <span class="va">tr</span><span class="op">)</span></span>
+<span>    <span class="op">}</span>, <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">numeric</a></span><span class="op">(</span><span class="va">n_time</span><span class="op">)</span><span class="op">)</span></span>
+<span>    <span class="va">Y</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">vapply</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq_along</a></span><span class="op">(</span><span class="va">voxel_ids</span><span class="op">)</span>, <span class="kw">function</span><span class="op">(</span><span class="va">v</span><span class="op">)</span> <span class="op">{</span></span>
+<span>      <span class="va">amplitude</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/ifelse.html" class="external-link">ifelse</a></span><span class="op">(</span><span class="va">ev</span><span class="op">$</span><span class="va">condition</span> <span class="op">==</span> <span class="st">"cue"</span>, <span class="fl">0.8</span>,</span>
+<span>                          <span class="fu"><a href="https://rdrr.io/r/base/ifelse.html" class="external-link">ifelse</a></span><span class="op">(</span><span class="va">ev</span><span class="op">$</span><span class="va">condition</span> <span class="op">==</span> <span class="st">"decision"</span>,</span>
+<span>                                 <span class="fl">1.0</span> <span class="op">+</span> <span class="fl">0.35</span> <span class="op">*</span> <span class="va">value</span><span class="op">[</span><span class="va">ev</span><span class="op">$</span><span class="va">trial_id</span><span class="op">]</span>,</span>
+<span>                                 <span class="fl">0.6</span> <span class="op">+</span> <span class="va">beta</span><span class="op">[</span><span class="va">v</span><span class="op">]</span> <span class="op">*</span> <span class="va">rpe</span><span class="op">[</span><span class="va">ev</span><span class="op">$</span><span class="va">trial_id</span><span class="op">]</span><span class="op">)</span><span class="op">)</span></span>
+<span>      <span class="va">source</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="va">E</span> <span class="op"><a href="https://rdrr.io/r/base/matmult.html" class="external-link">%*%</a></span> <span class="va">amplitude</span><span class="op">)</span></span>
+<span>      <span class="fl">100</span> <span class="op">+</span> <span class="fu">forward_bold</span><span class="op">(</span><span class="va">source</span>, <span class="va">candidates</span><span class="op">[</span>, <span class="va">true_kernel_index</span><span class="op">[</span><span class="va">v</span><span class="op">]</span><span class="op">]</span><span class="op">)</span> <span class="op">+</span> <span class="fu">ar_noise</span><span class="op">(</span><span class="va">n_time</span>, <span class="fl">0.35</span>, <span class="fl">0.04</span><span class="op">)</span></span>
+<span>    <span class="op">}</span>, <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">numeric</a></span><span class="op">(</span><span class="va">n_time</span><span class="op">)</span><span class="op">)</span></span>
+<span>    <span class="fu"><a href="https://rdrr.io/r/base/colnames.html" class="external-link">colnames</a></span><span class="op">(</span><span class="va">Y</span><span class="op">)</span> <span class="op">&lt;-</span> <span class="va">voxel_ids</span></span>
+<span>    <span class="va">bold</span><span class="op">[[</span><span class="va">r</span><span class="op">]</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="va">Y</span></span>
+<span>    <span class="va">events</span><span class="op">[[</span><span class="va">r</span><span class="op">]</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="va">ev</span></span>
+<span>    <span class="co"># Rows must match the selected event records, not all events in the run.</span></span>
+<span>    <span class="va">fi</span> <span class="op">&lt;-</span> <span class="va">ev</span><span class="op">$</span><span class="va">trial_id</span><span class="op">[</span><span class="va">ev</span><span class="op">$</span><span class="va">condition</span> <span class="op">==</span> <span class="st">"feedback"</span><span class="op">]</span></span>
+<span>    <span class="va">di</span> <span class="op">&lt;-</span> <span class="va">ev</span><span class="op">$</span><span class="va">trial_id</span><span class="op">[</span><span class="va">ev</span><span class="op">$</span><span class="va">condition</span> <span class="op">==</span> <span class="st">"decision"</span><span class="op">]</span></span>
+<span>    <span class="va">covariates</span><span class="op">[[</span><span class="va">r</span><span class="op">]</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>rpe <span class="op">=</span> <span class="va">rpe</span><span class="op">[</span><span class="va">fi</span><span class="op">]</span><span class="op">)</span></span>
+<span>    <span class="va">decision_covariates</span><span class="op">[[</span><span class="va">r</span><span class="op">]</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>value <span class="op">=</span> <span class="va">value</span><span class="op">[</span><span class="va">di</span><span class="op">]</span><span class="op">)</span></span>
+<span>    <span class="va">rt_by_run</span><span class="op">[[</span><span class="va">r</span><span class="op">]</span><span class="op">]</span> <span class="op">&lt;-</span> <span class="va">rt</span><span class="op">[</span><span class="va">di</span><span class="op">]</span></span>
+<span>  <span class="op">}</span></span>
+<span>  <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>bold <span class="op">=</span> <span class="va">bold</span>, events <span class="op">=</span> <span class="va">events</span>, covariates <span class="op">=</span> <span class="va">covariates</span>,</span>
+<span>       decision_covariates <span class="op">=</span> <span class="va">decision_covariates</span>, rt_by_run <span class="op">=</span> <span class="va">rt_by_run</span><span class="op">)</span></span>
 <span><span class="op">}</span></span>
+<span><span class="va">sim</span> <span class="op">&lt;-</span> <span class="fu">simulate_participant</span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="va">bold</span> <span class="op">&lt;-</span> <span class="va">sim</span><span class="op">$</span><span class="va">bold</span></span>
+<span><span class="va">events</span> <span class="op">&lt;-</span> <span class="va">sim</span><span class="op">$</span><span class="va">events</span></span>
+<span><span class="va">covariates</span> <span class="op">&lt;-</span> <span class="va">sim</span><span class="op">$</span><span class="va">covariates</span></span>
+<span><span class="va">decision_covariates</span> <span class="op">&lt;-</span> <span class="va">sim</span><span class="op">$</span><span class="va">decision_covariates</span></span>
+<span><span class="va">rt_by_run</span> <span class="op">&lt;-</span> <span class="va">sim</span><span class="op">$</span><span class="va">rt_by_run</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/stopifnot.html" class="external-link">stopifnot</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/identical.html" class="external-link">identical</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/names.html" class="external-link">names</a></span><span class="op">(</span><span class="va">bold</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/names.html" class="external-link">names</a></span><span class="op">(</span><span class="va">events</span><span class="op">)</span><span class="op">)</span>,</span>
 <span>          <span class="fu"><a href="https://rdrr.io/r/base/identical.html" class="external-link">identical</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/names.html" class="external-link">names</a></span><span class="op">(</span><span class="va">bold</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/names.html" class="external-link">names</a></span><span class="op">(</span><span class="va">covariates</span><span class="op">)</span><span class="op">)</span>,</span>
 <span>          <span class="fu"><a href="https://rdrr.io/r/base/all.html" class="external-link">all</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">vapply</a></span><span class="op">(</span><span class="va">bold</span>, <span class="kw">function</span><span class="op">(</span><span class="va">y</span><span class="op">)</span> <span class="fu"><a href="https://rdrr.io/r/base/identical.html" class="external-link">identical</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/colnames.html" class="external-link">colnames</a></span><span class="op">(</span><span class="va">y</span><span class="op">)</span>, <span class="va">voxel_ids</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/logical.html" class="external-link">logical</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
@@ -662,51 +674,23 @@ isolated-impulse audit.</p>
 </tr>
 </tbody>
 </table>
-<p>The function models non-target cue/decision contributions
-(<code>demix_other_events = TRUE</code>), the operator’s trial-to-trial
-cross-talk (<code>demix_target_trials = TRUE</code>), and within-trial
-multi-lag smearing across the requested <code>-2..+4 s</code> lag grid
-(<code>demix_within_trial = TRUE</code>). By default
-(<code>demix_ridge = 0.05</code>, i.e., <code>&gt;= 0.03</code>),
-non-target events are subtracted using a condition-mean operator that
-removes preceding cue/decision bleed without inflating target-trial
-variance; when non-target events carry strong trial-varying parametric
-confounds that correlate with the target predictor, setting
-<code>demix_ridge = 0.02</code> (<code>&lt; 0.03</code>) activates a
-2nd-order iterated Tikhonov joint
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><mi>T</mi><mo>,</mo><mi>O</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">(T, O)</annotation></semantics></math>
-de-mixing operator. Target-trial overlap is inverted via a 2nd-order
-Tikhonov operator (<code>solve_duration_demix_operator()</code>) with
-per-trial effective gain restoration. The function also propagates the
-exact run-specific AR(1) observation noise covariance through the
-readout and unmixing operators to compute per-trial standard errors
-(<code>se_raw</code>, <code>se_demixed</code>), Empirical-Bayes
-stabilized inverse-variance precision weights
-(<code>precision_weight</code>), covariance-propagated sandwich standard
-errors (<code>se_weighted</code>), and null-mode-damped,
-Bartlett-adaptive ZCA-whitened GLS slopes (<code>beta_gls</code>,
-<code>se_gls</code>). When analyzing parcels or ROIs, setting
-<code>aggregate_by_parcel = TRUE</code> (using
-<code>parcel_groups</code> or the HRF fit’s <code>spatial_groups</code>)
-aggregates voxels by inverse measurement variance and propagates
-empirical within-parcel spatial noise correlation before Stage-3
-regression and ZCA whitening, calibrating <code>tau2_bio</code>,
-<code>precision_weight</code>, and <code>decon_demixed_whitened</code>
-directly on the high-SNR parcel series while reducing Stage-3/4 compute
-by
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>V</mi><mi>/</mi><mi>G</mi></mrow><annotation encoding="application/x-tex">V/G</annotation></semantics></math>.
-Furthermore, <code>covariates</code> can be omitted
-(<code>covariates = NULL</code>), in which case
-<code><a href="../reference/decon_epoch_regression.html">decon_epoch_regression()</a></code> uses covariate-agnostic marginal
-biological variance estimation (<code>tau2_mode = "marginal"</code>) and
-returns the de-mixed, precision-weighted, and ZCA-whitened trial panel
-(<code>return_panel = TRUE</code>) for two-stage <code><a href="../reference/mixed_by.html">mixed_by()</a></code>
-behavioral modeling or region-to-region connectivity
-(<code>R2 ~ R1_seed * x</code>). For multiple predictors, supply a data
-frame or matrix per run with consistent column names/order; do not add a
-constant intercept column to those centered predictors. Non-target
-events should remain in <code>events</code>, even though covariate rows
-refer only to feedback records.</p>
+<p>The correction uses the specified source model and readout to reduce
+mixing from other event types, overlapping target trials, and, with
+<code>demix_within_trial = TRUE</code>, neighboring lags. With the
+default <code>demix_ridge = 0.05</code>, non-target subtraction uses
+condition-mean sources. Trial-varying cue effects can survive it. A
+smaller value below 0.03 requests a joint regularized correction and
+changes its bias and variance. Compare under your event schedule before
+choosing it.</p>
+<p>MEDuSA propagates the fitted temporal covariance through the frozen
+inverse and readout to compute conditional <code>se_raw</code> and
+<code>se_demixed</code>. PR 62 supports a stationary AR cascade where
+warranted, using the exact covariance subset on the retained acquisition
+indices. Parcel aggregation occurs before epoch fitting and uses a
+working spatial noise scale. The resulting trial SE conditions on the
+fitted HRFs, nuisance specification, regularization, and parcel weights.
+Preserve non-target events in the event table and align each covariate
+row to its target event.</p>
 <p><code>restore_scale = TRUE</code> reports effects in original input
 units under the unit-sum HRF convention. It reverses the scaling
 divisor; it does not make estimates physiologically calibrated or
@@ -714,8 +698,9 @@ guarantee unbiased amplitudes. <code>beta_raw</code> is the uncorrected
 readout under this same inverse, not the historical Bush pipeline.
 <code>beta_corrected</code> includes model-based de-mixing, gain
 correction, and (when <code>weighting = "precision"</code>, the default)
-Empirical-Bayes precision weighting; <code>beta_gls</code> applies full
-within-run ZCA whitening of the trial error covariance matrix.
+Empirical-Bayes precision weighting; <code>beta_gls</code> uses the
+function’s GLS path for the supplied covariates. The optional exported
+ZCA columns use a regularized transform of the working trial covariance.
 Correlations in a multi-predictor result are marginal correlations with
 each predictor, not partial correlations.</p>
 <div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
@@ -1077,73 +1062,211 @@ dataset. In real data, report retained trials by run/lag/voxel,
 investigate missing estimates, and never silently discard a participant
 with sparse support. <code>summary</code> averages across usable voxels
 and is descriptive; it is not a population analysis.</p>
-<div class="section level3">
-<h3 id="handoff-to-group-models">Handoff to group models<a class="anchor" aria-label="anchor" href="#handoff-to-group-models"></a>
-</h3>
-<p><strong>Multi-participant recipe; not executed.</strong> Repeat the
-participant workflow and retain one panel per participant, with
-ID/session and event mappings added as above.
-<code>participant_panels</code> below refers to those completed panels,
-not replications of this simulation.</p>
-<p>Across our five-pillar Monte Carlo validation suite, the
-<strong>recommended primary group specification</strong> combines
-<strong>both</strong> within-run ZCA-whitened panel columns
-(<code>decon_demixed_whitened ~ rpe_whitened</code>, exported when
-<code>whiten_panel = TRUE</code>) <strong>and</strong> Empirical-Bayes
-precision weights (<code>weights = "precision_weight"</code>) in
-<code><a href="../reference/mixed_by.html">mixed_by()</a></code>. Because
-<code>compute_zca_whitening_matrix()</code> applies null-mode-damped,
-Bartlett-adaptive ZCA whitening to the within-run <em>correlation</em>
-matrix while preserving trial variance scale, pairing
-<code>decon_demixed_whitened ~ rpe_whitened</code> with
-<code>weights = "precision_weight"</code> simultaneously accounts for
-(a) between-run and per-trial heteroskedastic noise precision and (b)
-within-run off-diagonal trial error autocorrelation
-(<code>error_ac1</code>).</p>
+</div>
+<div class="section level2">
+<h2 id="run-the-workflow-across-participants">Run the workflow across participants<a class="anchor" aria-label="anchor" href="#run-the-workflow-across-participants"></a>
+</h2>
+<p>This example generates independent participants with varying RPE
+slopes, repeats the three preprocessing calls, and preserves two
+independently specified teaching parcels. The scientific contrast is the
+feedback-onset RPE slope in <code>Parcel_A</code>. The fixed teaching
+penalty matches the single-participant walkthrough above.</p>
 <div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">all_panels</span> <span class="op">&lt;-</span> <span class="fu">data.table</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/data.table/man/rbindlist.html" class="external-link">rbindlist</a></span><span class="op">(</span><span class="va">participant_panels</span>, use.names <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
-<span><span class="va">all_panels</span><span class="op">[</span>, <span class="va">run_id</span> <span class="op">:=</span> <span class="fu"><a href="https://rdrr.io/r/base/interaction.html" class="external-link">interaction</a></span><span class="op">(</span><span class="va">id</span>, <span class="va">run</span>, drop <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span><span class="op">]</span></span>
-<span><span class="va">all_panels</span><span class="op">[</span>, <span class="va">rpe_within</span> <span class="op">:=</span> <span class="va">rpe</span> <span class="op">-</span> <span class="fu"><a href="https://rdrr.io/r/base/mean.html" class="external-link">mean</a></span><span class="op">(</span><span class="va">rpe</span><span class="op">)</span>, by <span class="op">=</span> <span class="fu">.</span><span class="op">(</span><span class="va">id</span>, <span class="va">run</span><span class="op">)</span><span class="op">]</span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/base/stopifnot.html" class="external-link">stopifnot</a></span><span class="op">(</span><span class="fu">data.table</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/data.table/man/duplicated.html" class="external-link">uniqueN</a></span><span class="op">(</span><span class="va">all_panels</span><span class="op">$</span><span class="va">id</span><span class="op">)</span> <span class="op">&gt;</span> <span class="fl">1L</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Recommended Primary Specification (Modern MEDuSA ZCA + PW):</span></span>
-<span><span class="co"># Combines null-mode-damped within-run ZCA correlation whitening with</span></span>
-<span><span class="co"># Empirical-Bayes inverse-variance precision weights across runs and trials.</span></span>
-<span><span class="va">group_results_zca_pw</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mixed_by.html">mixed_by</a></span><span class="op">(</span></span>
-<span>  data <span class="op">=</span> <span class="va">all_panels</span>,</span>
-<span>  model_formulae <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>rpe <span class="op">=</span> <span class="va">decon_demixed_whitened</span> <span class="op">~</span> <span class="va">rpe_whitened</span> <span class="op">+</span></span>
-<span>                         <span class="op">(</span><span class="fl">1</span> <span class="op">+</span> <span class="va">rpe_whitened</span> <span class="op">|</span> <span class="va">id</span><span class="op">)</span> <span class="op">+</span> <span class="op">(</span><span class="fl">1</span> <span class="op">|</span> <span class="va">run_id</span><span class="op">)</span><span class="op">)</span>,</span>
-<span>  split_on <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"voxel"</span>, <span class="st">"evt_time"</span><span class="op">)</span>,</span>
-<span>  weights <span class="op">=</span> <span class="st">"precision_weight"</span>,</span>
-<span>  engine <span class="op">=</span> <span class="st">"lme4"</span>, ncores <span class="op">=</span> <span class="fl">1L</span></span>
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/Random.html" class="external-link">set.seed</a></span><span class="op">(</span><span class="fl">5412</span><span class="op">)</span></span>
+<span><span class="va">parcel_ids</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/stats/setNames.html" class="external-link">setNames</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/rep.html" class="external-link">rep</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"Parcel_A"</span>, <span class="st">"Parcel_B"</span><span class="op">)</span>, each <span class="op">=</span> <span class="fl">3L</span><span class="op">)</span>, <span class="va">voxel_ids</span><span class="op">)</span></span>
+<span><span class="va">lags_group</span> <span class="op">&lt;-</span> <span class="op">-</span><span class="fl">2</span><span class="op">:</span><span class="fl">4</span></span>
+<span><span class="va">participant_ids</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/sprintf.html" class="external-link">sprintf</a></span><span class="op">(</span><span class="st">"sim%02d"</span>, <span class="fu"><a href="https://rdrr.io/r/base/seq.html" class="external-link">seq_len</a></span><span class="op">(</span><span class="fl">12L</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="va">fit_one</span> <span class="op">&lt;-</span> <span class="kw">function</span><span class="op">(</span><span class="va">id</span><span class="op">)</span> <span class="op">{</span></span>
+<span>  <span class="va">subject</span> <span class="op">&lt;-</span> <span class="fu">simulate_participant</span><span class="op">(</span><span class="va">true_beta</span> <span class="op">+</span> <span class="fu"><a href="https://rdrr.io/r/stats/Normal.html" class="external-link">rnorm</a></span><span class="op">(</span><span class="fl">1L</span>, sd <span class="op">=</span> <span class="fl">.12</span><span class="op">)</span><span class="op">)</span></span>
+<span>  <span class="va">fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/estimate_crossrun_hrf.html">estimate_crossrun_hrf</a></span><span class="op">(</span></span>
+<span>    <span class="va">subject</span><span class="op">$</span><span class="va">bold</span>, <span class="va">subject</span><span class="op">$</span><span class="va">events</span>, <span class="va">tr</span>, <span class="va">candidates</span>, amplitude_model <span class="op">=</span> <span class="st">"trial"</span>,</span>
+<span>    noise_model <span class="op">=</span> <span class="st">"ar1"</span>, evidence <span class="op">=</span> <span class="st">"calibrated"</span></span>
+<span>  <span class="op">)</span></span>
+<span>  <span class="va">dec</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/deconvolve_crossrun_hrf.html">deconvolve_crossrun_hrf</a></span><span class="op">(</span></span>
+<span>    <span class="va">subject</span><span class="op">$</span><span class="va">bold</span>, <span class="va">fit</span>, lambda <span class="op">=</span> <span class="fl">.1</span>, scaling <span class="op">=</span> <span class="st">"noise_sd"</span>, penalty <span class="op">=</span> <span class="st">"sobolev"</span>,</span>
+<span>    nuisance_mode <span class="op">=</span> <span class="st">"ignore"</span>, observation_mask <span class="op">=</span> <span class="st">"fit"</span></span>
+<span>  <span class="op">)</span></span>
+<span>  <span class="va">ep</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/decon_epoch_regression.html">decon_epoch_regression</a></span><span class="op">(</span></span>
+<span>    <span class="va">dec</span>, <span class="va">subject</span><span class="op">$</span><span class="va">covariates</span>, target_condition <span class="op">=</span> <span class="st">"feedback"</span>, lags <span class="op">=</span> <span class="va">lags_group</span>,</span>
+<span>    parcel_groups <span class="op">=</span> <span class="va">parcel_ids</span>, restore_scale <span class="op">=</span> <span class="cn">TRUE</span>,</span>
+<span>    demix_within_trial <span class="op">=</span> <span class="cn">FALSE</span>, tau2_mode <span class="op">=</span> <span class="st">"marginal"</span>, return_panel <span class="op">=</span> <span class="cn">TRUE</span></span>
+<span>  <span class="op">)</span></span>
+<span>  <span class="va">panel_i</span> <span class="op">&lt;-</span> <span class="fu">data.table</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/data.table/man/copy.html" class="external-link">copy</a></span><span class="op">(</span><span class="va">ep</span><span class="op">$</span><span class="va">panel</span><span class="op">)</span></span>
+<span>  <span class="va">panel_i</span><span class="op">[</span>, <span class="va">id</span> <span class="op">:=</span> <span class="va">id</span><span class="op">]</span></span>
+<span>  <span class="kw">for</span> <span class="op">(</span><span class="va">run_i</span> <span class="kw">in</span> <span class="fu"><a href="https://rdrr.io/r/base/names.html" class="external-link">names</a></span><span class="op">(</span><span class="va">subject</span><span class="op">$</span><span class="va">events</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
+<span>    <span class="va">observed</span> <span class="op">&lt;-</span> <span class="va">panel_i</span><span class="op">[</span><span class="va">run</span> <span class="op">==</span> <span class="va">run_i</span><span class="op">]</span></span>
+<span>    <span class="va">records</span> <span class="op">&lt;-</span> <span class="va">subject</span><span class="op">$</span><span class="va">events</span><span class="op">[[</span><span class="va">run_i</span><span class="op">]</span><span class="op">]</span><span class="op">[</span><span class="va">observed</span><span class="op">$</span><span class="va">event_index</span>, <span class="op">]</span></span>
+<span>    <span class="fu"><a href="https://rdrr.io/r/base/stopifnot.html" class="external-link">stopifnot</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/all.html" class="external-link">all</a></span><span class="op">(</span><span class="va">records</span><span class="op">$</span><span class="va">condition</span> <span class="op">==</span> <span class="st">"feedback"</span><span class="op">)</span>,</span>
+<span>              <span class="fu"><a href="https://rdrr.io/r/base/Logic.html" class="external-link">isTRUE</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/all.equal.html" class="external-link">all.equal</a></span><span class="op">(</span><span class="va">observed</span><span class="op">$</span><span class="va">onset</span>, <span class="va">records</span><span class="op">$</span><span class="va">onset</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
+<span>  <span class="op">}</span></span>
+<span>  <span class="fu"><a href="https://rdrr.io/r/base/stopifnot.html" class="external-link">stopifnot</a></span><span class="op">(</span><span class="op">!</span><span class="fu"><a href="https://rdrr.io/r/base/duplicated.html" class="external-link">anyDuplicated</a></span><span class="op">(</span><span class="va">panel_i</span><span class="op">[</span>, <span class="fu">.</span><span class="op">(</span><span class="va">id</span>, <span class="va">run</span>, <span class="va">event_index</span>, <span class="va">evt_time</span>, <span class="va">parcel</span><span class="op">)</span><span class="op">]</span><span class="op">)</span>,</span>
+<span>            <span class="fu"><a href="https://rdrr.io/r/base/all.html" class="external-link">all</a></span><span class="op">(</span><span class="va">panel_i</span><span class="op">$</span><span class="va">precision_weight</span> <span class="op">&gt;</span> <span class="fl">0</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/all.html" class="external-link">all</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/is.finite.html" class="external-link">is.finite</a></span><span class="op">(</span><span class="va">panel_i</span><span class="op">$</span><span class="va">se_demixed</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
+<span>  <span class="va">ep</span><span class="op">$</span><span class="va">panel</span> <span class="op">&lt;-</span> <span class="va">panel_i</span></span>
+<span>  <span class="va">ep</span></span>
+<span><span class="op">}</span></span>
+<span><span class="va">subject_epochs</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/stats/setNames.html" class="external-link">setNames</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span><span class="va">participant_ids</span>, <span class="va">fit_one</span><span class="op">)</span>, <span class="va">participant_ids</span><span class="op">)</span></span>
+<span><span class="va">group_panel</span> <span class="op">&lt;-</span> <span class="fu">data.table</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/data.table/man/rbindlist.html" class="external-link">rbindlist</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span><span class="va">subject_epochs</span>, <span class="st">"[["</span>, <span class="st">"panel"</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="va">group_panel</span><span class="op">[</span>, <span class="va">rpe_within</span> <span class="op">:=</span> <span class="va">rpe</span> <span class="op">-</span> <span class="fu"><a href="https://rdrr.io/r/base/mean.html" class="external-link">mean</a></span><span class="op">(</span><span class="va">rpe</span><span class="op">)</span>, by <span class="op">=</span> <span class="fu">.</span><span class="op">(</span><span class="va">id</span>, <span class="va">run</span>, <span class="va">parcel</span>, <span class="va">evt_time</span><span class="op">)</span><span class="op">]</span></span></code></pre></div>
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">planned</span> <span class="op">&lt;-</span> <span class="va">group_panel</span><span class="op">[</span><span class="va">parcel</span> <span class="op">==</span> <span class="st">"Parcel_A"</span> <span class="op">&amp;</span> <span class="va">evt_time</span> <span class="op">==</span> <span class="fl">0</span><span class="op">]</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/stopifnot.html" class="external-link">stopifnot</a></span><span class="op">(</span><span class="fu">data.table</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/data.table/man/duplicated.html" class="external-link">uniqueN</a></span><span class="op">(</span><span class="va">planned</span><span class="op">$</span><span class="va">id</span><span class="op">)</span> <span class="op">==</span> <span class="fu"><a href="https://rdrr.io/r/base/length.html" class="external-link">length</a></span><span class="op">(</span><span class="va">participant_ids</span><span class="op">)</span>,</span>
+<span>          <span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">nrow</a></span><span class="op">(</span><span class="va">planned</span><span class="op">)</span> <span class="op">==</span> <span class="fu"><a href="https://rdrr.io/r/base/length.html" class="external-link">length</a></span><span class="op">(</span><span class="va">participant_ids</span><span class="op">)</span> <span class="op">*</span> <span class="fu"><a href="https://rdrr.io/r/base/length.html" class="external-link">length</a></span><span class="op">(</span><span class="va">run_ids</span><span class="op">)</span> <span class="op">*</span> <span class="va">n_trials</span><span class="op">)</span></span>
+<span><span class="va">group_result</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mixed_by.html">mixed_by</a></span><span class="op">(</span></span>
+<span>  <span class="va">planned</span>, model_formulae <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span></span>
+<span>    feedback <span class="op">=</span> <span class="va">decon_demixed</span> <span class="op">~</span> <span class="va">rpe_within</span> <span class="op">+</span> <span class="op">(</span><span class="fl">1</span> <span class="op">+</span> <span class="va">rpe_within</span> <span class="op">||</span> <span class="va">id</span><span class="op">)</span> <span class="op">+</span> <span class="op">(</span><span class="fl">1</span> <span class="op">|</span> <span class="va">id</span><span class="op">:</span><span class="va">run</span><span class="op">)</span></span>
+<span>  <span class="op">)</span>,</span>
+<span>  weights <span class="op">=</span> <span class="st">"precision_weight"</span>, calculate <span class="op">=</span> <span class="st">"parameter_estimates_reml"</span>,</span>
+<span>  padjust_by <span class="op">=</span> <span class="cn">NULL</span>, return_models <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Alternative Specification (Precision-Weighted Unwhitened):</span></span>
-<span><span class="co"># Propagates per-trial inverse-variance precision weights on the unwhitened</span></span>
-<span><span class="co"># de-mixed scale when trial predictors have negligible serial autocorrelation.</span></span>
-<span><span class="va">group_results_pw</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mixed_by.html">mixed_by</a></span><span class="op">(</span></span>
-<span>  data <span class="op">=</span> <span class="va">all_panels</span>,</span>
-<span>  model_formulae <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>rpe <span class="op">=</span> <span class="va">decon_demixed</span> <span class="op">~</span> <span class="va">rpe_within</span> <span class="op">+</span></span>
-<span>                         <span class="op">(</span><span class="fl">1</span> <span class="op">+</span> <span class="va">rpe_within</span> <span class="op">|</span> <span class="va">id</span><span class="op">)</span> <span class="op">+</span> <span class="op">(</span><span class="fl">1</span> <span class="op">|</span> <span class="va">run_id</span><span class="op">)</span><span class="op">)</span>,</span>
-<span>  split_on <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"voxel"</span>, <span class="st">"evt_time"</span><span class="op">)</span>,</span>
-<span>  weights <span class="op">=</span> <span class="st">"precision_weight"</span>,</span>
-<span>  engine <span class="op">=</span> <span class="st">"lme4"</span>, ncores <span class="op">=</span> <span class="fl">1L</span></span>
+<span><span class="co">#&gt; Using model_formulae to setup model_set</span></span>
+<span><span class="co">#&gt; Registered S3 method overwritten by 'formula.tools':</span></span>
+<span><span class="co">#&gt;   method               from         </span></span>
+<span><span class="co">#&gt;   as.character.formula fmri.pipeline</span></span>
+<span><span class="co">#&gt; Starting processing of data splits</span></span>
+<span><span class="co">#&gt; Loading required package: Matrix</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt; Attaching package: 'lmerTest'</span></span>
+<span><span class="co">#&gt; The following object is masked from 'package:lme4':</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt;     lmer</span></span>
+<span><span class="co">#&gt; The following object is masked from 'package:stats':</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt;     step</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt; Attaching package: 'data.table'</span></span>
+<span><span class="co">#&gt; The following object is masked from 'package:base':</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt;     %notin%</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt; Attaching package: 'dplyr'</span></span>
+<span><span class="co">#&gt; The following objects are masked from 'package:data.table':</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt;     between, first, last</span></span>
+<span><span class="co">#&gt; The following objects are masked from 'package:stats':</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt;     filter, lag</span></span>
+<span><span class="co">#&gt; The following objects are masked from 'package:base':</span></span>
+<span><span class="co">#&gt; </span></span>
+<span><span class="co">#&gt;     intersect, setdiff, setequal, union</span></span>
+<span><span class="co">#&gt; Welcome to emmeans.</span></span>
+<span><span class="co">#&gt; Caution: You lose important information if you filter this package's results.</span></span>
+<span><span class="co">#&gt; See '? untidy'</span></span>
+<span><span class="va">group_fit</span> <span class="op">&lt;-</span> <span class="va">group_result</span><span class="op">$</span><span class="va">models</span><span class="op">$</span><span class="va">model</span><span class="op">[[</span><span class="fl">1L</span><span class="op">]</span><span class="op">]</span><span class="op">$</span><span class="va">reml</span></span>
+<span><span class="fu">knitr</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/knitr/man/kable.html" class="external-link">kable</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/subset.html" class="external-link">subset</a></span><span class="op">(</span><span class="va">group_result</span><span class="op">$</span><span class="va">coef_df_reml</span>, <span class="va">term</span> <span class="op">==</span> <span class="st">"rpe_within"</span><span class="op">)</span><span class="op">[</span></span>
+<span>  , <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"estimate"</span>, <span class="st">"std.error"</span>, <span class="st">"df"</span>, <span class="st">"p.value"</span><span class="op">)</span>, with <span class="op">=</span> <span class="cn">FALSE</span><span class="op">]</span>, digits <span class="op">=</span> <span class="fl">3</span><span class="op">)</span></span></code></pre></div>
+<table class="table">
+<thead><tr class="header">
+<th align="right">estimate</th>
+<th align="right">std.error</th>
+<th align="right">df</th>
+<th align="right">p.value</th>
+</tr></thead>
+<tbody><tr class="odd">
+<td align="right">0.531</td>
+<td align="right">0.022</td>
+<td align="right">11</td>
+<td align="right">0</td>
+</tr></tbody>
+</table>
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu">lme4</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/lme4/man/isSingular.html" class="external-link">isSingular</a></span><span class="op">(</span><span class="va">group_fit</span><span class="op">)</span></span>
+<span><span class="co">#&gt; [1] FALSE</span></span></code></pre></div>
+<p>The weights model relative conditional residual spread through the
+inverse weight. They do not remove within-run dependence. A transformed
+analysis needs the matched response and predictor columns from the same
+parcel and lag, plus a check of remaining dependence. Inspect
+singularity, residuals, and participant support before interpreting the
+fixed-effect SE. This example has one planned test. If you examine more
+parcels or lags, define the test family before fitting.</p>
+<div class="section level3">
+<h3 id="joint-trajectory-inference-after-pr-62">Joint trajectory inference after PR 62<a class="anchor" aria-label="anchor" href="#joint-trajectory-inference-after-pr-62"></a>
+</h3>
+<p>The named subject results retain resolution and error-correlation
+summaries. This path pools per-subject, within-run slopes for one
+predictor at a time. The example uses <code>"none"</code> to keep the
+raw lag estimand and reports one prespecified parcel. The default list
+route takes the operator summaries from the first participant. Inspect
+whether they represent the sample or pass explicit common operators.</p>
+<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">trajectory</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/medusa_multilag_infer.html">medusa_multilag_infer</a></span><span class="op">(</span></span>
+<span>  <span class="va">subject_epochs</span>, covariates <span class="op">=</span> <span class="st">"rpe"</span>, use_whitened <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  trajectory_mode <span class="op">=</span> <span class="st">"none"</span>, tr <span class="op">=</span> <span class="va">tr</span>, n_perm <span class="op">=</span> <span class="fl">1999L</span>,</span>
+<span>  n_boot_latency <span class="op">=</span> <span class="fl">0L</span>, seed <span class="op">=</span> <span class="fl">5420L</span></span>
+<span><span class="op">)</span></span>
+<span><span class="fu">knitr</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/knitr/man/kable.html" class="external-link">kable</a></span><span class="op">(</span></span>
+<span>  <span class="fu"><a href="https://rdrr.io/r/base/subset.html" class="external-link">subset</a></span><span class="op">(</span><span class="va">trajectory</span><span class="op">$</span><span class="va">coefficients</span>, <span class="va">parcel</span> <span class="op">==</span> <span class="st">"Parcel_A"</span><span class="op">)</span><span class="op">[</span></span>
+<span>    , <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"lag"</span>, <span class="st">"estimate"</span>, <span class="st">"conf.low.sim"</span>, <span class="st">"conf.high.sim"</span>, <span class="st">"p_maxT"</span><span class="op">)</span>, with <span class="op">=</span> <span class="cn">FALSE</span><span class="op">]</span>,</span>
+<span>  digits <span class="op">=</span> <span class="fl">3</span></span>
 <span><span class="op">)</span></span></code></pre></div>
-<p>While <code>weights = "precision_weight"</code> and
-<code>whiten_panel = TRUE</code> propagate the operator-induced
-heteroskedasticity and within-run error covariance conditioned on the
-frozen HRF and penalty, mixed-model standard errors still condition on
-the selected HRF, regularization parameter, and behavioral model.
-Validate interval coverage and active-null behavior for the intended
-study design. Keep folds/runs/trials clustered within participants.
-Prespecify the lag/region family and its multiplicity correction;
-neither HRF evidence gates nor descriptive epoch p-values provide that
-correction. Do not treat voxels as independent participant replicates. A
-parcel analysis requires an explicit, independently defined
-voxel-to-parcel mapping and aggregation strategy.</p>
+<table class="table">
+<thead><tr class="header">
+<th align="right">lag</th>
+<th align="right">estimate</th>
+<th align="right">conf.low.sim</th>
+<th align="right">conf.high.sim</th>
+<th align="right">p_maxT</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td align="right">-2</td>
+<td align="right">0.275</td>
+<td align="right">0.224</td>
+<td align="right">0.326</td>
+<td align="right">0.000</td>
+</tr>
+<tr class="even">
+<td align="right">-1</td>
+<td align="right">0.445</td>
+<td align="right">0.386</td>
+<td align="right">0.503</td>
+<td align="right">0.000</td>
+</tr>
+<tr class="odd">
+<td align="right">0</td>
+<td align="right">0.531</td>
+<td align="right">0.466</td>
+<td align="right">0.597</td>
+<td align="right">0.000</td>
+</tr>
+<tr class="even">
+<td align="right">1</td>
+<td align="right">0.491</td>
+<td align="right">0.428</td>
+<td align="right">0.554</td>
+<td align="right">0.000</td>
+</tr>
+<tr class="odd">
+<td align="right">2</td>
+<td align="right">0.347</td>
+<td align="right">0.299</td>
+<td align="right">0.395</td>
+<td align="right">0.000</td>
+</tr>
+<tr class="even">
+<td align="right">3</td>
+<td align="right">0.169</td>
+<td align="right">0.140</td>
+<td align="right">0.198</td>
+<td align="right">0.000</td>
+</tr>
+<tr class="odd">
+<td align="right">4</td>
+<td align="right">0.029</td>
+<td align="right">0.001</td>
+<td align="right">0.057</td>
+<td align="right">0.043</td>
+</tr>
+</tbody>
+</table>
+<p><code>n_perm</code> counts correlated parametric null draws. The raw
+band and Max-|T| tests cover the lags within one parcel–term trajectory.
+TFCE and omnibus inference use that same family. Claims across parcels
+or terms need a study-wide procedure. Save the full
+<code>subject_epochs</code> objects and analysis settings, including the
+lag grid, parcel labels, and random seed.</p>
 <p><strong>Saving recipe; not executed.</strong> Keeping only the panel
 loses the fitted operator context needed for audits.</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/readRDS.html" class="external-link">saveRDS</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>hrf_fit <span class="op">=</span> <span class="va">hrf_fit</span>, deconvolution <span class="op">=</span> <span class="va">decon</span>,</span>
 <span>             feedback <span class="op">=</span> <span class="va">feedback_fit</span>, decision <span class="op">=</span> <span class="va">decision_fit</span>,</span>
 <span>             events <span class="op">=</span> <span class="va">events</span>, covariates <span class="op">=</span> <span class="va">covariates</span>,</span>
@@ -1160,7 +1283,7 @@ retain. Verify shared space, dimensions, voxel sizes, and
 orientation/affine <strong>before</strong> extracting. Equal array
 dimensions alone are not enough. Keep this voxel metadata with the
 fit.</p>
-<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">nifti_paths</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span>run1 <span class="op">=</span> <span class="st">"/study/sub01/run1_preprocessed.nii.gz"</span>,</span>
 <span>                 run2 <span class="op">=</span> <span class="st">"/study/sub01/run2_preprocessed.nii.gz"</span>,</span>
 <span>                 run3 <span class="op">=</span> <span class="st">"/study/sub01/run3_preprocessed.nii.gz"</span><span class="op">)</span></span>
@@ -1210,7 +1333,7 @@ explicit linear-method settings while retaining file-based alignment.
 Paths and <code>trial_df</code> must be replaced with study inputs. Use
 a fresh output directory because existing output files are skipped and
 may retain older scaling behavior.</p>
-<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/voxelwise_deconvolution.html">voxelwise_deconvolution</a></span><span class="op">(</span></span>
 <span>  niftis <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/unname.html" class="external-link">unname</a></span><span class="op">(</span><span class="va">nifti_paths</span><span class="op">)</span>,</span>
 <span>  add_metadata <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/data.frame.html" class="external-link">data.frame</a></span><span class="op">(</span>id <span class="op">=</span> <span class="st">"sub01"</span>, run <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/names.html" class="external-link">names</a></span><span class="op">(</span><span class="va">nifti_paths</span><span class="op">)</span><span class="op">)</span>,</span>
@@ -1265,120 +1388,68 @@ canonical HRF. The file wrapper can also tune supplied candidates within
 a run, but that is not leave-one-run-out HRF learning.</p>
 </div>
 <div class="section level2">
-<h2 id="summary-of-recommended-best-practice-settings">Summary of recommended best-practice settings<a class="anchor" aria-label="anchor" href="#summary-of-recommended-best-practice-settings"></a>
+<h2 id="settings-and-checks-at-each-handoff">Settings and checks at each handoff<a class="anchor" aria-label="anchor" href="#settings-and-checks-at-each-handoff"></a>
 </h2>
-<p>Based on the five-pillar MEDuSA simulation validation suite, the
-table below summarizes the recommended settings for empirical
-studies:</p>
 <table class="table">
 <colgroup>
-<col width="25%">
-<col width="25%">
-<col width="25%">
-<col width="25%">
+<col width="33%">
+<col width="33%">
+<col width="33%">
 </colgroup>
 <thead><tr class="header">
-<th>Pipeline Step</th>
-<th>Function</th>
-<th>Recommended Arguments</th>
-<th>Why It Matters</th>
+<th>Handoff</th>
+<th>Settings to record</th>
+<th>Check before proceeding</th>
 </tr></thead>
 <tbody>
 <tr class="odd">
-<td><strong>1. Cross-Run HRF Learning</strong></td>
-<td>
-<code><a href="../reference/hrf_library.html">hrf_library()</a></code> +
-<code><a href="../reference/estimate_crossrun_hrf.html">estimate_crossrun_hrf()</a></code>
+<td>Input to HRF/noise fit</td>
+<td>TR, offsets, masks, candidate library, <code>spatial_groups</code>
+and optional <code>noise_groups</code>
 </td>
-<td>
-<code>hrf_library(tr, preset = "medusa")</code>
-(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.5</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">0.5\text{ s}</annotation></semantics></math>
-delay grid,
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>K</mi><mo>=</mo><mn>27</mn></mrow><annotation encoding="application/x-tex">K=27</annotation></semantics></math>);
-<code>noise_model = "ar1"</code>, <code>evidence = "calibrated"</code>,
-<code>selection_mode = "soft_average"</code>,
-<code>spatial_groups = parcel_ids</code>,
-<code>pooling = "parcel"</code> (or <code>"voxel"</code> with
-<code>spatial_strength = 0.02</code>)</td>
-<td>Interpolates sub-grid vascular delays and nonlinear Balloon
-hemodynamics via Empirical-Bayes Boltzmann kernel averaging
-(<code>selection_mode = "soft_average"</code>), reducing HRF RMSE by
-8–22% and neural latency error by 20–35% over hard selection without the
-runtime cost of
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.25</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">0.25\text{ s}</annotation></semantics></math>
-grids.</td>
+<td>Confirm clocks, retained acquisition indices, target-run exclusion
+for HRF selection, and fallback strata.</td>
 </tr>
 <tr class="even">
-<td><strong>2. Continuous Deconvolution</strong></td>
-<td><code><a href="../reference/deconvolve_crossrun_hrf.html">deconvolve_crossrun_hrf()</a></code></td>
+<td>HRF/noise fit to inverse</td>
 <td>
-<code>scaling = "noise_sd"</code>, <code>penalty = "sobolev"</code>,
-<code>backend = "cpp"</code>
-</td>
-<td>Scales runs by AR(1) innovation noise SD rather than total
-<code>"zscore"</code> variance (which compresses high-signal runs and
-absorbs drift/motion variance); Sobolev penalty controls both
-high-frequency ringing and low-frequency drift.</td>
+<code>lambda</code> or tuning grid, penalty, nuisance mode,
+scaling</td>
+<td>In PR 62, noise-SD scaling estimates <strong>marginal
+observation</strong> SD via leverage-adjusted robust GLS residuals.
+Examine estimated scales, fit residuals, and adaptive penalty
+diagnostics.</td>
 </tr>
 <tr class="odd">
-<td><strong>3a. Punctate / Impulse Epochs</strong></td>
-<td><code><a href="../reference/decon_epoch_regression.html">decon_epoch_regression()</a></code></td>
-<td>
-<code>source_model = "impulse"</code>,
-<code>readout_kernel = "triangle"</code>,
-<code>demix_other_events = TRUE</code>,
-<code>demix_target_trials = TRUE</code>,
-<code>restore_scale = TRUE</code>, <code>weighting = "gls"</code>,
-<code>whiten_panel = TRUE</code>, <code>return_panel = TRUE</code>
-</td>
-<td>Removes preceding event bleed via condition-mean de-mixing
-(<code>demix_ridge = 0.05</code>, or <code>&lt; 0.03</code> when
-non-target events carry strong trial-varying confounds) and restores
-per-trial target gain via 2nd-order Tikhonov inversion.</td>
+<td>Inverse to event measurements</td>
+<td>Source duration and units, readout, demixing, target condition and
+lag grid</td>
+<td>Verify event-row identity, time support, and effective gains. Check
+rate versus integrated activity for duration models.</td>
 </tr>
 <tr class="even">
-<td><strong>3b. Multi-Lag Waveforms
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>β</mi><mo stretchy="false" form="prefix">(</mo><mi>τ</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">\beta(\tau)</annotation></semantics></math></strong></td>
-<td><code><a href="../reference/decon_epoch_regression.html">decon_epoch_regression()</a></code></td>
-<td>Same as 3a + <code>demix_within_trial = TRUE</code>
-(<code>within_trial_ridge = 0.06</code>) across
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo>≥</mo><mn>3</mn></mrow><annotation encoding="application/x-tex">\ge 3</annotation></semantics></math>
-lags spaced at
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>1</mn><mo>×</mo><mtext mathvariant="normal">TR</mtext></mrow><annotation encoding="application/x-tex">1\times\text{TR}</annotation></semantics></math>
+<td>Event measurements to parcel panel</td>
+<td>Parcel labels, <code>restore_scale</code>, <code>tau2_mode</code>,
+<code>whiten_panel</code>
 </td>
-<td>Sharpens within-trial temporal waveform profiles across lags by
-inverting the lag-by-lag point-spread matrix (automatically scales
-<code>within_trial_ridge</code> by
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><mtext mathvariant="normal">TR</mtext><mi>/</mi><mi mathvariant="normal">Δ</mi><mi>τ</mi><msup><mo stretchy="false" form="postfix">)</mo><mn>2</mn></msup></mrow><annotation encoding="application/x-tex">(\text{TR}/\Delta\tau)^2</annotation></semantics></math>
-if <code>lags</code> is sampled finer than
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>1</mn><mo>×</mo><mtext mathvariant="normal">TR</mtext></mrow><annotation encoding="application/x-tex">1\times\text{TR}</annotation></semantics></math>).</td>
+<td>Audit usable voxels and retained trials by run. Keep amplitudes,
+measurement SEs, and working precision weights in their stated
+units.</td>
 </tr>
 <tr class="odd">
-<td><strong>3c. Variable-Duration (RT) Epochs</strong></td>
-<td><code><a href="../reference/decon_epoch_regression.html">decon_epoch_regression()</a></code></td>
-<td>Same as 3a + <code>source_model = "duration"</code>,
-<code>trial_durations = rt_by_run</code>,
-<code>duration_scale = "rate"</code>
-</td>
-<td>Eliminates reaction-time duration confounding (preventing both
-destructive signal cancellation when
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi><mo stretchy="false" form="prefix">(</mo><mi>x</mi><mo>,</mo><mtext mathvariant="normal">RT</mtext><mo stretchy="false" form="postfix">)</mo><mo>&lt;</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">r(x, \text{RT}) &lt; 0</annotation></semantics></math>
-and 100% false-positive rate inflation when
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi><mo stretchy="false" form="prefix">(</mo><mi>x</mi><mo>,</mo><mtext mathvariant="normal">RT</mtext><mo stretchy="false" form="postfix">)</mo><mo>&gt;</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">r(x, \text{RT}) &gt; 0</annotation></semantics></math>).</td>
-</tr>
-<tr class="even">
-<td><strong>4. Group Mixed-Effects Model</strong></td>
-<td><code><a href="../reference/mixed_by.html">mixed_by()</a></code></td>
-<td>
-<code>decon_demixed_whitened ~ x_whitened + (1 + x_whitened \| id) + (1 \| run_id)</code>,
-<code>weights = "precision_weight"</code>
-</td>
-<td>Combines Empirical-Bayes precision weights across heteroskedastic
-runs/trials with null-mode-damped, Bartlett-adaptive within-run ZCA
-correlation whitening.</td>
+<td>Panel to group claim</td>
+<td>Participant/run effects, predictors, weights, trajectory mode, test
+family</td>
+<td>Check participant counts, residual dependence, singularity, and
+whether the test applies to one lag, one trajectory, or a whole study
+family.</td>
 </tr>
 </tbody>
 </table>
+<p>Earlier MEDuSA documents may use pre-PR 62 noise scaling or
+approximate gap handling. Use the installed version’s help for argument
+names and preserve the software revision alongside the fitted
+objects.</p>
 </div>
 <div class="section level2">
 <h2 id="before-interpreting-a-result">Before interpreting a result<a class="anchor" aria-label="anchor" href="#before-interpreting-a-result"></a>
