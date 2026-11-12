@@ -929,7 +929,7 @@ hrf_soft_boltzmann_weights <- function(scores_vec, kernel_cos, dist_fb,
 # Build stratum keys and per-voxel HRF kernel accessor for deconvolve_crossrun_hrf()
 # and decon_epoch_regression(). In "hard" mode, preserves exact integer kernel_index
 # strata; in "soft_average" mode, groups voxels that share identical composite weight
-# vectors and returns their unit-sum composite HRF kernel.
+# vectors and returns their normalized composite HRF kernel.
 hrf_stratum_kernels <- function(hrf_fit, r) {
   selected <- hrf_fit$selections[[r]]$kernel_index
   noise_r <- if (is.null(hrf_fit$noise)) NULL else hrf_fit$noise[[r]]
