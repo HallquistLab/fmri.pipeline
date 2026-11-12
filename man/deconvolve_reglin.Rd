@@ -143,8 +143,9 @@ Constant signals and signals containing nonfinite observations are
   \code{scaled:scale}, and \code{scaling} record the actual BOLD transformation
   \code{(y - center) / scale}; diagnostics expose the same values. With
   \code{scaling = "none"}, the recorded center is zero. The activity scale depends
-  on this transformation and the unit-sum HRF; it is not a calibrated physiological
-  neural-amplitude scale. The removed BOLD mean is not an identified neural baseline.
+  on this transformation and the HRF normalization convention (\code{kernel_normalize});
+  it is not a calibrated physiological neural-amplitude scale. The removed BOLD mean is
+  not an identified neural baseline.
 
   Scalar Wiener GCV uses the exact trace of the finite observed smoother, including
   zero extension, latent truncation, and the implemented filtered HRF when whitening.

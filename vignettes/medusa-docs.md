@@ -4,8 +4,8 @@ The teaching sequence comprises two standard package vignettes and a Quarto tech
 
 | Source | HTML output | Role |
 |---|---|---|
-| `vignettes/medusa-concepts.Rmd` | `medusa-concepts.html` | Conceptual foundations and literature (updated through PR #64) |
-| `vignettes/medusa-workflows.Rmd` | `medusa-workflows.html` | Executable example and study recipes (updated through PR #64) |
+| `vignettes/medusa-concepts.Rmd` | `medusa-concepts.html` | Conceptual foundations and literature (updated through PR #66) |
+| `vignettes/medusa-workflows.Rmd` | `medusa-workflows.html` | Executable example and study recipes (updated through PR #66) |
 | `medusa_deconvolution_review_prs_42_53.qmd` | `medusa_deconvolution_review_prs_42_53.html` | Historical technical review for PRs #42–#55+ |
 
 Run the commands below from the repository root. Install the package dependencies first. Rendering requires R, knitr/rmarkdown, Pandoc (also bundled with Quarto), and the Quarto CLI for the technical companion. The current source must be installed for a Quarto render, which executes R in its own process. Merely loading a development checkout in another R process does not update that installation.

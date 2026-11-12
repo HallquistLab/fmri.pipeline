@@ -166,7 +166,9 @@ diagnose_crossrun_recovery <- function(deconvolution, events = NULL, lags = 0,
     matrices = if (return_matrices) matrices else NULL,
     settings = list(lags = lags, weights = weights, inverse = settings,
       conditional_on = "HRF, covariance, lambda, masks, nuisance design, and scaling divisors",
-      reference = "unit-height event sources; unit-sum HRFs; ratios within analysis units",
+      reference = paste0("unit-height event sources; ",
+        if (!is.null(fit$settings$kernel_normalize)) fit$settings$kernel_normalize else "signed_sum",
+        "-normalized HRFs; ratios within analysis units"),
       automatic_correction = FALSE))
 }
 
