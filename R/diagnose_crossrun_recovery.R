@@ -315,50 +315,18 @@ compute_ar1_operator_factor <- function(B, rows, rho, center_obs = TRUE) {
     return(t(B_eff))
   }
   Bt <- t(B_eff)
+  rows_use <- if (length(rows) == m) as.integer(rows) else seq_len(m)
   if (has_psi) {
-    is_contig <- all(diff(rows) == 1L)
-    lag_span <- if (is_contig) max(8L, length(rho) + 2L) else max(8L, max(rows) - min(rows))
+    is_contig <- all(diff(rows_use) == 1L)
+    lag_span <- if (is_contig) max(8L, length(rho) + 2L) else max(8L, max(rows_use) - min(rows_use))
     info <- hrf_ar_cascade_info(rho, max_lag = lag_span)
-    phi <- info$phi
-    p <- length(phi)
-    if (p == 0L) return(Bt)
-    if (is_contig && m > p) {
-      Gamma_p <- matrix(info$acf[abs(outer(seq_len(p), seq_len(p), "-")) + 1L], p, p)
-      L_p <- tryCatch(t(chol(Gamma_p)), error = function(e) NULL)
-      if (!is.null(L_p) && is.finite(info$sig_u2) && info$sig_u2 > 1e-8) {
-        sig_u <- sqrt(info$sig_u2)
-        W_v <- matrix(0.0, m, M)
-        for (i in m:1L) {
-          acc <- Bt[i, ]
-          for (k in seq_len(p)) {
-            if (i + k <= m && i + k > p) {
-              acc <- acc + phi[k] * W_v[i + k, ]
-            }
-          }
-          W_v[i, ] <- acc
-        }
-        U <- matrix(0.0, m, M)
-        U[(p + 1L):m, ] <- sig_u * W_v[(p + 1L):m, , drop = FALSE]
-        U[seq_len(p), ] <- crossprod(L_p, W_v[seq_len(p), , drop = FALSE])
-        return(U)
-      }
-    }
-    idx <- abs(outer(rows, rows, "-")) + 1L
-    Sigma_sub <- matrix(info$acf[idx], m, m)
-    R_chol <- tryCatch(chol(Sigma_sub), error = function(e) {
-      diag(Sigma_sub) <- diag(Sigma_sub) + 1e-6
-      chol(Sigma_sub)
-    })
-    return(R_chol %*% Bt)
+    if (length(info$phi) == 0L) return(Bt)
+    return(hrf_ar_operator_factor_cpp(
+      Bt, rows_use, rho = 0.0,
+      ar_phi = info$phi, ar_acf = info$acf, sig_u2 = info$sig_u2
+    ))
   }
-  V <- matrix(0, m, M)
-  V[m, ] <- Bt[m, ]
-  a_vec <- c(0, rho1^(rows[-1L] - rows[-m]))
-  for (i in (m - 1L):1L) {
-    V[i, ] <- Bt[i, ] + a_vec[i + 1L] * V[i + 1L, ]
-  }
-  s_vec <- sqrt(pmax(0, 1 - a_vec * a_vec))
-  sweep(V, 1L, s_vec, "*")
+  hrf_ar_operator_factor_cpp(Bt, rows_use, rho = as.numeric(rho1))
 }
 
 compute_ar1_operator_cov <- function(B, rows, rho, center_obs = TRUE) {

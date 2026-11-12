@@ -1658,5 +1658,180 @@ test_that("SUSAN bilateral spatial/similarity noise pooling and noise_groups sep
   expect_equal(nrow(fit_ng$parcels$run1), 1L)
 })
 
+test_that("C++ ArWhitener Markov-barrier whitening and operator factor match dense R reference on gapped AR(p) grids", {
+  set.seed(20261112)
+  rows_contig <- 1:96
+  # Include leading gap, wide gap, rapid clustered gaps (< p apart), and isolated single TR (55)
+  rows_gapped <- setdiff(1:115, c(1:2, 14:19, 31L, 34:36, 38L, 52:54, 56:58, 88:94))
+
+  ar_specs <- list(
+    ar1 = 0.68,
+    ar3 = c(0.58, 0.20, -0.28),
+    ar5 = c(0.62, 0.22, -0.31, 0.14, -0.09)
+  )
+
+  for (rows in list(rows_contig, rows_gapped)) {
+    m <- length(rows)
+    x1 <- matrix(stats::rnorm(m * 7L), m, 7L)
+    x2 <- matrix(stats::rnorm(m * 11L), m, 11L)
+    b_op <- matrix(stats::rnorm(14L * m), 14L, m)
+
+    for (ar_vec in ar_specs) {
+      for (um in c(FALSE, TRUE)) {
+        w_ref <- hrf_whitening_matrix(rows, ar_vec, unit_marginal = um)
+        got_single <- hrf_apply_whitening(x1, rows, ar_vec, unit_marginal = um)
+        expect_equal(got_single, w_ref %*% x1, tolerance = 1e-13)
+
+        got_batch <- hrf_apply_whitening(
+          list(first = x1, empty = NULL, second = x2),
+          rows, ar_vec, unit_marginal = um
+        )
+        expect_null(got_batch$empty)
+        expect_equal(got_batch$first, w_ref %*% x1, tolerance = 1e-13)
+        expect_equal(got_batch$second, w_ref %*% x2, tolerance = 1e-13)
+      }
+
+      # Verify Stage-3 operator covariance factor U satisfies U^T U == B_c Sigma_sub B_c^T
+      b_c <- sweep(b_op, 1L, rowMeans(b_op), "-")
+      u_cpp <- compute_ar1_operator_factor(b_op, rows, ar_vec, center_obs = TRUE)
+      if (length(ar_vec) == 1L) {
+        sigma_sub <- ar_vec^abs(outer(rows, rows, "-"))
+      } else {
+        info <- hrf_ar_cascade_info(ar_vec, max_lag = max(8L, max(rows) - min(rows)))
+        sigma_sub <- matrix(info$acf[abs(outer(rows, rows, "-")) + 1L], m, m)
+      }
+      cov_ref <- b_c %*% sigma_sub %*% t(b_c)
+      expect_equal(crossprod(u_cpp), cov_ref, tolerance = 1e-12)
+    }
+  }
+
+  # Multiband scale sanity check (m = 1600 retained TRs from 1800 with 12 scrub segments, AR(5))
+  scrub_drop <- unlist(lapply(seq(90L, 1650L, by = 140L), function(s) s:(s + 14L)))
+  rows_mb <- setdiff(seq_len(1800L), scrub_drop)
+  m_mb <- length(rows_mb)
+  x_mb <- matrix(stats::rnorm(m_mb * 32L), m_mb, 32L)
+  b_mb <- matrix(stats::rnorm(24L * m_mb), 24L, m_mb)
+  t0 <- proc.time()[["elapsed"]]
+  w_mb <- hrf_apply_whitening(x_mb, rows_mb, ar_specs$ar5, unit_marginal = TRUE)
+  u_mb <- compute_ar1_operator_factor(b_mb, rows_mb, ar_specs$ar5, center_obs = TRUE)
+  dt <- proc.time()[["elapsed"]] - t0
+  expect_equal(dim(w_mb), dim(x_mb))
+  expect_equal(dim(u_mb), c(m_mb, 24L))
+  expect_true(all(is.finite(w_mb)) && all(is.finite(u_mb)))
+  expect_lt(dt, 2.0)
+})
+
+test_that("contiguous-triplet second-difference guards protect noise_sd and SUSAN pooling across motion-scrub gaps", {
+  set.seed(20261113)
+  n_tot <- 260L
+  tr <- 0.8
+  gaps <- c(25:38, 72:85, 118:131, 165:178, 210:223)
+  rows <- setdiff(seq_len(n_tot), gaps)
+  m <- length(rows)
+
+  # 1. estimate_decon_noise_sd & hrf_estimate_gls_noise_sd fallback ignore cross-gap step/drift jumps
+  ar_true <- c(0.50, 0.15, -0.20)
+  info_true <- hrf_ar_cascade_info(ar_true, max_lag = 16L)
+  eps_full <- replicate(6L, as.numeric(stats::arima.sim(
+    model = list(ar = info_true$phi), n = n_tot, sd = 0.20 * sqrt(info_true$sig_u2)
+  )))
+  seg_id <- findInterval(seq_len(n_tot), c(1L, 38L, 85L, 131L, 178L, 223L))
+  y_clean <- 100 + eps_full[rows, , drop = FALSE]
+  y_jump <- y_clean + 12.0 * seg_id[rows]
+
+  sd_clean <- estimate_decon_noise_sd(
+    y_clean, noise_rho = ar_true[1L], noise_psi1 = ar_true[2L], noise_psi2 = ar_true[3L], rows = rows
+  )
+  sd_jump_guarded <- estimate_decon_noise_sd(
+    y_jump, noise_rho = ar_true[1L], noise_psi1 = ar_true[2L], noise_psi2 = ar_true[3L], rows = rows
+  )
+  sd_jump_naive <- estimate_decon_noise_sd(
+    y_jump, noise_rho = ar_true[1L], noise_psi1 = ar_true[2L], noise_psi2 = ar_true[3L], rows = NULL
+  )
+  expect_equal(sd_jump_guarded, sd_clean, tolerance = 1e-12)
+  expect_gt(mean(sd_jump_naive), 4.0 * mean(sd_jump_guarded))
+
+  # Blind-rho path (noise_rho = NULL) and fallback z_unit innovations also match clean series
+  sd_blind_clean <- estimate_decon_noise_sd(y_clean, rows = rows)
+  sd_blind_jump <- estimate_decon_noise_sd(y_jump, rows = rows)
+  expect_equal(sd_blind_jump, sd_blind_clean, tolerance = 1e-12)
+
+  fb_clean <- hrf_estimate_gls_noise_sd(y_clean, x_rows = NULL, rows = rows, ar_vec = ar_true, return_innovations = TRUE)
+  fb_jump <- hrf_estimate_gls_noise_sd(y_jump, x_rows = NULL, rows = rows, ar_vec = ar_true, return_innovations = TRUE)
+  expect_equal(fb_jump$sd, fb_clean$sd, tolerance = 1e-12)
+  expect_equal(fb_jump$z_unit, fb_clean$z_unit, tolerance = 1e-12)
+
+  # 2. SUSAN bilateral pooling under motion scrubbing when post-scrub baseline step
+  #    shifts occur in a subset of GM voxels (modeled in nuisance, which REML projects
+  #    out, while raw `y` jumps across censored gaps)
+  coords <- rbind(
+    cbind(rep(2:5, length.out = 20L), rep(1:5, each = 4L), 1),
+    cbind(rep(6, 6L), 1:6, 1)
+  )
+  rownames(coords) <- paste0("v", 1:26)
+  groups <- stats::setNames(rep("P1", 26L), rownames(coords))
+  tissues <- c(rep("GM", 20L), rep("CSF", 6L))
+  info_gm <- hrf_ar_cascade_info(c(0.55, 0.15, -0.22), max_lag = 16L)
+  info_csf <- hrf_ar_cascade_info(c(0.88, 0.05, -0.10), max_lag = 16L)
+
+  lib <- hrf_library(tr, peak_delays = c(4.5, 6.0), dispersions = 1.0, undershoot_ratios = 6)
+  ons <- seq(6, n_tot * tr - 16, by = 7.2)
+  ev_df <- data.frame(onset = ons, duration = 0, condition = "task")
+  des <- hrf_event_design_cpp(n_tot, tr, 0, ons, rep(0, length(ons)),
+    seq_len(length(ons)), length(ons), lib[, 1L, drop = FALSE])[[1L]]
+
+  # Segment baseline regressors for the 5 post-scrub acquisition epochs
+  nuis_seg <- vapply(1:5, function(s) as.numeric(seg_id == s), numeric(n_tot))
+  bold_scrub <- events_scrub <- valid_scrub <- nuis_scrub <- list()
+  for (r in 1:2) {
+    ym <- matrix(0.0, n_tot, 26L, dimnames = list(NULL, rownames(coords)))
+    for (v in 1:26) {
+      if (tissues[v] == "GM") {
+        eps <- as.numeric(stats::arima.sim(model = list(ar = info_gm$phi), n = n_tot, sd = 0.18 * sqrt(info_gm$sig_u2)))
+        # Half of GM voxels experience large post-motion shim/spin-history baseline steps across gaps
+        step_shift <- if (v <= 10L) 15.0 * seg_id else 0.0
+        sig <- as.numeric(des %*% stats::rnorm(length(ons), 0.55, 0.15))
+        ym[, v] <- 100 + sig + step_shift + eps
+      } else {
+        eps <- as.numeric(stats::arima.sim(model = list(ar = info_csf$phi), n = n_tot, sd = 0.70 * sqrt(info_csf$sig_u2)))
+        ym[, v] <- 100 + eps
+      }
+    }
+    ym[gaps, ] <- NA_real_
+    bold_scrub[[paste0("run", r)]] <- ym
+    events_scrub[[paste0("run", r)]] <- ev_df
+    valid_scrub[[paste0("run", r)]] <- seq_len(n_tot) %in% rows
+    nuis_scrub[[paste0("run", r)]] <- nuis_seg
+  }
+
+  fit_scrub <- estimate_crossrun_hrf(
+    bold_scrub, events_scrub, tr, lib,
+    nuisance = nuis_scrub,
+    spatial_groups = groups, spatial_coords = coords, valid_rows = valid_scrub,
+    pooling = "parcel", fallback_kernel = 2L,
+    amplitude_model = "trial", selection_mode = "soft_average"
+  )
+  expect_true(all(grepl("^susan_", fit_scrub$noise$run1$method)))
+  expect_gt(
+    mean(fit_scrub$noise$run1$rho[tissues == "CSF"]),
+    mean(fit_scrub$noise$run1$rho[tissues == "GM"]) + 0.15
+  )
+  # Step-shifted GM voxels and unshifted GM voxels receive consistent rho and noise_sd
+  expect_lt(
+    abs(mean(fit_scrub$noise$run1$rho[1:10]) - mean(fit_scrub$noise$run1$rho[11:20])),
+    0.05
+  )
+  expect_lt(
+    abs(mean(fit_scrub$noise$run1$noise_sd[1:10]) - mean(fit_scrub$noise$run1$noise_sd[11:20])),
+    0.05
+  )
+
+  dec_scrub <- deconvolve_crossrun_hrf(bold_scrub, fit_scrub, scaling = "noise_sd", penalty = "sobolev")
+  diag_scrub <- diagnose_crossrun_recovery(dec_scrub, events = events_scrub, lags = 0)
+  expect_true(all(is.finite(dec_scrub$activity$run1)))
+  expect_true(nrow(diag_scrub$summary) >= 1L)
+})
+
+
 
 

@@ -612,7 +612,7 @@ resolve_decon_scaling <- function(scaling = NULL, normalize = TRUE, demean = TRU
 # Var(Delta^2 e_t) = (6 - 8*gamma_1 + 2*gamma_2)*sigma_e^2 (reducing to
 # 2*(1-rho)*(3-rho)*sigma_e^2 under pure AR(1) where gamma_2 = rho^2).
 estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, noise_psi2 = NULL,
-                                    noise_psi3 = NULL, noise_psi4 = NULL) {
+                                    noise_psi3 = NULL, noise_psi4 = NULL, rows = NULL) {
   y <- as.matrix(y)
   n <- nrow(y)
   p <- ncol(y)
@@ -621,8 +621,26 @@ estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, nois
     divisor[!is.finite(divisor) | divisor <= .Machine$double.eps] <- 1
     return(as.numeric(divisor))
   }
-  d1 <- y[2:n, , drop = FALSE] - y[1:(n - 1L), , drop = FALSE]
-  d2 <- y[3:n, , drop = FALSE] - 2 * y[2:(n - 1L), , drop = FALSE] + y[1:(n - 2L), , drop = FALSE]
+  rows_int <- if (!is.null(rows) && length(rows) == n) as.integer(rows) else NULL
+  has_gaps <- !is.null(rows_int) && any(diff(rows_int) != 1L)
+  tri_idx <- if (has_gaps) {
+    which((rows_int[2:(n - 1L)] - rows_int[1:(n - 2L)] == 1L) &
+      (rows_int[3:n] - rows_int[2:(n - 1L)] == 1L))
+  } else {
+    integer(0)
+  }
+  if (has_gaps && length(tri_idx) >= 4L) {
+    d2 <- y[tri_idx + 2L, , drop = FALSE] - 2 * y[tri_idx + 1L, , drop = FALSE] + y[tri_idx, , drop = FALSE]
+    t_d2 <- rows_int[tri_idx + 2L]
+    m2 <- length(t_d2)
+    adj1 <- which(diff(t_d2) == 1L)
+    adj2 <- if (m2 >= 3L) which((t_d2[3:m2] - t_d2[1:(m2 - 2L)]) == 2L) else integer(0)
+  } else {
+    d2 <- y[3:n, , drop = FALSE] - 2 * y[2:(n - 1L), , drop = FALSE] + y[1:(n - 2L), , drop = FALSE]
+    m2 <- nrow(d2)
+    adj1 <- if (m2 >= 2L) seq_len(m2 - 1L) else integer(0)
+    adj2 <- if (m2 >= 3L) seq_len(m2 - 2L) else integer(0)
+  }
   rob_scale <- function(mat) {
     vapply(seq_len(ncol(mat)), function(j) {
       col <- mat[, j]
@@ -664,17 +682,17 @@ estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, nois
     for (k in seq_along(idx_need)) {
       j <- idx_need[k]
       col <- d2[, j]
-      if (length(col) < 4L || any(!is.finite(col)) || stats::sd(col) <= .Machine$double.eps) {
+      if (length(adj1) < 3L || any(!is.finite(col)) || stats::sd(col) <= .Machine$double.eps) {
         rho_est[k] <- 0.0
         next
       }
-      r1 <- stats::cor(col[-length(col)], col[-1L])
+      r1 <- stats::cor(col[adj1], col[adj1 + 1L])
       if (!is.finite(r1)) {
         rho_est[k] <- 0.0
         next
       }
-      r2 <- if (length(col) >= 6L) {
-        stats::cor(col[1:(length(col) - 2L)], col[3:length(col)])
+      r2 <- if (length(adj2) >= 4L) {
+        stats::cor(col[adj2], col[adj2 + 2L])
       } else {
         0.0
       }
@@ -714,11 +732,11 @@ estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, nois
     gamma3 <- phi1 * gamma2 + phi2 * gamma1 + phi3
   }
 
-  if (!any(need_rho) && n >= 200L) {
+  if (!any(need_rho) && n >= 200L && length(adj1) >= 5L) {
     r1_d2_emp <- vapply(seq_len(p), function(j) {
       col <- d2[, j]
       if (length(col) < 6L || any(!is.finite(col)) || stats::sd(col) <= .Machine$double.eps) return(NA_real_)
-      stats::cor(col[-length(col)], col[-1L])
+      stats::cor(col[adj1], col[adj1 + 1L])
     }, numeric(1L))
     ok_emp <- is.finite(r1_d2_emp)
     if (any(ok_emp)) {
@@ -763,7 +781,8 @@ scale_decon_input <- function(
   noise_psi2 = NULL,
   noise_psi3 = NULL,
   noise_psi4 = NULL,
-  noise_sd_override = NULL
+  noise_sd_override = NULL,
+  rows = NULL
 ) {
   scaling <- resolve_decon_scaling(scaling, normalize, demean)
   center <- if (scaling == "none") rep(0, ncol(y)) else colMeans(y)
@@ -782,7 +801,8 @@ scale_decon_input <- function(
         noise_psi1 = noise_psi1,
         noise_psi2 = noise_psi2,
         noise_psi3 = noise_psi3,
-        noise_psi4 = noise_psi4
+        noise_psi4 = noise_psi4,
+        rows = rows
       )
     }
   } else if (scaling == "psc") {

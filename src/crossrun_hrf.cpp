@@ -27,16 +27,17 @@ arma::mat hrf_basis(const arma::mat& x, double tol) {
 
 // Marginal AR(1) innovations on the ORIGINAL acquisition clock. Missing rows
 // are integrated out: a gap of d uses rho^d and its accumulated variance.
-void hrf_whiten_coefs(const arma::uvec& rows, double rho, arma::vec& d, arma::vec& s) {
+void hrf_whiten_coefs(const arma::uvec& rows, double rho, arma::vec& d, arma::vec& s,
+                      bool unit_marginal = false) {
   arma::uword m = rows.n_elem;
   d.ones(m);
   s.zeros(m);
-  if (rho == 0) return;
-  double s0 = std::sqrt(1 - rho * rho);
+  if (rho == 0 || m == 0) return;
+  double s0 = unit_marginal ? 1.0 : std::sqrt(std::max(1.0 - rho * rho, 1e-8));
   d(0) = s0;
   for (arma::uword i = 1; i < m; ++i) {
     double a = std::pow(rho, (double)(rows(i) - rows(i - 1)));
-    double mult = s0 / std::sqrt(1 - a * a);
+    double mult = s0 / std::sqrt(std::max(1.0 - a * a, 1e-12));
     d(i) = mult;
     s(i) = -a * mult;
   }
@@ -57,32 +58,48 @@ void hrf_whiten_inplace(arma::mat& x, const arma::vec& d, const arma::vec& s, do
 }
 
 // Unified AR(1) / cascaded AR(p) whitener on observed acquisition indices `keep`.
-// Matches `hrf_whitening_matrix(rows, ar_vec, unit_marginal = FALSE)` to machine
-// precision while avoiding dense m x m matrix products in R:
+// Matches `hrf_whitening_matrix(rows, ar_vec, unit_marginal)` to machine precision
+// in O(m * p) time and O(p) memory on BOTH contiguous and motion-scrubbed grids:
 // - Pure AR(1): O(m) bidiagonal pass.
-// - Contiguous AR(p): O(m * p) causal filter + exact p x p Toeplitz Cholesky head.
-// - Gapped AR(p): subset Toeplitz Cholesky factor + LAPACK triangular solve.
+// - Interior AR(p) rows (where p preceding samples on the clock are observed):
+//   exact p-tap causal innovation filter.
+// - Run-head & post-gap AR(p) boundary rows: exact local Cholesky back to the
+//   nearest preceding p-sample Markov barrier (d-separating all earlier samples).
 struct ArWhitener {
+  struct BoundaryRow {
+    arma::uword b0 = 0;
+    arma::vec w_unit;
+  };
+
   bool is_ar_p = false;
-  bool use_contig = false;
+  bool use_dense_fallback = false;
+  bool unit_marginal = false;
   double rho = 0.0;
   double sig_u = 1.0;
+  double tail_scale = 1.0;
   arma::vec d_ar, s_ar, phi;
-  arma::mat w_init, l_sub;
+  std::vector<int> bnd_idx;
+  std::vector<BoundaryRow> bnd_rows;
+  arma::mat l_sub;
 
   void init(const arma::uvec& keep, double rho_in,
             const Rcpp::Nullable<Rcpp::NumericVector>& ar_phi,
             const Rcpp::Nullable<Rcpp::NumericVector>& ar_acf,
-            double sig_u2) {
+            double sig_u2,
+            bool unit_marginal_in = false) {
     rho = rho_in;
     is_ar_p = false;
-    use_contig = false;
+    use_dense_fallback = false;
+    unit_marginal = unit_marginal_in;
+    tail_scale = 1.0;
+    bnd_idx.clear();
+    bnd_rows.clear();
     if (ar_phi.isNotNull()) {
       phi = Rcpp::as<arma::vec>(ar_phi.get());
       if (phi.n_elem > 0) is_ar_p = true;
     }
     if (!is_ar_p) {
-      hrf_whiten_coefs(keep, rho, d_ar, s_ar);
+      hrf_whiten_coefs(keep, rho, d_ar, s_ar, unit_marginal);
       return;
     }
     if (ar_acf.isNull()) Rcpp::stop("ar_acf is required when ar_phi is supplied");
@@ -90,20 +107,65 @@ struct ArWhitener {
     if (!phi.is_finite() || !acf.is_finite() || acf.n_elem < 1 || !std::isfinite(sig_u2) || sig_u2 <= 0)
       Rcpp::stop("Invalid AR(p) whitening parameters");
     sig_u = std::sqrt(std::max(1e-12, sig_u2));
-    arma::uword m = keep.n_elem, p = phi.n_elem;
-    bool is_contig = (m > p) && ((keep(m - 1) - keep(0)) == (m - 1));
-    if (is_contig && acf.n_elem >= p) {
-      arma::mat gamma_p(p, p);
-      for (arma::uword a = 0; a < p; ++a)
-        for (arma::uword b = 0; b < p; ++b)
-          gamma_p(a, b) = acf(a >= b ? (a - b) : (b - a));
-      arma::mat l_p;
-      if (arma::chol(l_p, gamma_p, "lower")) {
-        w_init = sig_u * arma::solve(arma::trimatl(l_p), arma::eye<arma::mat>(p, p));
-        use_contig = true;
-        return;
+    tail_scale = unit_marginal ? (1.0 / sig_u) : 1.0;
+    const arma::uword m = keep.n_elem, p = phi.n_elem;
+    if (m == 0) return;
+
+    bnd_idx.assign(m, -1);
+    bool markov_ok = true;
+    for (arma::uword i = 0; i < m; ++i) {
+      if (i >= p && (keep(i) - keep(i - p)) == p) {
+        continue;
       }
+      arma::uword b0 = 0;
+      if (p > 0 && i >= p) {
+        for (int j = static_cast<int>(i) - 1; j >= static_cast<int>(p) - 1; --j) {
+          arma::uword uj = static_cast<arma::uword>(j);
+          if ((keep(uj) - keep(uj - p + 1)) == (p - 1)) {
+            b0 = uj - p + 1;
+            break;
+          }
+        }
+      }
+      arma::uword s = i - b0 + 1;
+      BoundaryRow br;
+      br.b0 = b0;
+      if (s == 1) {
+        if (acf(0) <= 0.0) {
+          markov_ok = false;
+          break;
+        }
+        br.w_unit = arma::vec({1.0 / std::sqrt(acf(0))});
+      } else {
+        arma::mat g_loc(s, s);
+        for (arma::uword a = 0; a < s; ++a) {
+          g_loc(a, a) = acf(0);
+          for (arma::uword b = a + 1; b < s; ++b) {
+            arma::uword lag = keep(b0 + b) - keep(b0 + a);
+            double v = (lag < acf.n_elem) ? acf(lag) : 0.0;
+            g_loc(a, b) = v;
+            g_loc(b, a) = v;
+          }
+        }
+        arma::mat l_loc;
+        if (!arma::chol(l_loc, g_loc, "lower")) {
+          markov_ok = false;
+          break;
+        }
+        arma::vec e_last(s, arma::fill::zeros);
+        e_last(s - 1) = 1.0;
+        if (!arma::solve(br.w_unit, arma::trimatu(l_loc.t()), e_last) ||
+            !br.w_unit.is_finite() || br.w_unit(s - 1) <= 0.0) {
+          markov_ok = false;
+          break;
+        }
+      }
+      bnd_idx[i] = static_cast<int>(bnd_rows.size());
+      bnd_rows.push_back(std::move(br));
     }
+    if (markov_ok) return;
+
+    use_dense_fallback = true;
     arma::mat sigma_sub(m, m);
     for (arma::uword a = 0; a < m; ++a) {
       sigma_sub(a, a) = acf(0);
@@ -124,28 +186,108 @@ struct ArWhitener {
   void apply(arma::mat& x) const {
     if (x.n_cols == 0 || x.n_rows == 0) return;
     if (!is_ar_p) {
-      hrf_whiten_inplace(x, d_ar, s_ar, rho);
+      if (x.n_rows == 1) {
+        if (rho != 0) x.row(0) *= d_ar(0);
+      } else {
+        hrf_whiten_inplace(x, d_ar, s_ar, rho);
+      }
       return;
     }
-    if (use_contig) {
-      const arma::uword m = x.n_rows, p = phi.n_elem;
-      const double* pp = phi.memptr();
-      for (arma::uword j = 0; j < x.n_cols; ++j) {
-        double* col = x.colptr(j);
-        for (arma::uword i = m - 1; i >= p; --i) {
-          double acc = col[i];
+    const double head_scale = unit_marginal ? 1.0 : sig_u;
+    if (use_dense_fallback) {
+      x = head_scale * arma::solve(arma::trimatl(l_sub), x, arma::solve_opts::fast);
+      return;
+    }
+    const arma::uword m = x.n_rows, p = phi.n_elem;
+    const double* pp = phi.memptr();
+    const double sc = tail_scale;
+    for (arma::uword j = 0; j < x.n_cols; ++j) {
+      double* col = x.colptr(j);
+      for (arma::uword ii = m; ii-- > 0; ) {
+        int bi = bnd_idx[ii];
+        if (bi < 0) {
+          double acc = col[ii];
           for (arma::uword k = 0; k < p; ++k) {
-            acc -= pp[k] * col[i - 1 - k];
+            acc -= pp[k] * col[ii - 1 - k];
           }
-          col[i] = acc;
+          col[ii] = acc * sc;
+        } else {
+          const BoundaryRow& br = bnd_rows[static_cast<size_t>(bi)];
+          const double* wp = br.w_unit.memptr();
+          const arma::uword s = br.w_unit.n_elem;
+          const arma::uword b0 = br.b0;
+          double acc = 0.0;
+          for (arma::uword a = 0; a < s; ++a) {
+            acc += wp[a] * col[b0 + a];
+          }
+          col[ii] = acc * head_scale;
         }
       }
-      x.rows(0, p - 1) = w_init * x.rows(0, p - 1);
-    } else {
-      x = sig_u * arma::solve(arma::trimatl(l_sub), x, arma::solve_opts::fast);
+    }
+  }
+
+  // Compute U = L^T * bt = W_unit^{-T} * bt in-place so U^T * U = B * Sigma_sub * B^T
+  // in O(m * p * M) time and O(1) extra memory (requires unit_marginal == true on AR(1)).
+  void apply_inv_transpose(arma::mat& bt) const {
+    if (bt.n_cols == 0 || bt.n_rows == 0) return;
+    const arma::uword m = bt.n_rows;
+    if (!is_ar_p) {
+      if (rho == 0) return;
+      const double* dp = d_ar.memptr();
+      const double* sp = s_ar.memptr();
+      for (arma::uword j = 0; j < bt.n_cols; ++j) {
+        double* col = bt.colptr(j);
+        for (arma::uword ii = m - 1; ii >= 1; --ii) {
+          double u_i = col[ii] / dp[ii];
+          col[ii] = u_i;
+          col[ii - 1] -= sp[ii] * u_i;
+        }
+        col[0] /= dp[0];
+      }
+      return;
+    }
+    if (use_dense_fallback) {
+      bt = l_sub.t() * bt;
+      return;
+    }
+    const arma::uword p = phi.n_elem;
+    const double* pp = phi.memptr();
+    for (arma::uword j = 0; j < bt.n_cols; ++j) {
+      double* col = bt.colptr(j);
+      for (arma::uword ii = m; ii-- > 0; ) {
+        int bi = bnd_idx[ii];
+        if (bi < 0) {
+          double v_i = col[ii];
+          col[ii] = sig_u * v_i;
+          for (arma::uword k = 0; k < p; ++k) {
+            col[ii - 1 - k] += pp[k] * v_i;
+          }
+        } else {
+          const BoundaryRow& br = bnd_rows[static_cast<size_t>(bi)];
+          const double* wp = br.w_unit.memptr();
+          const arma::uword s = br.w_unit.n_elem;
+          const arma::uword b0 = br.b0;
+          double u_i = col[ii] / wp[s - 1];
+          col[ii] = u_i;
+          for (arma::uword a = 0; a + 1 < s; ++a) {
+            col[b0 + a] -= wp[a] * u_i;
+          }
+        }
+      }
     }
   }
 };
+
+arma::uvec hrf_obs_rows(const Rcpp::IntegerVector& rows) {
+  if (rows.size() < 1) return arma::uvec();
+  arma::uvec out(rows.size());
+  for (int i = 0; i < rows.size(); ++i) {
+    if (rows[i] == NA_INTEGER || rows[i] < 1 || (i > 0 && rows[i] <= rows[i - 1]))
+      Rcpp::stop("Observation rows must be positive and strictly increasing");
+    out(i) = static_cast<arma::uword>(rows[i] - 1);
+  }
+  return out;
+}
 
 arma::mat hrf_extract_rows(const arma::mat& src_mat, const arma::uvec& keep,
                            arma::uword start, arma::uword end) {
@@ -948,4 +1090,68 @@ arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
   arma::lapack::potrs(&uplo, &n_lat, &n_rhs, lhs.memptr(), &n_lat, rhs.memptr(), &n_lat, &info);
   if (info != 0) Rcpp::stop("Masked GLS inverse failed; increase ridge_floor");
   return rhs.rows(history, history + n_time - 1);
+}
+
+// Apply exact AR(1) or cascaded AR(p) Cholesky whitening to a matrix (or list of
+// matrices) already restricted to observed acquisition indices `rows` (m = length(rows)),
+// without allocating a dense m x m whitening matrix in R.
+// [[Rcpp::export]]
+SEXP hrf_whiten_apply_cpp(SEXP target, const Rcpp::IntegerVector& rows,
+    double rho = 0.0,
+    Rcpp::Nullable<Rcpp::NumericVector> ar_phi = R_NilValue,
+    Rcpp::Nullable<Rcpp::NumericVector> ar_acf = R_NilValue,
+    double sig_u2 = 1.0,
+    bool unit_marginal = false) {
+  if (!std::isfinite(rho) || std::abs(rho) >= 1.0)
+    Rcpp::stop("Invalid AR(1) coefficient in hrf_whiten_apply_cpp");
+  arma::uvec keep = hrf_obs_rows(rows);
+  const arma::uword m = keep.n_elem;
+  ArWhitener whitener;
+  if (m >= 1) {
+    whitener.init(keep, rho, ar_phi, ar_acf, sig_u2, unit_marginal);
+  }
+  if (Rf_isNewList(target)) {
+    Rcpp::List in_list(target);
+    int n_el = in_list.size();
+    Rcpp::List out_list(n_el);
+    out_list.attr("names") = in_list.attr("names");
+    for (int idx = 0; idx < n_el; ++idx) {
+      if (Rf_isNull(in_list[idx])) {
+        out_list[idx] = R_NilValue;
+        continue;
+      }
+      arma::mat mat_i = Rcpp::as<arma::mat>(in_list[idx]);
+      if (mat_i.n_rows != m)
+        Rcpp::stop("Matrix row count in hrf_whiten_apply_cpp list must match length(rows)");
+      if (m >= 1 && mat_i.n_cols > 0) whitener.apply(mat_i);
+      out_list[idx] = mat_i;
+    }
+    return out_list;
+  }
+  arma::mat mat_x = Rcpp::as<arma::mat>(target);
+  if (mat_x.n_rows != m)
+    Rcpp::stop("Matrix row count in hrf_whiten_apply_cpp must match length(rows)");
+  if (m >= 1 && mat_x.n_cols > 0) whitener.apply(mat_x);
+  return Rcpp::wrap(mat_x);
+}
+
+// Compute U = L^T * bt = W_unit^{-T} * bt in O(m * p * M) so U^T * U = B * Sigma_sub * B^T
+// on both contiguous and gapped AR(1)/AR(p) grids without forming an m x m matrix.
+// [[Rcpp::export]]
+arma::mat hrf_ar_operator_factor_cpp(const arma::mat& bt, const Rcpp::IntegerVector& rows,
+    double rho = 0.0,
+    Rcpp::Nullable<Rcpp::NumericVector> ar_phi = R_NilValue,
+    Rcpp::Nullable<Rcpp::NumericVector> ar_acf = R_NilValue,
+    double sig_u2 = 1.0) {
+  if (!std::isfinite(rho) || std::abs(rho) >= 1.0)
+    Rcpp::stop("Invalid AR(1) coefficient in hrf_ar_operator_factor_cpp");
+  arma::uvec keep = hrf_obs_rows(rows);
+  if (bt.n_rows != keep.n_elem)
+    Rcpp::stop("Matrix row count in hrf_ar_operator_factor_cpp must match length(rows)");
+  arma::mat out = bt;
+  if (keep.n_elem <= 1 || out.n_cols == 0) return out;
+  ArWhitener whitener;
+  whitener.init(keep, rho, ar_phi, ar_acf, sig_u2, true);
+  whitener.apply_inv_transpose(out);
+  return out;
 }

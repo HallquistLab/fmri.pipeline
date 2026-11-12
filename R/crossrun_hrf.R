@@ -1512,7 +1512,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
           noise_psi2 = ar_psi2,
           noise_psi3 = ar_psi3,
           noise_psi4 = ar_psi4,
-          noise_sd_override = if (identical(scaling, "noise_sd")) coh_nsd else NULL
+          noise_sd_override = if (identical(scaling, "noise_sd")) coh_nsd else NULL,
+          rows = rows
         )
         out[, indices] <- if (backend == "wiener") {
           fit_input <- rbind(scaled$y, matrix(0, tail_padding, length(indices)))
