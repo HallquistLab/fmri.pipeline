@@ -237,8 +237,9 @@ heterogeneous undershoot ratios, and uses <code>"signed_sum"</code> otherwise),
   <code>scaled:scale</code>, and <code>scaling</code> record the actual BOLD transformation
   <code>(y - center) / scale</code>; diagnostics expose the same values. With
   <code>scaling = "none"</code>, the recorded center is zero. The activity scale depends
-  on this transformation and the unit-sum HRF; it is not a calibrated physiological
-  neural-amplitude scale. The removed BOLD mean is not an identified neural baseline.</p>
+  on this transformation and the HRF normalization convention (<code>kernel_normalize</code>);
+  it is not a calibrated physiological neural-amplitude scale. The removed BOLD mean is
+  not an identified neural baseline.</p>
 <p>Scalar Wiener GCV uses the exact trace of the finite observed smoother, including
   zero extension, latent truncation, and the implemented filtered HRF when whitening.
   This trace is conditional on preprocessing and the AR(1) coefficient; it does not

@@ -369,23 +369,37 @@ fit, not an extra smoothing step on <code>hrf_fit</code>.</p>
 <span>  amplitude_model <span class="op">=</span> <span class="st">"trial"</span>, noise_model <span class="op">=</span> <span class="st">"ar1"</span>, evidence <span class="op">=</span> <span class="st">"calibrated"</span>,</span>
 <span>  selection_mode <span class="op">=</span> <span class="st">"soft_average"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
-<p>Here <code>preset = "medusa"</code> constructs the recommended
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.5</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">0.5\text{ s}</annotation></semantics></math>-spaced
-27-candidate grid (<code>peak_delays = seq(4.0, 8.0, by = 0.5)</code>,
-<code>dispersions = c(0.9, 1.0, 1.1)</code>), and
-<code>selection_mode = "soft_average"</code> computes a unit-sum
+<p>Here <code>preset = "medusa"</code> (alias <code>"manifold"</code>)
+constructs the recommended ~44-candidate pruned 3D physiological
+manifold spanning fast/narrow/minimal-undershoot subcortical shapes
+through slow cortical shapes (<code>peak_delays</code>
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>2.5</mn><mtext mathvariant="normal">–</mtext><mn>8.0</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">2.5\text{--}8.0\text{ s}</annotation></semantics></math>,
+TR-aware <code>dispersions</code> down to
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mn>0.60</mn><annotation encoding="application/x-tex">0.60</annotation></semantics></math>,
+<code>undershoot_ratios = c(3, 6, 12, Inf)</code>) with
+<code>"positive_lobe"</code> normalization
+(<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mo>∑</mo><mi>t</mi></msub><mrow><mi mathvariant="normal">max</mi><mo>⁡</mo></mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>h</mi><mi>t</mi></msub><mo>,</mo><mn>0</mn><mo stretchy="false" form="postfix">)</mo><mo>=</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\sum_t \max(h_t, 0) = 1</annotation></semantics></math>)
+so varying undershoot depths do not inflate or compress deconvolved
+neural amplitudes across regions (<code>preset = "canonical_27"</code>
+retains the 27-candidate fixed-ratio-6 cortical grid over
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>4.0</mn><mtext mathvariant="normal">–</mtext><mn>8.0</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">4.0\text{--}8.0\text{ s}</annotation></semantics></math>
+and dispersions
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.9</mn><mo>,</mo><mn>1.0</mn><mo>,</mo><mn>1.1</mn></mrow><annotation encoding="application/x-tex">0.9, 1.0, 1.1</annotation></semantics></math>,
+while <code>preset = "enet"</code> builds a maximin cosine
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>ϵ</mi><annotation encoding="application/x-tex">\epsilon</annotation></semantics></math>-net
+of size <code>n_enet</code>).
+<code>selection_mode = "soft_average"</code> computes a
 Boltzmann-weighted composite HRF
-(<code>parcel_fit$selected_kernels</code>) shrunk toward
+(<code>parcel_fit$selected_kernels</code>, re-normalized under
+<code>parcel_fit$settings$kernel_normalize</code>) shrunk toward
 <code>fallback_kernel</code> by Empirical-Bayes parcel departure
-confidence. In simulations with continuous sub-grid vascular delays and
-nonlinear Windkessel-Balloon hemodynamics, pairing
-<code>preset = "medusa"</code> with
-<code>selection_mode = "soft_average"</code> reduces HRF waveform RMSE
-by 8–22% and downstream neural latency error by 20–35% compared to
-discrete hard selection (<code>selection_mode = "hard"</code>), while
-avoiding the collinearity and
-<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>7</mn><mo>×</mo></mrow><annotation encoding="application/x-tex">7\times</annotation></semantics></math>
-runtime cost of
+confidence. In simulations with continuous sub-grid vascular delays,
+fast zero-undershoot subcortical responses, and nonlinear
+Windkessel-Balloon hemodynamics, pairing <code>preset = "medusa"</code>
+with <code>selection_mode = "soft_average"</code> reduces HRF waveform
+RMSE and downstream neural latency error compared to discrete hard
+selection (<code>selection_mode = "hard"</code>), while avoiding the
+collinearity and runtime cost of unpruned Cartesian
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.25</mn><mrow><mspace width="0.333em"></mspace><mtext mathvariant="normal"> s</mtext></mrow></mrow><annotation encoding="application/x-tex">0.25\text{ s}</annotation></semantics></math>
 grids. Hard parcel pooling (<code>pooling = "parcel"</code>) shares one
 composite HRF per parcel; <code>pooling = "voxel"</code> with
@@ -744,14 +758,18 @@ within-parcel spatial noise covariance from task-free Step-1 whitened
 cross-parcel connectivity). Preserve non-target events in the event
 table and align each covariate row to its target event.</p>
 <p><code>restore_scale = TRUE</code> reports effects in original input
-units under the unit-sum HRF convention. It reverses the scaling
+units under the active HRF normalization convention
+(<code>fit$settings$kernel_normalize</code>:
+<code>"positive_lobe"</code> for multi-undershoot presets such as
+<code>"medusa"</code>, or <code>"signed_sum"</code> for fixed-undershoot
+grids such as <code>"canonical_27"</code>). It reverses the scaling
 divisor; it does not make estimates physiologically calibrated or
 guarantee unbiased amplitudes (in between-participant comparisons,
-unit-sum HRF normalization means regional vascular reactivity gain still
-scales BOLD-unit slopes alongside neural gain). <code>beta_raw</code> is
-the uncorrected readout under this same inverse, not the historical Bush
-pipeline. <code>beta_corrected</code> includes model-based de-mixing,
-gain correction, matched
+regional vascular reactivity gain still scales BOLD-unit slopes
+alongside neural gain). <code>beta_raw</code> is the uncorrected readout
+under this same inverse, not the historical Bush pipeline.
+<code>beta_corrected</code> includes model-based de-mixing, gain
+correction, matched
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>M</mi><mtext mathvariant="normal">post</mtext></msub><annotation encoding="application/x-tex">M_{\text{post}}</annotation></semantics></math>
 covariate alignment, and (when <code>weighting = "precision"</code>, the
 default) Empirical-Bayes precision weighting; <code>beta_gls</code> uses
