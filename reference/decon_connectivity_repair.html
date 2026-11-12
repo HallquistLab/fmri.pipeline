@@ -85,9 +85,18 @@ error variances for Granger-style auto-lag controls (<code>targ_t0</code>).</p>
 <span>  control_target_seed_lag <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  orthogonalize_seed_x <span class="op">=</span> <span class="cn">TRUE</span>,</span>
 <span>  method <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"mmoms"</span>, <span class="st">"mmom"</span>, <span class="st">"eb_predictor"</span>, <span class="st">"naive_gls"</span>, <span class="st">"naive_unweighted"</span><span class="op">)</span>,</span>
+<span>  shared_error <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"auto"</span>, <span class="st">"zero"</span>, <span class="st">"supplied"</span><span class="op">)</span>,</span>
+<span>  err_xy_col <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  use_whitened <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  region_col <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  id_col <span class="op">=</span> <span class="st">"id"</span>,</span>
+<span>  run_col <span class="op">=</span> <span class="st">"run"</span>,</span>
+<span>  trial_col <span class="op">=</span> <span class="st">"trial"</span>,</span>
+<span>  lag_col <span class="op">=</span> <span class="st">"evt_time"</span>,</span>
+<span>  y_col <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  se_col <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  eb_col <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  modulator <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  return_augmented_panel <span class="op">=</span> <span class="cn">FALSE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
@@ -155,6 +164,21 @@ Empirical-Bayes shrunk predictor on likelihood-only outcome),
 subtraction), or <code>"naive_unweighted"</code> (unweighted OLS).</p></dd>
 
 
+<dt id="arg-shared-error">shared_error<a class="anchor" aria-label="anchor" href="#arg-shared-error"></a></dt>
+<dd><p>Policy for cross-parcel shared observation-error covariance
+between seed and target readouts: <code>"auto"</code> (default; propagates Stage-2/3
+Empirical-Bayes prewhitened innovation correlation <code>unit_error_cor</code> or
+<code>shared_noise_loading</code>), <code>"zero"</code> (assumes zero cross-parcel noise
+correlation while still propagating same-parcel cross-lag error correlation when
+<code>control_target_seed_lag = TRUE</code>), or <code>"supplied"</code> (reads per-trial raw
+seed–target error covariance from <code>err_xy_col</code>).</p></dd>
+
+
+<dt id="arg-err-xy-col">err_xy_col<a class="anchor" aria-label="anchor" href="#arg-err-xy-col"></a></dt>
+<dd><p>Optional column name supplying per-trial raw seed–target error
+covariance when <code>shared_error = "supplied"</code>.</p></dd>
+
+
 <dt id="arg-use-whitened">use_whitened<a class="anchor" aria-label="anchor" href="#arg-use-whitened"></a></dt>
 <dd><p>Logical; if <code>TRUE</code>, uses <code>decon_demixed_whitened</code>
 and <code>se_whitened</code> when present. Defaults to <code>FALSE</code> for
@@ -172,6 +196,34 @@ unmixed trial states before error correction) and <code>TRUE</code> for
 <dt id="arg-id-col">id_col<a class="anchor" aria-label="anchor" href="#arg-id-col"></a></dt>
 <dd><p>Column name identifying subjects in <code>panel_dt</code> (default
 <code>"id"</code>).</p></dd>
+
+
+<dt id="arg-run-col">run_col<a class="anchor" aria-label="anchor" href="#arg-run-col"></a></dt>
+<dd><p>Run identifier column name (default <code>"run"</code>).</p></dd>
+
+
+<dt id="arg-trial-col">trial_col<a class="anchor" aria-label="anchor" href="#arg-trial-col"></a></dt>
+<dd><p>Within-run trial identifier column name (default <code>"trial"</code>).</p></dd>
+
+
+<dt id="arg-lag-col">lag_col<a class="anchor" aria-label="anchor" href="#arg-lag-col"></a></dt>
+<dd><p>Within-trial lag column name (default <code>"evt_time"</code>).</p></dd>
+
+
+<dt id="arg-y-col">y_col<a class="anchor" aria-label="anchor" href="#arg-y-col"></a></dt>
+<dd><p>Optional readout column override.</p></dd>
+
+
+<dt id="arg-se-col">se_col<a class="anchor" aria-label="anchor" href="#arg-se-col"></a></dt>
+<dd><p>Optional trial standard-error column override.</p></dd>
+
+
+<dt id="arg-eb-col">eb_col<a class="anchor" aria-label="anchor" href="#arg-eb-col"></a></dt>
+<dd><p>Optional Empirical-Bayes trial readout column override.</p></dd>
+
+
+<dt id="arg-modulator">modulator<a class="anchor" aria-label="anchor" href="#arg-modulator"></a></dt>
+<dd><p>Optional alias for <code>covariates</code>.</p></dd>
 
 
 <dt id="arg-return-augmented-panel">return_augmented_panel<a class="anchor" aria-label="anchor" href="#arg-return-augmented-panel"></a></dt>

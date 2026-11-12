@@ -47,6 +47,7 @@ medusa_multilag_infer(
   demix_within_trial = FALSE,
   recalibrate_wt_lobe = FALSE,
   contrasts = NULL,
+  contrast_source = c("unsmoothed", "raw", "multilag"),
   n_perm = 4000L,
   n_boot_latency = 400L,
   fine_dt = 0.01,
@@ -138,10 +139,18 @@ medusa_multilag_infer(
   `list(early = c(t1, t2), late = c(t3, t4))` specifying two lag windows
   to contrast (`late - early`).
 
+- contrast_source:
+
+  Trajectory source for linear window contrasts: `"unsmoothed"`
+  (default; evaluates contrasts on the cross-lag de-blurred trajectory
+  prior to P-spline smoothing so contrast point estimates and CIs are
+  free of P-spline shrinkage bias), `"raw"` (raw lag-by-lag estimates),
+  or `"multilag"` (P-spline smoothed trajectory).
+
 - n_perm:
 
-  Number of correlated multivariate-\\t\\ Monte Carlo draws for
-  simultaneous Max-\\\|T\|\\ and 1D TFCE calibration (default `4000L`).
+  Number of correlated Monte Carlo studentized draws for simultaneous
+  Max-\\\|T\|\\, 1D TFCE, and omnibus calibration (default `4000L`).
 
 - n_boot_latency:
 

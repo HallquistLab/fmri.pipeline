@@ -26,9 +26,18 @@ decon_connectivity_repair(
   control_target_seed_lag = FALSE,
   orthogonalize_seed_x = TRUE,
   method = c("mmoms", "mmom", "eb_predictor", "naive_gls", "naive_unweighted"),
+  shared_error = c("auto", "zero", "supplied"),
+  err_xy_col = NULL,
   use_whitened = NULL,
   region_col = NULL,
   id_col = "id",
+  run_col = "run",
+  trial_col = "trial",
+  lag_col = "evt_time",
+  y_col = NULL,
+  se_col = NULL,
+  eb_col = NULL,
+  modulator = NULL,
   return_augmented_panel = FALSE
 )
 ```
@@ -93,6 +102,21 @@ decon_connectivity_repair(
   (precision-weighted WLS without predictor error subtraction), or
   `"naive_unweighted"` (unweighted OLS).
 
+- shared_error:
+
+  Policy for cross-parcel shared observation-error covariance between
+  seed and target readouts: `"auto"` (default; propagates Stage-2/3
+  Empirical-Bayes prewhitened innovation correlation `unit_error_cor` or
+  `shared_noise_loading`), `"zero"` (assumes zero cross-parcel noise
+  correlation while still propagating same-parcel cross-lag error
+  correlation when `control_target_seed_lag = TRUE`), or `"supplied"`
+  (reads per-trial raw seed–target error covariance from `err_xy_col`).
+
+- err_xy_col:
+
+  Optional column name supplying per-trial raw seed–target error
+  covariance when `shared_error = "supplied"`.
+
 - use_whitened:
 
   Logical; if `TRUE`, uses `decon_demixed_whitened` and `se_whitened`
@@ -108,6 +132,34 @@ decon_connectivity_repair(
 - id_col:
 
   Column name identifying subjects in `panel_dt` (default `"id"`).
+
+- run_col:
+
+  Run identifier column name (default `"run"`).
+
+- trial_col:
+
+  Within-run trial identifier column name (default `"trial"`).
+
+- lag_col:
+
+  Within-trial lag column name (default `"evt_time"`).
+
+- y_col:
+
+  Optional readout column override.
+
+- se_col:
+
+  Optional trial standard-error column override.
+
+- eb_col:
+
+  Optional Empirical-Bayes trial readout column override.
+
+- modulator:
+
+  Optional alias for `covariates`.
 
 - return_augmented_panel:
 

@@ -86,7 +86,7 @@ Continuous Sub-Grid Spline Latency &amp;amp; Shape Estimation: estimates
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>Joint Multi-Lag Trajectory Modeling and Operator-Informed Inference for MEDuSA</h1>
-
+      <small class="dont-index">Source: <a href="https://github.com/HallquistLab/fmri.pipeline/blob/master/R/diagnose_crossrun_recovery.R" class="external-link"><code>R/diagnose_crossrun_recovery.R</code></a></small>
       <div class="d-none name"><code>medusa_multilag_infer.Rd</code></div>
     </div>
 
@@ -131,6 +131,7 @@ cross-lag operator error correlation \(R_{\mathrm{op}}\):</p><ol><li><p><strong>
 <span>  demix_within_trial <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  recalibrate_wt_lobe <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  contrasts <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  contrast_source <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"unsmoothed"</span>, <span class="st">"raw"</span>, <span class="st">"multilag"</span><span class="op">)</span>,</span>
 <span>  n_perm <span class="op">=</span> <span class="fl">4000L</span>,</span>
 <span>  n_boot_latency <span class="op">=</span> <span class="fl">400L</span>,</span>
 <span>  fine_dt <span class="op">=</span> <span class="fl">0.01</span>,</span>
@@ -218,9 +219,17 @@ either a numeric weight vector of length \(L\) or a list <code>list(early = c(t1
 late = c(t3, t4))</code> specifying two lag windows to contrast (<code>late - early</code>).</p></dd>
 
 
+<dt id="arg-contrast-source">contrast_source<a class="anchor" aria-label="anchor" href="#arg-contrast-source"></a></dt>
+<dd><p>Trajectory source for linear window contrasts:
+<code>"unsmoothed"</code> (default; evaluates contrasts on the cross-lag de-blurred
+trajectory prior to P-spline smoothing so contrast point estimates and CIs are
+free of P-spline shrinkage bias), <code>"raw"</code> (raw lag-by-lag estimates), or
+<code>"multilag"</code> (P-spline smoothed trajectory).</p></dd>
+
+
 <dt id="arg-n-perm">n_perm<a class="anchor" aria-label="anchor" href="#arg-n-perm"></a></dt>
-<dd><p>Number of correlated multivariate-\(t\) Monte Carlo draws for
-simultaneous Max-\(|T|\) and 1D TFCE calibration (default <code>4000L</code>).</p></dd>
+<dd><p>Number of correlated Monte Carlo studentized draws for
+simultaneous Max-\(|T|\), 1D TFCE, and omnibus calibration (default <code>4000L</code>).</p></dd>
 
 
 <dt id="arg-n-boot-latency">n_boot_latency<a class="anchor" aria-label="anchor" href="#arg-n-boot-latency"></a></dt>
