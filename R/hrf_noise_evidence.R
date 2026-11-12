@@ -752,7 +752,10 @@ hrf_fold_evidence <- function(results, train, counts, scores, fallback, alpha, m
   compatible <- matrix(TRUE, k, v)
   # Simultaneous candidate compatibility within each voxel over all its usable
   # training runs. No averaging can hide one run's strong rejection of a shape.
-  cutoff <- alpha / (pmax(counts, 1L) * max(1L, k - 1L))
+  # Cap competitor multiplicity by 2 * eff$shape so dense/oversampled HRF grids
+  # do not dilute incompatibility sensitivity through near-duplicate bases.
+  m_incompat <- min(max(1L, k - 1L), max(eff$shape, as.integer(ceiling(2.0 * eff$shape))))
+  cutoff <- alpha / (pmax(counts, 1L) * m_incompat)
   for (r in train) {
     p <- results[[r]]$incompatible_p
     if (is.null(p)) next
@@ -1059,44 +1062,41 @@ hrf_score_run_ar <- function(y_sub, design, z, rows, batch_size, ar_vec,
     return(hrf_score_run_cpp(y_sub, design, z, rows, as.integer(batch_size),
       rho = rho1, evidence = evidence, fallback_index = as.integer(fallback_index)))
   }
-  w_mat <- hrf_whitening_matrix(rows, ar_vec)
-  m <- length(rows)
-  w_int <- as.numeric(w_mat %*% rep(1.0, m))
-  m_wint <- mean(w_int)
-  y_r <- y_sub[rows, , drop = FALSE]
-  ok_col <- colSums(!is.finite(y_r)) == 0L
-  if (any(ok_col)) {
-    y_ok <- y_r[, ok_col, drop = FALSE]
-    y_ok_c <- sweep(y_ok, 2L, colMeans(y_ok), "-")
-    sd_ok <- sqrt(colSums(y_ok_c^2))
-    non_const <- sd_ok > 0
-    if (any(non_const)) {
-      wy <- w_mat %*% y_ok_c[, non_const, drop = FALSE]
-      if (abs(m_wint) > 1e-12) {
-        wy <- wy - outer(w_int / m_wint, colMeans(wy))
-      }
-      y_ok[, non_const] <- wy
-    }
-    y_r[, ok_col] <- y_ok
+  is_contig <- all(diff(rows) == 1L)
+  lag_span <- if (is_contig) max(8L, length(ar_vec) + 2L) else max(8L, max(rows) - min(rows))
+  info <- hrf_ar_cascade_info(ar_vec, max_lag = lag_span)
+  if (!length(info$phi)) {
+    return(hrf_score_run_cpp(y_sub, design, z, rows, as.integer(batch_size),
+      rho = 0.0, evidence = evidence, fallback_index = as.integer(fallback_index)))
   }
-  y_w <- y_sub
-  y_w[rows, ] <- y_r
-  z_w <- z
-  if (ncol(z_w) > 0L) z_w[rows, ] <- w_mat %*% z[rows, , drop = FALSE]
-  des_w <- lapply(design, function(d) {
-    d[rows, ] <- w_mat %*% d[rows, , drop = FALSE]
-    d
-  })
-  hrf_score_run_cpp(y_w, des_w, z_w, rows, as.integer(batch_size),
-    rho = 0.0, evidence = evidence, fallback_index = as.integer(fallback_index))
+  hrf_score_run_cpp(y_sub, design, z, rows, as.integer(batch_size),
+    rho = 0.0, evidence = evidence, fallback_index = as.integer(fallback_index),
+    ar_phi = info$phi, ar_acf = info$acf, sig_u2 = info$sig_u2)
 }
 
 hrf_inverse_operator <- function(n, kernel, rows, rho, nuisance, settings) {
   has_psi <- length(rho) >= 2L && any(is.finite(rho[-1L]) & abs(rho[-1L]) > 1e-10)
-  if (settings$backend == "cpp" && !has_psi) return(hrf_inverse_operator_cpp(as.integer(n), kernel,
-    rows, rho[1L], nuisance, settings$lambda, settings$penalty, settings$ridge_floor,
-    as.integer(settings$tail_padding)))
-  # Exact masked, nuisance-adjusted GLS reference (used for backend = "r" and cascaded AR(p) whitening).
+  if (settings$backend == "cpp") {
+    if (!has_psi) {
+      return(hrf_inverse_operator_cpp(as.integer(n), kernel,
+        rows, rho[1L], nuisance, settings$lambda, settings$penalty, settings$ridge_floor,
+        as.integer(settings$tail_padding)))
+    }
+    all_rows <- c(rows, if (settings$tail_padding) n + seq_len(settings$tail_padding))
+    is_contig <- all(diff(all_rows) == 1L)
+    lag_span <- if (is_contig) max(8L, length(rho) + 2L) else max(8L, max(all_rows) - min(all_rows))
+    info <- hrf_ar_cascade_info(rho, max_lag = lag_span)
+    if (!length(info$phi)) {
+      return(hrf_inverse_operator_cpp(as.integer(n), kernel,
+        rows, 0.0, nuisance, settings$lambda, settings$penalty, settings$ridge_floor,
+        as.integer(settings$tail_padding)))
+    }
+    return(hrf_inverse_operator_cpp(as.integer(n), kernel,
+      rows, 0.0, nuisance, settings$lambda, settings$penalty, settings$ridge_floor,
+      as.integer(settings$tail_padding),
+      ar_phi = info$phi, ar_acf = info$acf, sig_u2 = info$sig_u2))
+  }
+  # Exact masked, nuisance-adjusted GLS reference (used for backend = "r").
   measured <- length(rows)
   all_rows <- c(rows, if (settings$tail_padding) n + seq_len(settings$tail_padding))
   h <- decon_convolution_matrix(n + settings$tail_padding, kernel)[all_rows, , drop = FALSE]
@@ -1240,13 +1240,22 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
     k_mode <- as.integer(names(k_tab)[which.max(k_tab)])
     if (!length(k_mode) || is.na(k_mode)) k_mode <- 1L
 
+    norm_mode_tune <- if (!is.null(hrf_fit$settings$kernel_normalize)) {
+      hrf_fit$settings$kernel_normalize
+    } else {
+      "signed_sum"
+    }
     k_tune <- if (identical(hrf_fit$settings$selection_mode, "soft_average") &&
         !is.null(hrf_fit$selected_kernels) && !is.null(hrf_fit$selected_kernels[[r_tune]])) {
       k_avg <- as.numeric(hrf_fit$selected_kernels[[r_tune]][, active_cols, drop = FALSE] %*% w_act)
-      if (all(is.finite(k_avg)) && abs(sum(k_avg)) > 1e-6) k_avg / sum(k_avg) else hrf_fit$kernels[, k_mode]
+      tryCatch(
+        normalize_decon_kernel(k_avg, mode = norm_mode_tune),
+        error = function(e) as.numeric(hrf_fit$kernels[, k_mode])
+      )
     } else {
-      hrf_fit$kernels[, k_mode]
+      as.numeric(hrf_fit$kernels[, k_mode])
     }
+    attr(k_tune, "normalize") <- norm_mode_tune
 
     noise_rt <- if (is.null(hrf_fit$noise)) NULL else hrf_fit$noise[[r_tune]]
     rho_t <- if (is.null(noise_rt)) {

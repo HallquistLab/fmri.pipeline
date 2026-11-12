@@ -13,7 +13,7 @@
 #' @param penalty regularization penalty: \code{"diff2"} for smooth second
 #'   differences, \code{"diff1"} for smooth first differences, \code{"ridge"}
 #'   for amplitude shrinkage, \code{"matern1"} for a damped first-order
-#'   Matérn/Ornstein-Uhlenbeck penalty (\code{0.10 * I + 0.90 * crossprod(D1)}), or
+#'   Matern/Ornstein-Uhlenbeck penalty (\code{0.10 * I + 0.90 * crossprod(D1)}), or
 #'   \code{"sobolev"} for a critically damped second-order Sobolev penalty
 #'   (\code{0.05 * I + 0.45 * crossprod(D1) + 0.50 * crossprod(D2)}) that suppresses negative
 #'   sidelobe ringing and stabilizes low frequencies.
@@ -61,6 +61,12 @@
 #'   neural task variance with noise variance. When supplied,
 #'   overrides \code{normalize} and \code{demean}. Otherwise those flags retain
 #'   their existing behavior; the default is z-scoring.
+#' @param kernel_normalize Normalization applied to \code{kernel} or
+#'   \code{kernel_grid}: \code{"auto"} (default; honors \code{attr(..., "normalize")}
+#'   when present, switches to \code{"positive_lobe"} when candidate kernels span
+#'   heterogeneous undershoot ratios, and uses \code{"signed_sum"} otherwise),
+#'   \code{"signed_sum"} (\code{sum(h) == 1}), \code{"positive_lobe"}
+#'   (\code{sum(pmax(h, 0)) == 1}), or \code{"peak"} (\code{max(h) == 1}).
 #'
 #' @return A matrix of deconvolved time series, or a list with \code{activity}
 #'   and tuning diagnostics when \code{return_diagnostics = TRUE}.
@@ -118,13 +124,15 @@ deconvolve_reglin <- function(
   wiener_psd_smooth = 7L,
   wiener_psd_floor = 1e-8,
   gcv_rule = c("min", "1se"),
-  scaling = NULL
+  scaling = NULL,
+  kernel_normalize = c("auto", "signed_sum", "positive_lobe", "peak")
 ) {
   penalty <- match.arg(penalty)
   tune_by <- match.arg(tune_by)
   backend <- match.arg(backend)
   wiener_shrinkage <- match.arg(wiener_shrinkage)
   gcv_rule <- match.arg(gcv_rule)
+  kernel_normalize <- match.arg(kernel_normalize)
 
   if (is.null(dim(BOLDobs))) {
     BOLDobs <- matrix(BOLDobs, ncol = 1L)
@@ -154,7 +162,13 @@ deconvolve_reglin <- function(
     lambda_grid <- lambda
   }
 
-  kernels <- build_decon_kernel_grid(kernel, kernel_grid = kernel_grid, hrf_lags = hrf_lags)
+  kernels <- build_decon_kernel_grid(
+    kernel,
+    kernel_grid = kernel_grid,
+    hrf_lags = hrf_lags,
+    normalize = if (kernel_normalize == "auto") NULL else kernel_normalize
+  )
+  resolved_kernel_normalize <- attr(kernels, "normalize")
   kernel_len <- length(kernels[[1L]])
   validate_wiener_tuning(backend, wiener_shrinkage, length(lambda_grid), length(kernels))
   if (nrow(BOLDobs) < 3L) {
@@ -193,6 +207,7 @@ deconvolve_reglin <- function(
         lambda = rep(NA_real_, n_selected),
         kernel_index = rep(NA_integer_, n_selected),
         kernels = kernels,
+        kernel_normalize = resolved_kernel_normalize,
         tuning = data.frame(kernel = integer(), lambda = numeric(), df = numeric(),
           rss = numeric(), gcv = numeric(), gcv_se = numeric()),
         penalty = if (backend == "wiener") "wiener" else penalty,
@@ -252,7 +267,8 @@ deconvolve_reglin <- function(
       wiener_psd_smooth = wiener_psd_smooth,
       wiener_psd_floor = wiener_psd_floor,
       gcv_rule = gcv_rule,
-      scaling = "none"
+      scaling = "none",
+      kernel_normalize = resolved_kernel_normalize
     )
     first_resid <- decon_first_pass_residuals(
       y = scaled$y,
@@ -284,6 +300,9 @@ deconvolve_reglin <- function(
       wiener_psd_floor = wiener_psd_floor,
       gcv_rule = gcv_rule
     )
+    if (isTRUE(return_diagnostics) && is.list(result)) {
+      result$kernel_normalize <- resolved_kernel_normalize
+    }
     return(set_decon_scaling(result, scaled, scaling))
   }
 
@@ -307,6 +326,7 @@ deconvolve_reglin <- function(
 
     if (isTRUE(return_diagnostics)) {
       cpp_res$kernels <- kernels
+      cpp_res$kernel_normalize <- resolved_kernel_normalize
       cpp_res$signal_status <- signal_status
     }
     if (is.null(scaled)) {
@@ -442,6 +462,7 @@ deconvolve_reglin <- function(
     lambda = best_lambda,
     kernel_index = best_kernel,
     kernels = kernels,
+    kernel_normalize = resolved_kernel_normalize,
     tuning = tuning,
     penalty = penalty,
     tune_by = tune_by,
@@ -467,7 +488,25 @@ decon_signal_status <- function(y) {
   }, character(1L))
 }
 
-build_decon_kernel_grid <- function(kernel, kernel_grid = NULL, hrf_lags = 0L) {
+# Detect heterogeneous negative-to-positive lobe ratios across candidate HRFs so
+# unattributed multi-candidate grids spanning different undershoot depths automatically
+# use positive_lobe normalization rather than signed_sum scale inflation.
+infer_kernel_grid_normalize <- function(kernels) {
+  if (length(kernels) < 2L) return("signed_sum")
+  neg_pos_ratios <- vapply(kernels, function(h) {
+    h <- as.numeric(h)
+    if (any(!is.finite(h))) return(NA_real_)
+    pos <- sum(pmax(h, 0))
+    neg <- sum(pmax(-h, 0))
+    if (pos <= .Machine$double.eps) return(NA_real_)
+    neg / pos
+  }, numeric(1L))
+  ok <- is.finite(neg_pos_ratios)
+  if (sum(ok) < 2L) return("signed_sum")
+  if (diff(range(neg_pos_ratios[ok])) > 0.05) "positive_lobe" else "signed_sum"
+}
+
+build_decon_kernel_grid <- function(kernel, kernel_grid = NULL, hrf_lags = 0L, normalize = NULL) {
   if (!is.null(kernel_grid)) {
     if (is.list(kernel_grid)) {
       kernels <- lapply(kernel_grid, as.numeric)
@@ -486,19 +525,48 @@ build_decon_kernel_grid <- function(kernel, kernel_grid = NULL, hrf_lags = 0L) {
     stop("All candidate HRF kernels must have the same length")
   }
 
-  lapply(kernels, normalize_decon_kernel)
+  if (is.null(normalize) || identical(normalize, "auto")) {
+    normalize <- if (!is.null(kernel_grid) && !is.null(attr(kernel_grid, "normalize"))) {
+      attr(kernel_grid, "normalize")
+    } else if (is.null(kernel_grid) && !is.null(attr(kernel, "normalize"))) {
+      attr(kernel, "normalize")
+    } else {
+      infer_kernel_grid_normalize(kernels)
+    }
+  }
+  normalize <- match.arg(normalize, c("signed_sum", "positive_lobe", "peak"))
+
+  out <- lapply(kernels, normalize_decon_kernel, mode = normalize)
+  attr(out, "normalize") <- normalize
+  out
 }
 
-normalize_decon_kernel <- function(kernel) {
+normalize_decon_kernel <- function(kernel, mode = c("signed_sum", "positive_lobe", "peak")) {
+  mode <- match.arg(mode)
   kernel <- as.numeric(kernel)
   if (any(!is.finite(kernel))) {
     stop("HRF kernels must contain only finite values")
   }
-  ksum <- sum(kernel)
-  if (isTRUE(all.equal(ksum, 0))) {
-    stop("HRF kernel sum is zero; cannot normalize")
+  if (mode == "signed_sum") {
+    ksum <- sum(kernel)
+    if (isTRUE(all.equal(ksum, 0))) {
+      stop("HRF kernel sum is zero; cannot normalize")
+    }
+    return(kernel / ksum)
   }
-  kernel / ksum
+  if (mode == "positive_lobe") {
+    psum <- sum(pmax(kernel, 0))
+    if (isTRUE(all.equal(psum, 0))) {
+      stop("HRF kernel positive lobe is zero; cannot normalize")
+    }
+    return(kernel / psum)
+  }
+  pk <- max(kernel)
+  if (pk <= .Machine$double.eps) pk <- max(abs(kernel))
+  if (isTRUE(all.equal(pk, 0))) {
+    stop("HRF kernel peak is zero; cannot normalize")
+  }
+  kernel / pk
 }
 
 shift_decon_kernel <- function(lag, kernel) {

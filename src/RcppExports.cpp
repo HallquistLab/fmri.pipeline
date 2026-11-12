@@ -58,8 +58,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // hrf_score_run_cpp
-Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs, const arma::mat& nuisance, const Rcpp::IntegerVector& rows, int batch_size, double rank_tol, double rho, bool evidence, int fallback_index);
-RcppExport SEXP _fmri_pipeline_hrf_score_run_cpp(SEXP boldSEXP, SEXP designsSEXP, SEXP nuisanceSEXP, SEXP rowsSEXP, SEXP batch_sizeSEXP, SEXP rank_tolSEXP, SEXP rhoSEXP, SEXP evidenceSEXP, SEXP fallback_indexSEXP) {
+Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs, const arma::mat& nuisance, const Rcpp::IntegerVector& rows, int batch_size, double rank_tol, double rho, bool evidence, int fallback_index, Rcpp::Nullable<Rcpp::NumericVector> ar_phi, Rcpp::Nullable<Rcpp::NumericVector> ar_acf, double sig_u2);
+RcppExport SEXP _fmri_pipeline_hrf_score_run_cpp(SEXP boldSEXP, SEXP designsSEXP, SEXP nuisanceSEXP, SEXP rowsSEXP, SEXP batch_sizeSEXP, SEXP rank_tolSEXP, SEXP rhoSEXP, SEXP evidenceSEXP, SEXP fallback_indexSEXP, SEXP ar_phiSEXP, SEXP ar_acfSEXP, SEXP sig_u2SEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -72,7 +72,10 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< double >::type rho(rhoSEXP);
     Rcpp::traits::input_parameter< bool >::type evidence(evidenceSEXP);
     Rcpp::traits::input_parameter< int >::type fallback_index(fallback_indexSEXP);
-    rcpp_result_gen = Rcpp::wrap(hrf_score_run_cpp(bold, designs, nuisance, rows, batch_size, rank_tol, rho, evidence, fallback_index));
+    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_phi(ar_phiSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_acf(ar_acfSEXP);
+    Rcpp::traits::input_parameter< double >::type sig_u2(sig_u2SEXP);
+    rcpp_result_gen = Rcpp::wrap(hrf_score_run_cpp(bold, designs, nuisance, rows, batch_size, rank_tol, rho, evidence, fallback_index, ar_phi, ar_acf, sig_u2));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -93,8 +96,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // hrf_inverse_operator_cpp
-arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel, const Rcpp::IntegerVector& rows, double rho, const arma::mat& nuisance, double lambda, const std::string& penalty, double ridge_floor, int tail_padding);
-RcppExport SEXP _fmri_pipeline_hrf_inverse_operator_cpp(SEXP n_timeSEXP, SEXP kernelSEXP, SEXP rowsSEXP, SEXP rhoSEXP, SEXP nuisanceSEXP, SEXP lambdaSEXP, SEXP penaltySEXP, SEXP ridge_floorSEXP, SEXP tail_paddingSEXP) {
+arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel, const Rcpp::IntegerVector& rows, double rho, const arma::mat& nuisance, double lambda, const std::string& penalty, double ridge_floor, int tail_padding, Rcpp::Nullable<Rcpp::NumericVector> ar_phi, Rcpp::Nullable<Rcpp::NumericVector> ar_acf, double sig_u2);
+RcppExport SEXP _fmri_pipeline_hrf_inverse_operator_cpp(SEXP n_timeSEXP, SEXP kernelSEXP, SEXP rowsSEXP, SEXP rhoSEXP, SEXP nuisanceSEXP, SEXP lambdaSEXP, SEXP penaltySEXP, SEXP ridge_floorSEXP, SEXP tail_paddingSEXP, SEXP ar_phiSEXP, SEXP ar_acfSEXP, SEXP sig_u2SEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -107,7 +110,10 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const std::string& >::type penalty(penaltySEXP);
     Rcpp::traits::input_parameter< double >::type ridge_floor(ridge_floorSEXP);
     Rcpp::traits::input_parameter< int >::type tail_padding(tail_paddingSEXP);
-    rcpp_result_gen = Rcpp::wrap(hrf_inverse_operator_cpp(n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding));
+    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_phi(ar_phiSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_acf(ar_acfSEXP);
+    Rcpp::traits::input_parameter< double >::type sig_u2(sig_u2SEXP);
+    rcpp_result_gen = Rcpp::wrap(hrf_inverse_operator_cpp(n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding, ar_phi, ar_acf, sig_u2));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -281,9 +287,9 @@ static const R_CallMethodDef CallEntries[] = {
     {"_fmri_pipeline_convolve_cpp", (DL_FUNC) &_fmri_pipeline_convolve_cpp, 2},
     {"_fmri_pipeline_convolve_double_gamma", (DL_FUNC) &_fmri_pipeline_convolve_double_gamma, 6},
     {"_fmri_pipeline_hrf_event_design_cpp", (DL_FUNC) &_fmri_pipeline_hrf_event_design_cpp, 8},
-    {"_fmri_pipeline_hrf_score_run_cpp", (DL_FUNC) &_fmri_pipeline_hrf_score_run_cpp, 9},
+    {"_fmri_pipeline_hrf_score_run_cpp", (DL_FUNC) &_fmri_pipeline_hrf_score_run_cpp, 12},
     {"_fmri_pipeline_hrf_noise_profile_cpp", (DL_FUNC) &_fmri_pipeline_hrf_noise_profile_cpp, 6},
-    {"_fmri_pipeline_hrf_inverse_operator_cpp", (DL_FUNC) &_fmri_pipeline_hrf_inverse_operator_cpp, 9},
+    {"_fmri_pipeline_hrf_inverse_operator_cpp", (DL_FUNC) &_fmri_pipeline_hrf_inverse_operator_cpp, 12},
     {"_fmri_pipeline_deconvolve_nlreg", (DL_FUNC) &_fmri_pipeline_deconvolve_nlreg, 7},
     {"_fmri_pipeline_deconvolve_reglin_cpp", (DL_FUNC) &_fmri_pipeline_deconvolve_reglin_cpp, 13},
     {"_fmri_pipeline_do_convolve", (DL_FUNC) &_fmri_pipeline_do_convolve, 4},

@@ -4,7 +4,8 @@
 #' known HRF, and measure their recovery and entry into other event windows.
 #'
 #' @param event_data Data.frame with unique trial labels and numeric onsets.
-#' @param kernel Frozen inverse-model HRF. Normalized to unit sum.
+#' @param kernel Frozen inverse-model HRF, normalized according to
+#'   \code{kernel_normalize}.
 #' @param n_time Number of measured acquisition samples (at least three).
 #' @param tr Acquisition interval in seconds.
 #' @param lambda Fixed regularization strength; automatic tuning is not performed.
@@ -16,7 +17,8 @@
 #'   nonlinear estimators are not supported.
 #' @param penalty Fixed quadratic penalty for cpp/r.
 #' @param forward_kernel Generating HRF, defaulting to kernel. Use a different
-#'   shape for a specified HRF-mismatch experiment. Also normalized to unit sum.
+#'   shape for a specified HRF-mismatch experiment, normalized with the same
+#'   \code{kernel_normalize} convention as \code{kernel}.
 #' @param prewhiten_rho Frozen AR(1) coefficient; zero disables whitening.
 #' @param ridge_floor Fixed numerical ridge floor for cpp/r.
 #' @param input_scale Fixed positive BOLD divisor from the fitted run. Recovery is
@@ -30,6 +32,12 @@
 #' @param batch_size Maximum number of impulse columns fitted together.
 #' @param return_timeseries Include full acquisition-grid truth, BOLD, and
 #'   recovered activity for each selected source (default FALSE).
+#' @param kernel_normalize Normalization applied to both \code{kernel} and
+#'   \code{forward_kernel}: \code{"auto"} (default; honors \code{attr(..., "normalize")}
+#'   when present, switches to \code{"positive_lobe"} when \code{kernel} and
+#'   \code{forward_kernel} differ in undershoot ratio, and uses
+#'   \code{"signed_sum"} otherwise), \code{"signed_sum"}, \code{"positive_lobe"},
+#'   or \code{"peak"}.
 #' @return A list with impulses (one status/summary per selected source), windows
 #'   (directed source/target metrics), optional time_series, and frozen settings.
 #' @details Off-grid events deposit mass on the two surrounding acquisition bins;
@@ -48,9 +56,11 @@ deconvolution_impulse_diagnostics <- function(event_data, kernel, n_time, tr, la
     output_resolution = tr, backend = c("cpp", "r", "wiener"),
     penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"), forward_kernel = NULL,
     prewhiten_rho = 0, ridge_floor = 1e-8, input_scale = 1, input_demean = FALSE,
-    tail_padding = 0L, source_trials = NULL, batch_size = 32L, return_timeseries = FALSE) {
+    tail_padding = 0L, source_trials = NULL, batch_size = 32L, return_timeseries = FALSE,
+    kernel_normalize = c("auto", "signed_sum", "positive_lobe", "peak")) {
   backend <- match.arg(backend)
   penalty <- match.arg(penalty)
+  kernel_normalize <- match.arg(kernel_normalize)
   checkmate::assert_data_frame(event_data, min.rows = 1L)
   checkmate::assert_string(onset)
   checkmate::assert_string(trial)
@@ -70,10 +80,22 @@ deconvolution_impulse_diagnostics <- function(event_data, kernel, n_time, tr, la
   checkmate::assert_integerish(batch_size, lower = 1L, len = 1L)
   checkmate::assert_flag(return_timeseries)
   checkmate::assert_numeric(kernel, min.len = 2L, any.missing = FALSE, finite = TRUE)
-  kernel <- normalize_decon_kernel(kernel)
-  if (is.null(forward_kernel)) forward_kernel <- kernel
-  checkmate::assert_numeric(forward_kernel, min.len = 2L, any.missing = FALSE, finite = TRUE)
-  forward_kernel <- normalize_decon_kernel(forward_kernel)
+  if (!is.null(forward_kernel)) {
+    checkmate::assert_numeric(forward_kernel, min.len = 2L, any.missing = FALSE, finite = TRUE)
+  }
+  norm_mode <- if (kernel_normalize != "auto") {
+    kernel_normalize
+  } else if (!is.null(attr(kernel, "normalize"))) {
+    match.arg(attr(kernel, "normalize"), c("signed_sum", "positive_lobe", "peak"))
+  } else if (!is.null(forward_kernel) && !is.null(attr(forward_kernel, "normalize"))) {
+    match.arg(attr(forward_kernel, "normalize"), c("signed_sum", "positive_lobe", "peak"))
+  } else if (!is.null(forward_kernel)) {
+    infer_kernel_grid_normalize(list(kernel, forward_kernel))
+  } else {
+    "signed_sum"
+  }
+  kernel <- normalize_decon_kernel(kernel, mode = norm_mode)
+  forward_kernel <- if (is.null(forward_kernel)) kernel else normalize_decon_kernel(forward_kernel, mode = norm_mode)
   grid <- epoch_output_grid(time_before, time_after, output_resolution)
   source <- if (is.null(source_trials)) seq_along(labels) else {
     source_trials <- as.character(source_trials)
@@ -113,7 +135,8 @@ deconvolution_impulse_diagnostics <- function(event_data, kernel, n_time, tr, la
       fit_input <- rbind(y[, valid, drop = FALSE], matrix(0, tail_padding, sum(valid)))
       recovered[, valid] <- deconvolve_reglin(fit_input, kernel, lambda = lambda,
         backend = backend, penalty = penalty, scaling = "none", ridge_floor = ridge_floor,
-        prewhiten_gcv = prewhiten_rho != 0, prewhiten_rho = prewhiten_rho)[seq_len(n_time), , drop = FALSE] * input_scale
+        prewhiten_gcv = prewhiten_rho != 0, prewhiten_rho = prewhiten_rho,
+        kernel_normalize = norm_mode)[seq_len(n_time), , drop = FALSE] * input_scale
     }
     for (j in seq_along(indices)) {
       i <- indices[j]
@@ -170,7 +193,8 @@ deconvolution_impulse_diagnostics <- function(event_data, kernel, n_time, tr, la
   }
   list(impulses = do.call(rbind, summaries), windows = do.call(rbind, windows),
     time_series = if (return_timeseries) do.call(rbind, series) else NULL,
-    settings = list(kernel = kernel, forward_kernel = forward_kernel, lambda = lambda,
+    settings = list(kernel = kernel, forward_kernel = forward_kernel,
+      kernel_normalize = norm_mode, lambda = lambda,
       backend = backend, penalty = penalty, n_time = n_time, tr = tr, time_offset = time_offset,
       time_before = time_before, time_after = time_after, output_resolution = output_resolution,
       prewhiten_rho = prewhiten_rho, ridge_floor = ridge_floor, input_scale = input_scale,
