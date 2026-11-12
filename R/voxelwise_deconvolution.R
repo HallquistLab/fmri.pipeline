@@ -143,7 +143,8 @@ voxelwise_deconvolution <- function(
       identical(decon_settings[["wiener_shrinkage"]], "psd")) {
     candidate_kernels <- build_decon_kernel_grid(decon_settings$kernel,
       decon_settings$kernel_grid,
-      if (is.null(decon_settings$hrf_lags)) 0L else decon_settings$hrf_lags)
+      if (is.null(decon_settings$hrf_lags)) 0L else decon_settings$hrf_lags,
+      normalize = decon_settings$kernel_normalize)
     n_lambda <- if (!is.null(decon_settings[["lambda"]])) 1L else
       if (is.null(decon_settings$lambda_grid)) 20L else length(unique(decon_settings$lambda_grid))
     validate_wiener_tuning("wiener", "psd", n_lambda, length(candidate_kernels))
@@ -331,7 +332,8 @@ voxelwise_deconvolution <- function(
               wiener_psd_smooth = if (is.null(decon_settings$wiener_psd_smooth)) 7L else decon_settings$wiener_psd_smooth,
               wiener_psd_floor = if (is.null(decon_settings$wiener_psd_floor)) 1e-8 else decon_settings$wiener_psd_floor,
               gcv_rule = if (is.null(decon_settings$gcv_rule)) "min" else decon_settings$gcv_rule,
-              trim_kernel = TRUE
+              trim_kernel = TRUE,
+              kernel_normalize = if (is.null(decon_settings$kernel_normalize)) "auto" else decon_settings$kernel_normalize
             ),
             error = function(e) {
               cat("Problem deconvolving: ", niftis[si], as.character(e), "\n", file = log_file, append = TRUE)

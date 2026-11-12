@@ -25,7 +25,8 @@ deconvolve_reglin(
   wiener_psd_smooth = 7L,
   wiener_psd_floor = 1e-08,
   gcv_rule = c("min", "1se"),
-  scaling = NULL
+  scaling = NULL,
+  kernel_normalize = c("auto", "signed_sum", "positive_lobe", "peak")
 )
 }
 \arguments{
@@ -43,7 +44,7 @@ or a numeric vector.}
 \item{penalty}{regularization penalty: \code{"diff2"} for smooth second
 differences, \code{"diff1"} for smooth first differences, \code{"ridge"}
 for amplitude shrinkage, \code{"matern1"} for a damped first-order
-Matérn/Ornstein-Uhlenbeck penalty (\code{0.10 * I + 0.90 * crossprod(D1)}), or
+Matern/Ornstein-Uhlenbeck penalty (\code{0.10 * I + 0.90 * crossprod(D1)}), or
 \code{"sobolev"} for a critically damped second-order Sobolev penalty
 (\code{0.05 * I + 0.45 * crossprod(D1) + 0.50 * crossprod(D2)}) that suppresses negative
 sidelobe ringing and stabilizes low frequencies.}
@@ -106,6 +107,13 @@ autocorrelation when available), standardizing SNR without conflating
 neural task variance with noise variance. When supplied,
 overrides \code{normalize} and \code{demean}. Otherwise those flags retain
 their existing behavior; the default is z-scoring.}
+
+\item{kernel_normalize}{Normalization applied to \code{kernel} or
+\code{kernel_grid}: \code{"auto"} (default; honors \code{attr(..., "normalize")}
+when present, switches to \code{"positive_lobe"} when candidate kernels span
+heterogeneous undershoot ratios, and uses \code{"signed_sum"} otherwise),
+\code{"signed_sum"} (\code{sum(h) == 1}), \code{"positive_lobe"}
+(\code{sum(pmax(h, 0)) == 1}), or \code{"peak"} (\code{max(h) == 1}).}
 }
 \value{
 A matrix of deconvolved time series, or a list with \code{activity}

@@ -243,8 +243,11 @@ per-trial operator precision weights and within-run error covariance.
   recommended end-to-end configuration is:
   \enumerate{
     \item \strong{Stage 0--1 (HRF Estimation):} Use
-      \code{hrf_library(tr, preset = "medusa")} (0.5s peak-delay grid over
-      4--8s with dispersions 0.9, 1.0, 1.1; 27 candidates) and
+      \code{hrf_library(tr, preset = "medusa")} (pruned 3D physiological
+      manifold spanning fast/narrow/minimal-undershoot subcortical through
+      slow cortical HRFs with positive-lobe normalization; ~44 candidates, or
+      \code{preset = "canonical_27"} for the 27-candidate fixed-undershoot
+      canonical grid) and
       \code{\link{estimate_crossrun_hrf}} with \code{noise_model = "ar1"},
       \code{evidence = "calibrated"}, \code{selection_mode = "soft_average"}
       (evidence-weighted HRF kernel averaging across locally supported
@@ -271,3 +274,4 @@ per-trial operator precision weights and within-run error covariance.
       weights = "precision_weight")}.
   }
 }
+

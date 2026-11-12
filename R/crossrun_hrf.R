@@ -3,55 +3,218 @@
 #' @param tr Acquisition interval in seconds.
 #' @param peak_delays Positive response-delay parameters in seconds.
 #' @param dispersions Positive response-dispersion parameters.
-#' @param undershoot_ratios Positive response-to-undershoot ratios.
+#' @param undershoot_ratios Positive response-to-undershoot ratios (\code{> 1};
+#'   \code{Inf} gives a pure single-gamma HRF with zero post-stimulus undershoot).
 #' @param duration Kernel duration in seconds (at least two acquisition intervals).
-#' @param preset Optional preset grid configuration: `"custom"` (default, uses
-#'   supplied `peak_delays`, `dispersions`, `undershoot_ratios`), `"standard"`
-#'   (delays 5, 6, 7s; dispersions 0.8, 1, 1.2), `"extended"` (delays 4--8s;
-#'   dispersions 0.8, 1, 1.25), `"medusa"` (recommended 0.5s medium grid:
-#'   delays 4--8s by 0.5s; dispersions 0.9, 1.0, 1.1; 27 candidates), or
-#'   `"dense"` (delays 4--8.5s by 0.5s; dispersions 0.8, 1, 1.2, 1.4).
-#' @return A unit-sum kernel matrix, with time rows, candidate columns, and a
-#'   parameters attribute. The canonical candidate (6, 1, 6) is first if present.
+#' @param preset Optional preset grid configuration: \code{"custom"} (default, uses
+#'   supplied \code{peak_delays}, \code{dispersions}, \code{undershoot_ratios}),
+#'   \code{"standard"} (delays 5, 6, 7s; dispersions 0.8, 1, 1.2),
+#'   \code{"extended"} (delays 4--8s; dispersions 0.8, 1, 1.25),
+#'   \code{"canonical_27"} (fixed-undershoot 0.5s canonical grid: delays 4--8s by
+#'   0.5s; dispersions 0.9, 1.0, 1.1; 27 candidates), \code{"dense"} (delays
+#'   4--8.5s by 0.5s; dispersions 0.8, 1, 1.2, 1.4), \code{"manifold"} or
+#'   \code{"medusa"} (pruned 3D physiological manifold spanning
+#'   fast/narrow/minimal-undershoot subcortical through slow cortical shapes;
+#'   ~44 candidates), or \code{"enet"} (maximin cosine epsilon-net covering the
+#'   expanded 3D parameter cube with \code{n_enet} candidates).
+#' @param normalize Normalization convention across candidate columns: \code{"auto"}
+#'   (uses \code{"positive_lobe"} whenever undershoot varies across candidates,
+#'   includes \code{Inf}, differs from the canonical fixed ratio 6, or uses
+#'   \code{"manifold"}, \code{"medusa"}, or \code{"enet"} so varying undershoot
+#'   ratios do not inflate deconvolved neural amplitudes; uses \code{"signed_sum"}
+#'   for legacy fixed-ratio-6 grids), \code{"signed_sum"} (\code{sum(h) == 1}),
+#'   \code{"positive_lobe"} (\code{sum(pmax(h, 0)) == 1}), or \code{"peak"}
+#'   (\code{max(h) == 1}).
+#' @param n_enet Number of candidates retained when \code{preset = "enet"} (default 45).
+#' @return A normalized kernel matrix, with time rows, candidate columns, and
+#'   \code{parameters}, \code{tr}, and \code{normalize} attributes. The canonical
+#'   candidate \code{(6, 1, 6)} is first if present.
 #' @details Candidates use the SPM difference-of-gammas parameterization with
-#'   undershoot delay 16 seconds and undershoot dispersion 1. These are candidate
-#'   shapes, not a universally validated range for every population or protocol.
+#'   undershoot delay 16 seconds and undershoot dispersion 1. Setting
+#'   \code{undershoot_ratios = Inf} omits the negative gamma lobe (single-gamma HRF).
 #' @export
 hrf_library <- function(tr, peak_delays = c(5, 6, 7), dispersions = c(0.8, 1, 1.2),
     undershoot_ratios = 6, duration = 32,
-    preset = c("custom", "standard", "extended", "medusa", "dense")) {
+    preset = c("custom", "standard", "extended", "canonical_27", "dense", "manifold", "enet", "medusa"),
+    normalize = c("auto", "signed_sum", "positive_lobe", "peak"),
+    n_enet = 45L) {
   checkmate::assert_number(tr, lower = 0.01, finite = TRUE)
+  checkmate::assert_number(duration, lower = 2 * tr, finite = TRUE)
   preset <- match.arg(preset)
-  if (preset == "standard") {
+  normalize <- match.arg(normalize)
+
+  disp_min <- if (tr <= 1.2) 0.60 else min(0.80, max(0.60, round(0.45 * tr, 2L)))
+
+  if (preset %in% c("medusa", "manifold", "enet")) {
+    peak_delays <- seq(2.5, 8.0, by = 0.5)
+    dispersions <- sort(unique(c(disp_min, 0.8, 1.0, 1.2, 1.4)))
+    undershoot_ratios <- c(3, 6, 12, Inf)
+  } else if (preset == "standard") {
     peak_delays <- c(5, 6, 7)
     dispersions <- c(0.8, 1, 1.2)
+    undershoot_ratios <- 6
   } else if (preset == "extended") {
     peak_delays <- c(4, 5, 6, 7, 8)
     dispersions <- c(0.8, 1, 1.25)
-  } else if (preset == "medusa") {
+    undershoot_ratios <- 6
+  } else if (preset == "canonical_27") {
     peak_delays <- seq(4.0, 8.0, by = 0.5)
     dispersions <- c(0.9, 1.0, 1.1)
+    undershoot_ratios <- 6
   } else if (preset == "dense") {
     peak_delays <- seq(4, 8.5, by = 0.5)
     dispersions <- c(0.8, 1, 1.2, 1.4)
+    undershoot_ratios <- 6
   }
-  for (x in list(peak_delays, dispersions, undershoot_ratios))
+
+  for (x in list(peak_delays, dispersions)) {
     checkmate::assert_numeric(x, lower = .Machine$double.eps, min.len = 1L,
       any.missing = FALSE, finite = TRUE, unique = TRUE)
-  checkmate::assert_number(duration, lower = 2 * tr, finite = TRUE)
+  }
+  checkmate::assert_numeric(undershoot_ratios, lower = .Machine$double.eps,
+    min.len = 1L, any.missing = FALSE, unique = TRUE)
+  if (any(is.nan(undershoot_ratios))) {
+    stop("undershoot_ratios must not contain NaN")
+  }
+  if (any(undershoot_ratios <= 1)) {
+    stop("undershoot_ratios must be strictly greater than 1 (use Inf for zero undershoot)")
+  }
+
+  norm_mode <- if (normalize == "auto") {
+    if (preset %in% c("medusa", "manifold", "enet") ||
+        length(undershoot_ratios) > 1L ||
+        any(is.infinite(undershoot_ratios)) ||
+        !isTRUE(all.equal(as.numeric(undershoot_ratios), 6.0))) {
+      "positive_lobe"
+    } else {
+      "signed_sum"
+    }
+  } else {
+    normalize
+  }
+
   pars <- expand.grid(peak_delay = peak_delays, dispersion = dispersions,
     undershoot_ratio = undershoot_ratios, KEEP.OUT.ATTRS = FALSE)
+  if (preset %in% c("medusa", "manifold")) {
+    keep_phys <- with(pars,
+      !(peak_delay <= 2.5 & (dispersion > 0.85 | undershoot_ratio < 10)) &
+      !(peak_delay <= 3.5 & (dispersion > 1.00 | undershoot_ratio < 6)) &
+      !(peak_delay >= 6.5 & dispersion < 0.80) &
+      !(peak_delay >= 7.5 & is.infinite(undershoot_ratio))
+    )
+    pars <- pars[keep_phys, , drop = FALSE]
+  }
   canonical <- with(pars, peak_delay == 6 & dispersion == 1 & undershoot_ratio == 6)
   pars <- pars[order(!canonical, seq_len(nrow(pars))), , drop = FALSE]
   rownames(pars) <- NULL
-  kernels <- vapply(seq_len(nrow(pars)), function(i) {
-    as.numeric(spm_hrf(tr, c(pars$peak_delay[i], 16, pars$dispersion[i], 1,
+
+  u_tr <- seq(0, floor(duration / tr)) * 16
+  dt_hrf <- tr / 16
+  raw_kernels <- vapply(seq_len(nrow(pars)), function(i) {
+    h <- as.numeric(spm_hrf(tr, c(pars$peak_delay[i], 16, pars$dispersion[i], 1,
       pars$undershoot_ratio[i], 0, duration))$hrf)
+    g1_tr <- stats::dgamma(u_tr, shape = pars$peak_delay[i] / pars$dispersion[i],
+      rate = dt_hrf / pars$dispersion[i])
+    idx_peak <- which.max(g1_tr)
+    if (!all(is.finite(h)) || !length(idx_peak) || h[idx_peak] <= 0) {
+      stop("Candidate HRF has non-positive net response on the TR grid; increase undershoot_ratios or duration")
+    }
+    normalize_decon_kernel(h, mode = norm_mode)
   }, numeric(floor(duration / tr) + 1L))
-  colnames(kernels) <- paste0("hrf_", seq_len(ncol(kernels)))
-  attr(kernels, "parameters") <- pars
-  attr(kernels, "tr") <- tr
-  kernels
+
+  if (preset %in% c("medusa", "manifold", "enet")) {
+    n_target <- if (preset %in% c("medusa", "manifold")) {
+      min(44L, ncol(raw_kernels))
+    } else {
+      checkmate::assert_integerish(n_enet, lower = 2L, len = 1L, any.missing = FALSE)
+      min(as.integer(n_enet), ncol(raw_kernels))
+    }
+    keep_idx <- hrf_select_maximin_subset(raw_kernels, n_target, seed_index = 1L)
+    raw_kernels <- raw_kernels[, keep_idx, drop = FALSE]
+    pars <- pars[keep_idx, , drop = FALSE]
+    rownames(pars) <- NULL
+  }
+
+  colnames(raw_kernels) <- paste0("hrf_", seq_len(ncol(raw_kernels)))
+  attr(raw_kernels, "parameters") <- pars
+  attr(raw_kernels, "tr") <- tr
+  attr(raw_kernels, "normalize") <- norm_mode
+  raw_kernels
+}
+
+# Deterministic greedy farthest-point subset selection in L2-normalized waveform
+# angle (maximin cosine epsilon-net). Never touches .Random.seed.
+hrf_select_maximin_subset <- function(kernels, n_keep, seed_index = 1L) {
+  k_tot <- ncol(kernels)
+  n_keep <- min(max(1L, as.integer(n_keep)), k_tot)
+  if (n_keep >= k_tot) return(seq_len(k_tot))
+  seed_index <- min(max(1L, as.integer(seed_index)), k_tot)
+  norms <- sqrt(colSums(kernels^2))
+  norms[norms <= 1e-12] <- 1.0
+  u_mat <- sweep(kernels, 2L, norms, "/")
+  cos_mat <- crossprod(u_mat)
+  selected <- integer(n_keep)
+  selected[1L] <- seed_index
+  max_cos <- cos_mat[, seed_index]
+  max_cos[seed_index] <- Inf
+  for (step in seq.int(2L, n_keep)) {
+    nxt <- which.min(max_cos)
+    selected[step] <- nxt
+    max_cos <- pmax(max_cos, cos_mat[, nxt])
+    max_cos[nxt] <- Inf
+  }
+  selected
+}
+
+# Deterministic AR-stratum quantization for Step-1 candidate scoring when K is
+# large and many parcels/voxels carry distinct AR parameters. Keeps exact strata
+# whenever n_kernels <= 15 or unique strata per design <= max_strata, and never
+# modifies fit$noise used in Step-2 deconvolution.
+hrf_partition_ar_strata <- function(des_id, rho, psi1, psi2, psi3, psi4,
+    n_kernels, max_strata = 6L) {
+  n_vox <- length(des_id)
+  ar_mat <- cbind(rho, psi1, psi2, psi3, psi4)
+  raw_keys <- paste(des_id, rho, psi1, psi2, psi3, psi4, sep = ":")
+  if (n_kernels <= 15L || length(unique(raw_keys)) <= max_strata) {
+    return(list(keys = raw_keys, ar_mat = ar_mat))
+  }
+  keys_out <- raw_keys
+  ar_out <- ar_mat
+  for (d_val in unique(des_id)) {
+    idx_d <- which(des_id == d_val)
+    ok_d <- idx_d[rowSums(!is.finite(ar_mat[idx_d, , drop = FALSE])) == 0L]
+    if (!length(ok_d)) next
+    sub_keys <- raw_keys[ok_d]
+    if (length(unique(sub_keys)) <= max_strata) next
+    feat <- cbind(2.0 * rho[ok_d], psi1[ok_d], psi2[ok_d], psi3[ok_d], psi4[ok_d])
+    ord <- order(rho[ok_d], psi1[ok_d], seq_along(ok_d))
+    seed_pos <- unique(round(seq(1, length(ok_d), length.out = max_strata)))
+    ctrs <- feat[ord[seed_pos], , drop = FALSE]
+    cl <- rep(1L, length(ok_d))
+    for (iter in seq_len(12L)) {
+      d2 <- matrix(0.0, nrow = length(ok_d), ncol = nrow(ctrs))
+      for (ci in seq_len(nrow(ctrs))) {
+        diff_c <- sweep(feat, 2L, ctrs[ci, ], "-")
+        d2[, ci] <- rowSums(diff_c * diff_c)
+      }
+      new_cl <- max.col(-d2, ties.method = "first")
+      if (iter > 1L && identical(new_cl, cl)) break
+      cl <- new_cl
+      for (ci in seq_len(nrow(ctrs))) {
+        m_ci <- which(cl == ci)
+        if (length(m_ci)) ctrs[ci, ] <- colMeans(feat[m_ci, , drop = FALSE])
+      }
+    }
+    for (ci in sort(unique(cl))) {
+      m_vox <- ok_d[cl == ci]
+      rep_ar <- colMeans(ar_mat[m_vox, , drop = FALSE])
+      rep_ar[1L] <- round(rep_ar[1L], 4L)
+      rep_ar[-1L] <- round(rep_ar[-1L], 4L)
+      ar_out[m_vox, ] <- rep(rep_ar, each = length(m_vox))
+      keys_out[m_vox] <- paste(c(d_val, rep_ar), collapse = ":")
+    }
+  }
+  list(keys = keys_out, ar_mat = ar_out)
 }
 
 hrf_validate_bold <- function(bold) {
@@ -128,6 +291,12 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
   # that would collapse zero-mean trial-varying conditions (e.g., RPEs) in
   # focal regions when another condition dominates cortical voxel counts.
   cond_cols <- match(labels, u_cond)
+  screen_all <- ncol(kernels) <= 12L
+  screen_idx <- if (screen_all) seq_len(ncol(kernels)) else
+    hrf_select_maximin_subset(kernels, 12L, seed_index = fallback_kernel)
+  kernels_screen <- if (screen_all) kernels else kernels[, screen_idx, drop = FALSE]
+  fb_screen <- if (screen_all) as.integer(fallback_kernel) else 1L
+  cols_list <- vector("list", n_cond)
   des_list <- vector("list", n_cond)
   voxel_val_mat <- matrix(NA_real_, nrow = n_cond, ncol = ncol(y))
   comp_ic <- logical(n_cond)
@@ -138,11 +307,12 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
     cols_ic <- cond_cols
     cols_ic[idx_e] <- n_cond + seq_along(idx_e)
     cols_ic <- match(cols_ic, unique(cols_ic))
+    cols_list[[ic]] <- cols_ic
     des_ic <- hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
-      cols_ic, max(cols_ic), kernels)
-    des_list[[ic]] <- des_ic
+      cols_ic, max(cols_ic), kernels_screen)
+    if (screen_all) des_list[[ic]] <- des_ic
     part_ic <- hrf_score_run_cpp(y, des_ic, z, which(mask), as.integer(batch_size),
-      rho = rho_ref, evidence = FALSE, fallback_index = as.integer(fallback_kernel))
+      rho = rho_ref, evidence = FALSE, fallback_index = fb_screen)
     if (isTRUE(part_ic$comparable)) {
       comp_ic[ic] <- TRUE
       max_scores <- apply(part_ic$scores, 2L, function(col) {
@@ -158,9 +328,8 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
     }
   }
   if (!is.na(best_ic)) {
-    best_des <- des_list[[best_ic]]
+    vox_ic <- rep(best_ic, ncol(y))
     if (sum(comp_ic) > 1L && ncol(y) > 1L) {
-      vox_ic <- rep(best_ic, ncol(y))
       valid_ic <- which(comp_ic)
       if (!is.null(spatial_groups) && length(spatial_groups) == ncol(y)) {
         for (g in unique(spatial_groups)) {
@@ -194,10 +363,18 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
           }
         }
       }
-      if (any(vox_ic != best_ic)) {
-        attr(best_des, "voxel_design_id") <- vox_ic
-        attr(best_des, "candidate_designs") <- des_list
+    }
+    if (!screen_all) {
+      for (ic in unique(c(best_ic, vox_ic))) {
+        cols_ic <- cols_list[[ic]]
+        des_list[[ic]] <- hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
+          cols_ic, max(cols_ic), kernels)
       }
+    }
+    best_des <- des_list[[best_ic]]
+    if (any(vox_ic != best_ic)) {
+      attr(best_des, "voxel_design_id") <- vox_ic
+      attr(best_des, "candidate_designs") <- des_list
     }
     return(best_des)
   }
@@ -331,11 +508,14 @@ hrf_single_run_subblocks <- function(run_name, y, ev, tr, offset, kernels,
           des_id_b <- rep(1L, n_vox)
           cand_des_b <- list(design_b)
         }
-        ar_keys_b <- paste(des_id_b, noise_r$rho, psi1_r, psi2_r, psi3_r, psi4_r, sep = ":")
+        ar_part_b <- hrf_partition_ar_strata(
+          des_id_b, noise_r$rho, psi1_r, psi2_r, psi3_r, psi4_r, n_kernels
+        )
+        ar_keys_b <- ar_part_b$keys
         for (ak in unique(ar_keys_b)) {
           indices <- which(ar_keys_b == ak)
           idx1 <- indices[1L]
-          ar_vec <- c(noise_r$rho[idx1], psi1_r[idx1], psi2_r[idx1], psi3_r[idx1], psi4_r[idx1])
+          ar_vec <- as.numeric(ar_part_b$ar_mat[idx1, ])
           des_use_b <- cand_des_b[[des_id_b[idx1]]]
           part <- hrf_score_run_ar(y[, indices, drop = FALSE], des_use_b, z, rows_b,
             as.integer(batch_size), ar_vec = ar_vec, evidence = evidence == "calibrated",
@@ -403,7 +583,11 @@ hrf_compute_spatial_weights <- function(spatial_coords, spatial_groups, spatial_
 #'   optional duration (seconds, default zero). Names/order must match bold.
 #' @param tr Common acquisition interval in seconds. All runs use the same grid.
 #' @param kernel_grid Matrix or list of equal-length candidate causal HRFs, sampled
-#'   at tr starting at lag zero. Use hrf_library() or supply explicit candidates.
+#'   at tr starting at lag zero. Use \code{hrf_library()} or supply explicit
+#'   candidates; honors \code{attr(kernel_grid, "normalize")} (\code{"signed_sum"},
+#'   \code{"positive_lobe"}, or \code{"peak"}), automatically switching to
+#'   \code{"positive_lobe"} when unattributed candidates span heterogeneous
+#'   undershoot ratios (and defaulting to \code{"signed_sum"} otherwise).
 #' @param nuisance Optional matching list of time-by-regressor matrices. An
 #'   intercept and linear trend are always included separately for each run.
 #' @param valid_rows Optional matching list of logical observation masks; FALSE
@@ -458,10 +642,10 @@ hrf_compute_spatial_weights <- function(spatial_coords, spatial_groups, spatial_
 #'   groups) to differ from HRF selection parcels.
 #' @return An object of class crossrun_hrf with normalized kernels, per-target-run
 #'   selections and training manifests, parcel anchors, run status/design summaries,
-#'   optional candidate scores, voxel/run IDs, and frozen settings. When
-#'   `selection_mode = "soft_average"`, also includes per-target-run candidate
-#'   weight matrices (`kernel_weights`) and unit-sum composite HRF kernel
-#'   matrices (`selected_kernels`).
+#'   optional candidate scores, voxel/run IDs, and frozen settings (including
+#'   \code{settings$kernel_normalize}). When \code{selection_mode = "soft_average"},
+#'   also includes per-target-run candidate weight matrices (\code{kernel_weights})
+#'   and normalized composite HRF kernel matrices (\code{selected_kernels}).
 #' @details When multiple runs are supplied, each target run is excluded from
 #'   its own HRF selection, including parcel anchors and fallback decisions.
 #'   When only a single run is supplied (`length(bold) == 1L`), usable
@@ -535,10 +719,18 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
   if (!is.null(attr(kernel_grid, "tr")) && !isTRUE(all.equal(attr(kernel_grid, "tr"), tr)))
     stop("kernel_grid sampling TR does not match tr")
   parameters <- attr(kernel_grid, "parameters")
-  kernels <- build_decon_kernel_grid(c(0, 1), kernel_grid)
-  if (any(vapply(kernels, function(h) sum(abs(h)) > 100, logical(1))))
+  explicit_norm <- if (!is.null(attr(kernel_grid, "normalize"))) {
+    match.arg(attr(kernel_grid, "normalize"), c("signed_sum", "positive_lobe", "peak"))
+  } else {
+    NULL
+  }
+  kernels_list <- build_decon_kernel_grid(c(0, 1), kernel_grid, normalize = explicit_norm)
+  kernel_normalize <- attr(kernels_list, "normalize")
+  if (kernel_normalize == "signed_sum" &&
+      any(vapply(kernels_list, function(h) sum(abs(h)) > 100, logical(1))))
     stop("Candidate signed sums are too close to zero for stable unit-sum normalization")
-  kernels <- do.call(cbind, kernels)
+  kernels <- do.call(cbind, kernels_list)
+  attr(kernels, "normalize") <- kernel_normalize
   candidate_ids <- if (is.matrix(kernel_grid)) colnames(kernel_grid) else names(kernel_grid)
   if (is.null(candidate_ids)) candidate_ids <- paste0("hrf_", seq_len(ncol(kernels)))
   if (anyNA(candidate_ids) || any(!nzchar(candidate_ids)) || anyDuplicated(candidate_ids))
@@ -651,12 +843,15 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
       des_id_r <- rep(1L, ncol(y))
       cand_des_r <- list(design)
     }
-    ar_keys_r <- paste(des_id_r, noise[[r]]$rho, psi1_r, psi2_r, psi3_r, psi4_r, sep = ":")
+    ar_part_r <- hrf_partition_ar_strata(
+      des_id_r, noise[[r]]$rho, psi1_r, psi2_r, psi3_r, psi4_r, ncol(kernels)
+    )
+    ar_keys_r <- ar_part_r$keys
     for (ak in unique(ar_keys_r)) {
       indices <- which(ar_keys_r == ak)
       idx1 <- indices[1L]
-      rho <- noise[[r]]$rho[idx1]
-      ar_vec <- c(rho, psi1_r[idx1], psi2_r[idx1], psi3_r[idx1], psi4_r[idx1])
+      ar_vec <- as.numeric(ar_part_r$ar_mat[idx1, ])
+      rho <- ar_vec[1L]
       des_use <- cand_des_r[[des_id_r[idx1]]]
       part <- if (sum(mask) >= 3L) {
         hrf_score_run_ar(y[, indices, drop = FALSE], des_use, z, which(mask),
@@ -1023,13 +1218,22 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
       w_fold[cbind(chosen, seq_along(voxel_ids))] <- 1.0
     }
     k_mat <- kernels %*% w_fold
-    k_sums <- colSums(k_mat)
-    bad_sum <- !is.finite(k_sums) | abs(k_sums) < 1e-6
+    k_divs <- if (kernel_normalize == "positive_lobe") {
+      colSums(pmax(k_mat, 0))
+    } else if (kernel_normalize == "peak") {
+      apply(k_mat, 2L, function(col) {
+        pk <- max(col)
+        if (pk <= .Machine$double.eps) max(abs(col)) else pk
+      })
+    } else {
+      colSums(k_mat)
+    }
+    bad_sum <- !is.finite(k_divs) | abs(k_divs) < 1e-6
     if (any(bad_sum)) {
       k_mat[, bad_sum] <- kernels[, fallback_kernel]
-      k_sums[bad_sum] <- sum(kernels[, fallback_kernel])
+      k_divs[bad_sum] <- 1.0
     }
-    k_mat <- sweep(k_mat, 2L, k_sums, "/")
+    k_mat <- sweep(k_mat, 2L, k_divs, "/")
     colnames(k_mat) <- voxel_ids
     kernel_weights[[target]] <- w_fold
     selected_kernels[[target]] <- k_mat
@@ -1095,6 +1299,7 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
       batch_size = as.integer(batch_size), score = "mean_adjusted_partial_r2",
       rank_tolerance = 1e-8, evidence = evidence, evidence_alpha = evidence_alpha,
       canonical_strength = canonical_strength, selection_mode = selection_mode,
+      kernel_normalize = kernel_normalize,
       noise_grid = noise_grid,
       noise_pooling = if (!is.null(noise_groups)) "supplied_noise_groups" else
         if (is.null(spatial_groups)) "run" else "supplied_parcel",
@@ -1312,7 +1517,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
         out[, indices] <- if (backend == "wiener") {
           fit_input <- rbind(scaled$y, matrix(0, tail_padding, length(indices)))
           deconvolve_reglin(fit_input, k_vec, lambda = lambda,
-            scaling = "none", backend = "wiener")[seq_len(n), , drop = FALSE]
+            scaling = "none", backend = "wiener",
+            kernel_normalize = if (!is.null(hrf_fit$settings$kernel_normalize)) hrf_fit$settings$kernel_normalize else "signed_sum")[seq_len(n), , drop = FALSE]
         } else operator %*% scaled$y
         centers[indices] <- scaled$center; divisors[indices] <- scaled$scale
         noise_sds[indices] <- if (identical(scaling, "noise_sd")) scaled$scale else coh_nsd

@@ -43,16 +43,16 @@ hrf_event_design_cpp <- function(n_time, tr, offset, onsets, durations, conditio
     .Call(`_fmri_pipeline_hrf_event_design_cpp`, n_time, tr, offset, onsets, durations, conditions, n_conditions, kernels)
 }
 
-hrf_score_run_cpp <- function(bold, designs, nuisance, rows, batch_size = 2048L, rank_tol = 1e-8, rho = 0, evidence = FALSE, fallback_index = 1L) {
-    .Call(`_fmri_pipeline_hrf_score_run_cpp`, bold, designs, nuisance, rows, batch_size, rank_tol, rho, evidence, fallback_index)
+hrf_score_run_cpp <- function(bold, designs, nuisance, rows, batch_size = 2048L, rank_tol = 1e-8, rho = 0, evidence = FALSE, fallback_index = 1L, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0) {
+    .Call(`_fmri_pipeline_hrf_score_run_cpp`, bold, designs, nuisance, rows, batch_size, rank_tol, rho, evidence, fallback_index, ar_phi, ar_acf, sig_u2)
 }
 
 hrf_noise_profile_cpp <- function(bold, mean_design, rows, rho_grid, batch_size = 2048L, rank_tol = 1e-8) {
     .Call(`_fmri_pipeline_hrf_noise_profile_cpp`, bold, mean_design, rows, rho_grid, batch_size, rank_tol)
 }
 
-hrf_inverse_operator_cpp <- function(n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding = 0L) {
-    .Call(`_fmri_pipeline_hrf_inverse_operator_cpp`, n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding)
+hrf_inverse_operator_cpp <- function(n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding = 0L, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0) {
+    .Call(`_fmri_pipeline_hrf_inverse_operator_cpp`, n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding, ar_phi, ar_acf, sig_u2)
 }
 
 #' C++ port of Bush and Cisler 2013, Magnetic Resonance Imaging

@@ -262,22 +262,28 @@ test_that("free trial amplitudes identify an HRF when signed responses average a
   expect_equal(trial$settings$amplitude_model, "trial")
 })
 
-test_that("hrf_library presets cover extended, medusa, and dense physiological grids", {
+test_that("hrf_library presets cover extended, canonical_27, medusa, and dense physiological grids", {
   std <- hrf_library(1, preset = "standard")
   ext <- hrf_library(1, preset = "extended")
+  can27 <- hrf_library(1, preset = "canonical_27")
   med <- hrf_library(1, preset = "medusa")
   den <- hrf_library(1, preset = "dense")
   expect_equal(ncol(std), 9L)
   expect_equal(ncol(ext), 15L)
-  expect_equal(ncol(med), 27L)
+  expect_equal(ncol(can27), 27L)
+  expect_equal(ncol(med), 44L)
+  expect_identical(med, hrf_library(1, preset = "manifold"))
   expect_equal(ncol(den), 40L)
   expect_equal(attr(ext, "parameters")[1L, ],
+    data.frame(peak_delay = 6, dispersion = 1, undershoot_ratio = 6))
+  expect_equal(attr(can27, "parameters")[1L, ],
     data.frame(peak_delay = 6, dispersion = 1, undershoot_ratio = 6))
   expect_equal(attr(med, "parameters")[1L, ],
     data.frame(peak_delay = 6, dispersion = 1, undershoot_ratio = 6))
   expect_equal(attr(den, "parameters")[1L, ],
     data.frame(peak_delay = 6, dispersion = 1, undershoot_ratio = 6))
   expect_equal(colSums(ext), rep(1, ncol(ext)), ignore_attr = TRUE)
-  expect_equal(colSums(med), rep(1, ncol(med)), ignore_attr = TRUE)
+  expect_equal(colSums(can27), rep(1, ncol(can27)), ignore_attr = TRUE)
+  expect_equal(colSums(pmax(med, 0)), rep(1, ncol(med)), ignore_attr = TRUE)
   expect_equal(colSums(den), rep(1, ncol(den)), ignore_attr = TRUE)
 })

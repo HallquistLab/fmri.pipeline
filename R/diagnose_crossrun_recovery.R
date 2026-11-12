@@ -8,8 +8,10 @@
 #' @param weights Linear readout weights, default one per lag. For example,
 #'   lags = -1:3 produces a five-sample window sum at TR = 1.
 #' @param source_kernel_grid Optional normalized HRF candidates used to generate
-#'   synthetic BOLD. Default uses each stratum's fitted HRF. Supplying alternatives
-#'   evaluates sensitivity to HRF mismatch; it does not estimate the true HRF.
+#'   synthetic BOLD. Default uses each stratum's fitted HRF. Honors
+#'   \code{attr(source_kernel_grid, "normalize")} when present, otherwise matching
+#'   the fitted normalization mode. Supplying alternatives evaluates sensitivity
+#'   to HRF mismatch; it does not estimate the true HRF.
 #' @param return_matrices Return event-by-event recovered, ideal, and excess
 #'   resolution matrices, default FALSE.
 #' @param max_events Explicit limit per run on the quadratic diagnostic matrix,
@@ -48,8 +50,26 @@ diagnose_crossrun_recovery <- function(deconvolution, events = NULL, lags = 0,
   if (is.null(events)) events <- fit$specification$events
   if (!is.list(events) || !identical(names(events), fit$run_ids))
     stop("events must be a list in fitted run order")
-  sources <- if (is.null(source_kernel_grid)) NULL else
-    do.call(cbind, build_decon_kernel_grid(c(0, 1), source_kernel_grid))
+  sources <- if (is.null(source_kernel_grid)) {
+    NULL
+  } else {
+    raw_src <- if (is.list(source_kernel_grid)) {
+      lapply(source_kernel_grid, as.numeric)
+    } else {
+      src_mat <- as.matrix(source_kernel_grid)
+      lapply(seq_len(ncol(src_mat)), function(i) as.numeric(src_mat[, i]))
+    }
+    source_norm_mode <- if (!is.null(attr(source_kernel_grid, "normalize"))) {
+      attr(source_kernel_grid, "normalize")
+    } else if (infer_kernel_grid_normalize(raw_src) == "positive_lobe") {
+      "positive_lobe"
+    } else if (!is.null(fit$settings$kernel_normalize)) {
+      fit$settings$kernel_normalize
+    } else {
+      "signed_sum"
+    }
+    do.call(cbind, build_decon_kernel_grid(c(0, 1), source_kernel_grid, normalize = source_norm_mode))
+  }
   if (!is.null(sources) && !is.null(attr(source_kernel_grid, "tr")) &&
       !isTRUE(all.equal(attr(source_kernel_grid, "tr"), fit$settings$tr)))
     stop("source_kernel_grid sampling TR does not match the fit")
@@ -626,8 +646,11 @@ compute_zca_whitening_matrix <- function(Sigma_tot, eig_floor = 0.08, offdiag_sc
 #'   recommended end-to-end configuration is:
 #'   \enumerate{
 #'     \item \strong{Stage 0--1 (HRF Estimation):} Use
-#'       \code{hrf_library(tr, preset = "medusa")} (0.5s peak-delay grid over
-#'       4--8s with dispersions 0.9, 1.0, 1.1; 27 candidates) and
+#'       \code{hrf_library(tr, preset = "medusa")} (pruned 3D physiological
+#'       manifold spanning fast/narrow/minimal-undershoot subcortical through
+#'       slow cortical HRFs with positive-lobe normalization; ~44 candidates, or
+#'       \code{preset = "canonical_27"} for the 27-candidate fixed-undershoot
+#'       canonical grid) and
 #'       \code{\link{estimate_crossrun_hrf}} with \code{noise_model = "ar1"},
 #'       \code{evidence = "calibrated"}, \code{selection_mode = "soft_average"}
 #'       (evidence-weighted HRF kernel averaging across locally supported
@@ -1126,8 +1149,8 @@ decon_epoch_regression <- function(
           psi4_g <- if (!is.null(strat$psi4)) sum(u_g * strat$psi4[v_ok]) else 0.0
           k_mat <- vapply(v_ok, function(vi) as.numeric(strat$get_kernel(vi)), numeric(nrow(fit$kernels)))
           k_g <- as.numeric(k_mat %*% u_g)
-          k_sum <- sum(k_g)
-          if (is.finite(k_sum) && abs(k_sum) > 1e-6) k_g <- k_g / k_sum
+          norm_mode_g <- if (!is.null(fit$settings$kernel_normalize)) fit$settings$kernel_normalize else "signed_sum"
+          k_g <- tryCatch(normalize_decon_kernel(k_g, mode = norm_mode_g), error = function(e) k_g)
           rho_parcel[g] <- rho_g
           kernels_parcel[[g]] <- matrix(k_g, ncol = 1L)
           pkey_g <- paste0("parcel_mix_", unit_ids[g], "_", r)

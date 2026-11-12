@@ -44,7 +44,11 @@ optional duration (seconds, default zero). Names/order must match bold.}
 \item{tr}{Common acquisition interval in seconds. All runs use the same grid.}
 
 \item{kernel_grid}{Matrix or list of equal-length candidate causal HRFs, sampled
-at tr starting at lag zero. Use hrf_library() or supply explicit candidates.}
+at tr starting at lag zero. Use \code{hrf_library()} or supply explicit
+candidates; honors \code{attr(kernel_grid, "normalize")} (\code{"signed_sum"},
+\code{"positive_lobe"}, or \code{"peak"}), automatically switching to
+\code{"positive_lobe"} when unattributed candidates span heterogeneous
+undershoot ratios (and defaulting to \code{"signed_sum"} otherwise).}
 
 \item{nuisance}{Optional matching list of time-by-regressor matrices. An
 intercept and linear trend are always included separately for each run.}
@@ -124,10 +128,10 @@ groups) to differ from HRF selection parcels.}
 \value{
 An object of class crossrun_hrf with normalized kernels, per-target-run
   selections and training manifests, parcel anchors, run status/design summaries,
-  optional candidate scores, voxel/run IDs, and frozen settings. When
-  `selection_mode = "soft_average"`, also includes per-target-run candidate
-  weight matrices (`kernel_weights`) and unit-sum composite HRF kernel
-  matrices (`selected_kernels`).
+  optional candidate scores, voxel/run IDs, and frozen settings (including
+  \code{settings$kernel_normalize}). When \code{selection_mode = "soft_average"},
+  also includes per-target-run candidate weight matrices (\code{kernel_weights})
+  and normalized composite HRF kernel matrices (\code{selected_kernels}).
 }
 \description{
 Estimate HRF shapes from other runs, with optional spatial regularization

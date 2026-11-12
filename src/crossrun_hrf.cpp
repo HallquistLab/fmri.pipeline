@@ -8,6 +8,15 @@ arma::mat hrf_basis(const arma::mat& x, double tol) {
     double norm = arma::norm(scaled.col(j));
     if (norm > 0) scaled.col(j) /= norm;
   }
+  if (scaled.n_rows > 2 * scaled.n_cols && scaled.n_cols >= 4) {
+    arma::mat q_qr, r_qr, u_r, v_r;
+    arma::vec s;
+    if (arma::qr_econ(q_qr, r_qr, scaled) && arma::svd(u_r, s, v_r, r_qr)) {
+      if (s.n_elem == 0 || s(0) == 0) return arma::mat(x.n_rows, 0);
+      arma::uword rank = arma::accu(s > tol * s(0));
+      return rank ? (q_qr * u_r.cols(0, rank - 1)) : arma::mat(x.n_rows, 0);
+    }
+  }
   arma::mat u, v;
   arma::vec s;
   if (!arma::svd_econ(u, s, v, scaled)) Rcpp::stop("HRF design SVD failed");
@@ -46,6 +55,97 @@ void hrf_whiten_inplace(arma::mat& x, const arma::vec& d, const arma::vec& s, do
     col[0] *= dp[0];
   }
 }
+
+// Unified AR(1) / cascaded AR(p) whitener on observed acquisition indices `keep`.
+// Matches `hrf_whitening_matrix(rows, ar_vec, unit_marginal = FALSE)` to machine
+// precision while avoiding dense m x m matrix products in R:
+// - Pure AR(1): O(m) bidiagonal pass.
+// - Contiguous AR(p): O(m * p) causal filter + exact p x p Toeplitz Cholesky head.
+// - Gapped AR(p): subset Toeplitz Cholesky factor + LAPACK triangular solve.
+struct ArWhitener {
+  bool is_ar_p = false;
+  bool use_contig = false;
+  double rho = 0.0;
+  double sig_u = 1.0;
+  arma::vec d_ar, s_ar, phi;
+  arma::mat w_init, l_sub;
+
+  void init(const arma::uvec& keep, double rho_in,
+            const Rcpp::Nullable<Rcpp::NumericVector>& ar_phi,
+            const Rcpp::Nullable<Rcpp::NumericVector>& ar_acf,
+            double sig_u2) {
+    rho = rho_in;
+    is_ar_p = false;
+    use_contig = false;
+    if (ar_phi.isNotNull()) {
+      phi = Rcpp::as<arma::vec>(ar_phi.get());
+      if (phi.n_elem > 0) is_ar_p = true;
+    }
+    if (!is_ar_p) {
+      hrf_whiten_coefs(keep, rho, d_ar, s_ar);
+      return;
+    }
+    if (ar_acf.isNull()) Rcpp::stop("ar_acf is required when ar_phi is supplied");
+    arma::vec acf = Rcpp::as<arma::vec>(ar_acf.get());
+    if (!phi.is_finite() || !acf.is_finite() || acf.n_elem < 1 || !std::isfinite(sig_u2) || sig_u2 <= 0)
+      Rcpp::stop("Invalid AR(p) whitening parameters");
+    sig_u = std::sqrt(std::max(1e-12, sig_u2));
+    arma::uword m = keep.n_elem, p = phi.n_elem;
+    bool is_contig = (m > p) && ((keep(m - 1) - keep(0)) == (m - 1));
+    if (is_contig && acf.n_elem >= p) {
+      arma::mat gamma_p(p, p);
+      for (arma::uword a = 0; a < p; ++a)
+        for (arma::uword b = 0; b < p; ++b)
+          gamma_p(a, b) = acf(a >= b ? (a - b) : (b - a));
+      arma::mat l_p;
+      if (arma::chol(l_p, gamma_p, "lower")) {
+        w_init = sig_u * arma::solve(arma::trimatl(l_p), arma::eye<arma::mat>(p, p));
+        use_contig = true;
+        return;
+      }
+    }
+    arma::mat sigma_sub(m, m);
+    for (arma::uword a = 0; a < m; ++a) {
+      sigma_sub(a, a) = acf(0);
+      for (arma::uword b = a + 1; b < m; ++b) {
+        arma::uword lag = keep(b) - keep(a);
+        double v = (lag < acf.n_elem) ? acf(lag) : 0.0;
+        sigma_sub(a, b) = v;
+        sigma_sub(b, a) = v;
+      }
+    }
+    if (!arma::chol(l_sub, sigma_sub, "lower")) {
+      sigma_sub.diag() += 1e-6;
+      if (!arma::chol(l_sub, sigma_sub, "lower"))
+        Rcpp::stop("AR(p) subset covariance Cholesky failed");
+    }
+  }
+
+  void apply(arma::mat& x) const {
+    if (x.n_cols == 0 || x.n_rows == 0) return;
+    if (!is_ar_p) {
+      hrf_whiten_inplace(x, d_ar, s_ar, rho);
+      return;
+    }
+    if (use_contig) {
+      const arma::uword m = x.n_rows, p = phi.n_elem;
+      const double* pp = phi.memptr();
+      for (arma::uword j = 0; j < x.n_cols; ++j) {
+        double* col = x.colptr(j);
+        for (arma::uword i = m - 1; i >= p; --i) {
+          double acc = col[i];
+          for (arma::uword k = 0; k < p; ++k) {
+            acc -= pp[k] * col[i - 1 - k];
+          }
+          col[i] = acc;
+        }
+      }
+      x.rows(0, p - 1) = w_init * x.rows(0, p - 1);
+    } else {
+      x = sig_u * arma::solve(arma::trimatl(l_sub), x, arma::solve_opts::fast);
+    }
+  }
+};
 
 arma::mat hrf_extract_rows(const arma::mat& src_mat, const arma::uvec& keep,
                            arma::uword start, arma::uword end) {
@@ -131,7 +231,10 @@ Rcpp::List hrf_event_design_cpp(int n_time, double tr, double offset,
 Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
     const arma::mat& nuisance, const Rcpp::IntegerVector& rows,
     int batch_size = 2048, double rank_tol = 1e-8, double rho = 0,
-    bool evidence = false, int fallback_index = 1) {
+    bool evidence = false, int fallback_index = 1,
+    Rcpp::Nullable<Rcpp::NumericVector> ar_phi = R_NilValue,
+    Rcpp::Nullable<Rcpp::NumericVector> ar_acf = R_NilValue,
+    double sig_u2 = 1.0) {
   if (bold.n_rows != nuisance.n_rows || bold.n_cols < 1 || rows.size() < 3 ||
       rows.size() > bold.n_rows || batch_size < 1 || designs.size() < 1 ||
       designs.size() > std::numeric_limits<int>::max() || rank_tol <= 0)
@@ -139,20 +242,21 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
   if (!std::isfinite(rho) || std::abs(rho) >= 1 || fallback_index < 1 || fallback_index > designs.size())
     Rcpp::stop("Invalid AR coefficient or fallback index");
   arma::uvec keep = hrf_rows(rows, bold.n_rows);
-  arma::vec d_ar, s_ar;
-  hrf_whiten_coefs(keep, rho, d_ar, s_ar);
+  ArWhitener whitener;
+  whitener.init(keep, rho, ar_phi, ar_acf, sig_u2);
   arma::mat z = nuisance.rows(keep);
   if (!z.is_finite()) Rcpp::stop("Nuisance values must be finite on usable rows");
-  hrf_whiten_inplace(z, d_ar, s_ar, rho);
+  whitener.apply(z);
   arma::mat qn = hrf_basis(z, rank_tol);
   int base_df = keep.n_elem - qn.n_cols;
-  std::vector<arma::mat> qt(designs.size());
-  Rcpp::IntegerVector ranks(designs.size());
-  for (int k = 0; k < designs.size(); ++k) {
+  const int n_cand = static_cast<int>(designs.size());
+  std::vector<arma::mat> qt(n_cand);
+  Rcpp::IntegerVector ranks(n_cand);
+  for (int k = 0; k < n_cand; ++k) {
     arma::mat x = Rcpp::as<arma::mat>(designs[k]);
     if (x.n_rows != bold.n_rows || !x.is_finite()) Rcpp::stop("Invalid event design");
     x = x.rows(keep);
-    hrf_whiten_inplace(x, d_ar, s_ar, rho);
+    whitener.apply(x);
     arma::rowvec original_norm = arma::sqrt(arma::sum(arma::square(x), 0));
     if (qn.n_cols) x -= qn * (qn.t() * x);
     // A wholly absorbed task regressor must not become a spurious rank-one
@@ -164,36 +268,91 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
   }
   bool comparable = base_df > 1 && ranks[0] > 0 && base_df > ranks[0] + 1;
   for (int k = 1; k < ranks.size(); ++k) comparable = comparable && ranks[k] == ranks[0];
-  Rcpp::NumericMatrix score(static_cast<int>(designs.size()), bold.n_cols);
+  Rcpp::NumericMatrix score(n_cand, bold.n_cols);
   std::fill(score.begin(), score.end(), NA_REAL);
-  int evidence_rows = evidence ? designs.size() : 0, evidence_cols = evidence ? bold.n_cols : 0;
+  int evidence_rows = evidence ? n_cand : 0, evidence_cols = evidence ? bold.n_cols : 0;
   Rcpp::NumericMatrix task_p(evidence_rows, evidence_cols), fallback_p(evidence_rows, evidence_cols),
     incompatible_p(evidence_rows, evidence_cols);
   std::fill(task_p.begin(), task_p.end(), NA_REAL);
   std::fill(fallback_p.begin(), fallback_p.end(), NA_REAL);
   std::fill(incompatible_p.begin(), incompatible_p.end(), NA_REAL);
+
+  const bool exact_all_pairs = (n_cand <= 18);
+  int fb = fallback_index - 1;
   struct Pair { int i, j, extra_rank, df; arma::mat q; };
   std::vector<Pair> pairs;
-  if (comparable && evidence) for (int i = 0; i < designs.size(); ++i)
-    for (int j = i + 1; j < designs.size(); ++j) {
-      // Normalize only genuinely nonzero residual columns, so equal/subspace-
-      // equivalent candidates never acquire rank from roundoff.
-      arma::mat extra = qt[j] - qt[i] * (qt[i].t() * qt[j]);
-      for (arma::uword c = 0; c < extra.n_cols; ++c)
-        if (arma::norm(extra.col(c)) <= rank_tol) extra.col(c).zeros();
-      arma::mat q = hrf_basis(extra, rank_tol);
-      int d = q.n_cols;
-      if (d && base_df - ranks[i] - d >= 2)
-        pairs.push_back(Pair{i, j, d, base_df - ranks[i] - d, q});
+  std::vector<int> pair_lookup;
+  std::vector<int> pair_seen;
+  std::vector<int> global_anchors;
+
+  auto get_pair = [&](int a, int b) -> int {
+    if (a == b) return -2;
+    int i = std::min(a, b), j = std::max(a, b);
+    int key = i * n_cand + j;
+    int st = pair_lookup[key];
+    if (st != -1) return st;
+    arma::mat extra = qt[j] - qt[i] * (qt[i].t() * qt[j]);
+    for (arma::uword c = 0; c < extra.n_cols; ++c)
+      if (arma::norm(extra.col(c)) <= rank_tol) extra.col(c).zeros();
+    arma::mat q = hrf_basis(extra, rank_tol);
+    int d = q.n_cols;
+    if (d && base_df - ranks[i] - d >= 2) {
+      int idx = static_cast<int>(pairs.size());
+      pairs.push_back(Pair{i, j, d, base_df - ranks[i] - d, std::move(q)});
+      pair_seen.push_back(-1);
+      pair_lookup[key] = idx;
+      return idx;
     }
+    pair_lookup[key] = -2;
+    return -2;
+  };
+
+  if (comparable && evidence) {
+    if (exact_all_pairs) {
+      for (int i = 0; i < n_cand; ++i)
+        for (int j = i + 1; j < n_cand; ++j) {
+          // Normalize only genuinely nonzero residual columns, so equal/subspace-
+          // equivalent candidates never acquire rank from roundoff.
+          arma::mat extra = qt[j] - qt[i] * (qt[i].t() * qt[j]);
+          for (arma::uword c = 0; c < extra.n_cols; ++c)
+            if (arma::norm(extra.col(c)) <= rank_tol) extra.col(c).zeros();
+          arma::mat q = hrf_basis(extra, rank_tol);
+          int d = q.n_cols;
+          if (d && base_df - ranks[i] - d >= 2)
+            pairs.push_back(Pair{i, j, d, base_df - ranks[i] - d, std::move(q)});
+        }
+    } else {
+      pair_lookup.assign(static_cast<size_t>(n_cand) * static_cast<size_t>(n_cand), -1);
+      global_anchors.push_back(fb);
+      arma::vec max_ov(n_cand, arma::fill::zeros);
+      max_ov(fb) = 1.0;
+      double inv_rk = 1.0 / std::max(1, static_cast<int>(ranks[0]));
+      for (int k = 0; k < n_cand; ++k) {
+        if (k == fb) continue;
+        max_ov(k) = arma::accu(arma::square(qt[fb].t() * qt[k])) * inv_rk;
+      }
+      int n_medoids = std::min(8, n_cand - 1);
+      for (int m_idx = 0; m_idx < n_medoids; ++m_idx) {
+        arma::uword next_k = max_ov.index_min();
+        if (max_ov(next_k) >= 1.0 - 1e-10) break;
+        int ak = static_cast<int>(next_k);
+        global_anchors.push_back(ak);
+        max_ov(ak) = 1.0;
+        for (int k = 0; k < n_cand; ++k) {
+          if (max_ov(k) >= 1.0 - 1e-10) continue;
+          double ov = arma::accu(arma::square(qt[ak].t() * qt[k])) * inv_rk;
+          if (ov > max_ov(k)) max_ov(k) = ov;
+        }
+      }
+    }
+  }
   struct FallbackAngle { int j, df; arma::mat pin_w, u_orth; };
   std::vector<FallbackAngle> fb_angles;
-  int fb = fallback_index - 1;
-  if (comparable && evidence && ranks[0] > 3 && fb >= 0 && fb < designs.size() &&
+  if (comparable && evidence && ranks[0] > 3 && fb >= 0 && fb < n_cand &&
       base_df - ranks[fb] - 1 >= 2) {
     const arma::mat& Qi = qt[fb];
     int df_fb = base_df - ranks[fb] - 1;
-    for (int j = 0; j < designs.size(); ++j) {
+    for (int j = 0; j < n_cand; ++j) {
       if (j == fb) continue;
       const arma::mat& Qj = qt[j];
       arma::mat U_c, V_c;
@@ -220,10 +379,12 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
     }
   }
   Rcpp::CharacterVector status(bold.n_cols, "unidentifiable_design");
-  if (comparable) for (arma::uword start = 0; start < bold.n_cols; start += batch_size) {
+  int batch_id = 0;
+  if (comparable) for (arma::uword start = 0; start < bold.n_cols; start += batch_size, ++batch_id) {
     Rcpp::checkUserInterrupt();
     arma::uword end = std::min(bold.n_cols - 1, start + batch_size - 1);
     arma::mat y = hrf_extract_rows(bold, keep, start, end);
+    std::vector<uint8_t> ok_vox(y.n_cols, 0);
     for (arma::uword j = 0; j < y.n_cols; ++j) {
       if (!y.col(j).is_finite()) {
         status[start + j] = "nonfinite";
@@ -231,22 +392,29 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
       } else {
         y.col(j) -= arma::mean(y.col(j));
         double norm = arma::norm(y.col(j));
-        status[start + j] = norm > 0 ? "ok" : "constant";
-        if (norm > 0) y.col(j) /= norm;
+        if (norm > 0) {
+          status[start + j] = "ok";
+          ok_vox[j] = 1;
+          y.col(j) /= norm;
+        } else {
+          status[start + j] = "constant";
+        }
       }
     }
-    hrf_whiten_inplace(y, d_ar, s_ar, rho);
+    whitener.apply(y);
     if (qn.n_cols) y -= qn * (qn.t() * y);
     arma::rowvec sst = arma::sum(arma::square(y), 0);
     for (arma::uword j = 0; j < y.n_cols; ++j) {
-      if (Rcpp::as<std::string>(status[start + j]) == "ok" && sst(j) <= rank_tol * rank_tol)
+      if (ok_vox[j] && sst(j) <= rank_tol * rank_tol) {
         status[start + j] = "nuisance_only";
+        ok_vox[j] = 0;
+      }
       if (sst(j) > rank_tol * rank_tol) y.col(j) /= std::sqrt(sst(j));
     }
-    arma::mat all_explained(designs.size(), y.n_cols);
-    for (int k = 0; k < designs.size(); ++k) {
+    arma::mat all_explained(n_cand, y.n_cols, arma::fill::zeros);
+    for (int k = 0; k < n_cand; ++k) {
       arma::rowvec explained = arma::sum(arma::square(qt[k].t() * y), 0);
-      for (arma::uword j = 0; j < y.n_cols; ++j) if (Rcpp::as<std::string>(status[start + j]) == "ok") {
+      for (arma::uword j = 0; j < y.n_cols; ++j) if (ok_vox[j]) {
         double r2 = std::max(0.0, std::min(1.0, explained(j)));
         score(k, start + j) = 1 - (1 - r2) * base_df / (base_df - ranks[k]);
         all_explained(k, j) = r2;
@@ -256,10 +424,10 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
         }
       }
     }
-    if (evidence) for (const Pair& pair : pairs) {
+    auto eval_pair = [&](const Pair& pair) {
       arma::rowvec added = arma::sum(arma::square(pair.q.t() * y), 0);
       for (arma::uword j = 0; j < y.n_cols; ++j)
-        if (Rcpp::as<std::string>(status[start + j]) == "ok") {
+        if (ok_vox[j]) {
           double ei = all_explained(pair.i, j), ej = all_explained(pair.j, j);
           double both = std::min(1.0, std::max(std::max(ei, ej), ei + added(j)));
           double pi = hrf_f_tail(both - ei, pair.extra_rank, 1 - both, pair.df);
@@ -270,16 +438,59 @@ Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs,
             std::min(incompatible_p(pair.i, start + j), pi);
           if (ei > ej) incompatible_p(pair.j, start + j) =
             std::min(incompatible_p(pair.j, start + j), pj);
-          if (pair.i == fallback_index - 1) fallback_p(pair.j, start + j) = pi;
-          if (pair.j == fallback_index - 1) fallback_p(pair.i, start + j) = pj;
+          if (pair.i == fb) fallback_p(pair.j, start + j) = pi;
+          if (pair.j == fb) fallback_p(pair.i, start + j) = pj;
         }
+    };
+    if (evidence) {
+      if (exact_all_pairs) {
+        for (const Pair& pair : pairs) eval_pair(pair);
+      } else {
+        std::vector<int> win_cnt(n_cand, 0);
+        std::vector<double> win_max_r2(n_cand, -1.0);
+        for (arma::uword j = 0; j < y.n_cols; ++j) if (ok_vox[j]) {
+          int best_k = static_cast<int>(all_explained.col(j).index_max());
+          win_cnt[best_k] += 1;
+          if (all_explained(best_k, j) > win_max_r2[best_k])
+            win_max_r2[best_k] = all_explained(best_k, j);
+        }
+        std::vector<int> winners;
+        for (int k = 0; k < n_cand; ++k) if (win_cnt[k] > 0) winners.push_back(k);
+        if (winners.size() > 10) {
+          std::sort(winners.begin(), winners.end(), [&](int a, int b) {
+            if (win_max_r2[a] != win_max_r2[b]) return win_max_r2[a] > win_max_r2[b];
+            if (win_cnt[a] != win_cnt[b]) return win_cnt[a] > win_cnt[b];
+            return a < b;
+          });
+          winners.resize(10);
+        }
+        std::vector<uint8_t> is_anchor(n_cand, 0);
+        std::vector<int> batch_anchors;
+        batch_anchors.reserve(global_anchors.size() + winners.size());
+        for (int a : global_anchors) if (!is_anchor[a]) { is_anchor[a] = 1; batch_anchors.push_back(a); }
+        for (int a : winners) if (!is_anchor[a]) { is_anchor[a] = 1; batch_anchors.push_back(a); }
+
+        std::vector<int> active_pids;
+        active_pids.reserve(batch_anchors.size() * static_cast<size_t>(n_cand));
+        for (int a : batch_anchors) {
+          for (int k = 0; k < n_cand; ++k) {
+            if (k == a) continue;
+            int pid = get_pair(a, k);
+            if (pid >= 0 && pair_seen[pid] != batch_id) {
+              pair_seen[pid] = batch_id;
+              active_pids.push_back(pid);
+            }
+          }
+        }
+        for (int pid : active_pids) eval_pair(pairs[pid]);
+      }
     }
     if (evidence && !fb_angles.empty()) {
       for (const FallbackAngle& fa : fb_angles) {
         arma::mat w = fa.pin_w.t() * y;
         arma::mat b = fa.u_orth.t() * y;
         for (arma::uword j = 0; j < y.n_cols; ++j) {
-          if (Rcpp::as<std::string>(status[start + j]) == "ok") {
+          if (ok_vox[j]) {
             double w_norm = arma::norm(w.col(j));
             if (w_norm <= 1e-12) {
               fallback_p(fa.j, start + j) = 1.0;
@@ -388,7 +599,10 @@ arma::mat hrf_noise_profile_cpp(const arma::mat& bold, const arma::mat& mean_des
 // [[Rcpp::export]]
 arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
     const Rcpp::IntegerVector& rows, double rho, const arma::mat& nuisance,
-    double lambda, const std::string& penalty, double ridge_floor, int tail_padding = 0) {
+    double lambda, const std::string& penalty, double ridge_floor, int tail_padding = 0,
+    Rcpp::Nullable<Rcpp::NumericVector> ar_phi = R_NilValue,
+    Rcpp::Nullable<Rcpp::NumericVector> ar_acf = R_NilValue,
+    double sig_u2 = 1.0) {
   arma::uvec keep = hrf_rows(rows, n_time);
   if (kernel.n_elem < 2 || !kernel.is_finite() || nuisance.n_rows != (arma::uword)n_time ||
       !std::isfinite(rho) || std::abs(rho) >= 1 || lambda < 0 || ridge_floor < 0 || tail_padding < 0)
@@ -414,9 +628,71 @@ arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
     arma::regspace<arma::uvec>(n_time, n_time + tail_padding - 1));
   arma::uword m = keep.n_elem, latent = n_time + tail_padding + history;
 
+  arma::vec k_rev = arma::reverse(kernel);
+  const double* kp = k_rev.memptr();
+
+  // Cascaded AR(p) path (has_psi == TRUE): fast in-place AR(p) filter / subset
+  // Cholesky + BLAS DGEMM + LAPACK Cholesky solve.
+  ArWhitener whitener;
+  whitener.init(keep, rho, ar_phi, ar_acf, sig_u2);
+  if (whitener.is_ar_p) {
+    arma::mat q;
+    if (nuisance.n_cols > 0) {
+      arma::mat z(m, nuisance.n_cols, arma::fill::zeros);
+      z.rows(0, measured - 1) = nuisance.rows(keep.head(measured));
+      if (!z.is_finite()) Rcpp::stop("Nuisance values must be finite on usable rows");
+      whitener.apply(z);
+      q = hrf_basis(z, 1e-8);
+    } else {
+      arma::mat z_check = nuisance.rows(keep.head(measured));
+      if (!z_check.is_finite()) Rcpp::stop("Nuisance values must be finite on usable rows");
+    }
+    arma::mat h(m, latent, arma::fill::zeros);
+    for (arma::uword i = 0; i < m; ++i) {
+      arma::uword r0 = keep(i);
+      for (arma::uword u = 0; u < k_len; ++u) h(i, r0 + u) = kp[u];
+    }
+    whitener.apply(h);
+    arma::mat w_meas(m, measured, arma::fill::zeros);
+    w_meas.rows(0, measured - 1).eye();
+    whitener.apply(w_meas);
+    if (q.n_cols > 0) {
+      h -= q * (q.t() * h);
+      w_meas -= q * (q.t() * w_meas);
+    }
+    arma::mat lhs = h.t() * h;
+    arma::mat rhs = h.t() * w_meas;
+    if (pen_w0 > 0.0) lhs.diag() += lambda * pen_w0;
+    if (pen_w1 > 0.0) {
+      const double d1[] = {-1, 1};
+      for (arma::uword i = 0; i + 1 < latent; ++i)
+        for (int a = 0; a <= 1; ++a)
+          for (int b = a; b <= 1; ++b)
+            lhs(i + b, i + a) += (lambda * pen_w1) * d1[a] * d1[b];
+    }
+    if (pen_w2 > 0.0) {
+      const double d2[] = {1, -2, 1};
+      for (arma::uword i = 0; i + 2 < latent; ++i)
+        for (int a = 0; a <= 2; ++a)
+          for (int b = a; b <= 2; ++b)
+            lhs(i + b, i + a) += (lambda * pen_w2) * d2[a] * d2[b];
+    }
+    lhs.diag() += ridge_floor;
+
+    arma::blas_int n_lat = static_cast<arma::blas_int>(latent);
+    arma::blas_int n_rhs = static_cast<arma::blas_int>(measured);
+    arma::blas_int info = 0;
+    char uplo = 'L';
+    arma::lapack::potrf(&uplo, &n_lat, lhs.memptr(), &n_lat, &info);
+    if (info != 0) Rcpp::stop("Masked GLS inverse failed; increase ridge_floor");
+    arma::lapack::potrs(&uplo, &n_lat, &n_rhs, lhs.memptr(), &n_lat, rhs.memptr(), &n_lat, &info);
+    if (info != 0) Rcpp::stop("Masked GLS inverse failed; increase ridge_floor");
+    return rhs.rows(history, history + n_time - 1);
+  }
+
   // Bidiagonal AR(1) whitening coefficients on the observation clock (no m x m matrix)
-  arma::vec d, s;
-  hrf_whiten_coefs(keep, rho, d, s);
+  const arma::vec& d = whitener.d_ar;
+  const arma::vec& s = whitener.s_ar;
 
   arma::mat q;
   if (nuisance.n_cols > 0) {
@@ -441,9 +717,7 @@ arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
     }
   }
 
-  arma::vec k_rev = arma::reverse(kernel);
   arma::mat g = k_rev * k_rev.t();
-  const double* kp = k_rev.memptr();
 
   // Fast banded Cholesky + L1-tiled SIMD solve when no dense nuisance projection is present
   arma::uword kd = std::max(max_gap + history, pen_band);

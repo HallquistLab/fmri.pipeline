@@ -26,13 +26,15 @@ deconvolution_impulse_diagnostics(
   tail_padding = 0L,
   source_trials = NULL,
   batch_size = 32L,
-  return_timeseries = FALSE
+  return_timeseries = FALSE,
+  kernel_normalize = c("auto", "signed_sum", "positive_lobe", "peak")
 )
 }
 \arguments{
 \item{event_data}{Data.frame with unique trial labels and numeric onsets.}
 
-\item{kernel}{Frozen inverse-model HRF. Normalized to unit sum.}
+\item{kernel}{Frozen inverse-model HRF, normalized according to
+\code{kernel_normalize}.}
 
 \item{n_time}{Number of measured acquisition samples (at least three).}
 
@@ -54,7 +56,8 @@ nonlinear estimators are not supported.}
 \item{penalty}{Fixed quadratic penalty for cpp/r.}
 
 \item{forward_kernel}{Generating HRF, defaulting to kernel. Use a different
-shape for a specified HRF-mismatch experiment. Also normalized to unit sum.}
+shape for a specified HRF-mismatch experiment, normalized with the same
+\code{kernel_normalize} convention as \code{kernel}.}
 
 \item{prewhiten_rho}{Frozen AR(1) coefficient; zero disables whitening.}
 
@@ -76,6 +79,13 @@ All event_data rows remain target windows. Subset sources for large schedules.}
 
 \item{return_timeseries}{Include full acquisition-grid truth, BOLD, and
 recovered activity for each selected source (default FALSE).}
+
+\item{kernel_normalize}{Normalization applied to both \code{kernel} and
+\code{forward_kernel}: \code{"auto"} (default; honors \code{attr(..., "normalize")}
+when present, switches to \code{"positive_lobe"} when \code{kernel} and
+\code{forward_kernel} differ in undershoot ratio, and uses
+\code{"signed_sum"} otherwise), \code{"signed_sum"}, \code{"positive_lobe"},
+or \code{"peak"}.}
 }
 \value{
 A list with impulses (one status/summary per selected source), windows

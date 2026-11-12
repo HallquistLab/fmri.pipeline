@@ -27,8 +27,10 @@ separate unit-amplitude source, regardless of its condition label.}
 lags = -1:3 produces a five-sample window sum at TR = 1.}
 
 \item{source_kernel_grid}{Optional normalized HRF candidates used to generate
-synthetic BOLD. Default uses each stratum's fitted HRF. Supplying alternatives
-evaluates sensitivity to HRF mismatch; it does not estimate the true HRF.}
+synthetic BOLD. Default uses each stratum's fitted HRF. Honors
+\code{attr(source_kernel_grid, "normalize")} when present, otherwise matching
+the fitted normalization mode. Supplying alternatives evaluates sensitivity
+to HRF mismatch; it does not estimate the true HRF.}
 
 \item{return_matrices}{Return event-by-event recovered, ideal, and excess
 resolution matrices, default FALSE.}
