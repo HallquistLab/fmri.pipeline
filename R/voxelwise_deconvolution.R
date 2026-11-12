@@ -210,7 +210,7 @@ voxelwise_deconvolution <- function(
       dplyr::select("vnum", "atlas_value", everything())
     
     #setup output subdirectories for deconvolved files, named according to atlas
-    atlas_img_name <- basename(sub(".nii(.gz)*", "", atlas_files[ai], perl=TRUE))
+    atlas_img_name <- basename(sub("\\.nii(\\.gz)?$", "", atlas_files[ai], perl=TRUE))
     dir.create(file.path(out_dir, atlas_img_name, "deconvolved"), showWarnings=FALSE, recursive=TRUE)
     if (isTRUE(save_original_ts)) { dir.create(file.path(out_dir, atlas_img_name, "original"), showWarnings=FALSE, recursive=TRUE) }
     
@@ -226,8 +226,11 @@ voxelwise_deconvolution <- function(
     }
 
     #loop over niftis in parallel
+    dopar_pkgs <- c("dplyr", "readr", "data.table",
+      if ("fmri.pipeline" %in% loadedNamespaces()) "fmri.pipeline",
+      "foreach", "iterators")
     ff <- foreach(si = seq_along(niftis),
-      .packages=c("dplyr", "readr", "data.table", "fmri.pipeline", "foreach", "iterators"),
+      .packages=dopar_pkgs,
       .export=c("mat2df", "extract_nifti_voxel_ts", "roi_image_geometry",
         "validate_roi_geometry", "decon_signal_status", "scale_decon_input",
         "resolve_decon_scaling", "estimate_decon_noise_sd")) %dopar% {
@@ -260,8 +263,15 @@ voxelwise_deconvolution <- function(
       scaled_input <- matrix(NA_real_, nrow(to_deconvolve), ncol(to_deconvolve))
       centers <- divisors <- rep(NA_real_, nrow(to_deconvolve))
       if (any(valid_voxels)) {
-        scaled <- scale_decon_input(t(to_deconvolve[valid_voxels, , drop = FALSE]),
-          scaling = input_scaling, noise_rho = decon_settings$prewhiten_rho)
+        scaled <- scale_decon_input(
+          t(to_deconvolve[valid_voxels, , drop = FALSE]),
+          scaling = input_scaling,
+          noise_rho = decon_settings$prewhiten_rho,
+          noise_psi1 = decon_settings$noise_psi1,
+          noise_psi2 = decon_settings$noise_psi2,
+          noise_psi3 = decon_settings$noise_psi3,
+          noise_psi4 = decon_settings$noise_psi4
+        )
         scaled_input[valid_voxels, ] <- t(scaled$y)
         centers[valid_voxels] <- scaled$center
         divisors[valid_voxels] <- scaled$scale
@@ -287,7 +297,8 @@ voxelwise_deconvolution <- function(
       } else {
         if (algorithm == "bush2015") {
           #use R implementation of Bush 2015 algorithm
-          deconv_mat <- foreach(vox_ts=iter(alg_input, by="row"), .combine="rbind", .packages=c("fmri.pipeline")) %do% {
+          bush_pkgs <- if ("fmri.pipeline" %in% loadedNamespaces()) c("fmri.pipeline") else character(0L)
+          deconv_mat <- foreach(vox_ts=iter(alg_input, by="row"), .combine="rbind", .packages=bush_pkgs) %do% {
             reg <- tryCatch(deconvolve_nlreg_resample(as.vector(vox_ts), kernel=decon_settings$kernel, nev_lr=decon_settings$nev_lr, epsilon=decon_settings$epsilon, n_resample=decon_settings$n_resample, beta=decon_settings$beta, normalize=FALSE),
               error=function(e) { cat("Problem deconvolving: ", niftis[si], as.character(e), "\n", file=log_file, append=TRUE); return(rep(NA, length(vox_ts))) })
 
@@ -409,7 +420,26 @@ voxelwise_deconvolution <- function(
     if (!is.null(add_metadata)) {
       out_name <- file.path(out_dir, atlas_img_name, paste0(atlas_img_name, "_metadata.csv"))
       if (file.exists(out_name)) {
-        readr::write_csv(add_metadata, file = out_name, append = TRUE, col_names = FALSE)
+        existing_meta <- tryCatch(
+          as.data.frame(readr::read_csv(out_name, show_col_types = FALSE)),
+          error = function(e) NULL
+        )
+        if (!is.null(existing_meta) && nrow(existing_meta) > 0L) {
+          key_cols <- intersect(c(".nifti", "id", "run", "session"), intersect(names(existing_meta), names(add_metadata)))
+          if (!length(key_cols)) key_cols <- intersect(names(existing_meta), names(add_metadata))
+          combined_meta <- dplyr::bind_rows(
+            dplyr::mutate(existing_meta, dplyr::across(dplyr::everything(), as.character)),
+            dplyr::mutate(as.data.frame(add_metadata), dplyr::across(dplyr::everything(), as.character))
+          )
+          if (length(key_cols)) {
+            combined_meta <- combined_meta[!duplicated(combined_meta[, key_cols, drop = FALSE], fromLast = TRUE), , drop = FALSE]
+          } else {
+            combined_meta <- unique(combined_meta)
+          }
+          readr::write_csv(combined_meta, file = out_name, append = FALSE, col_names = TRUE)
+        } else {
+          readr::write_csv(add_metadata, file = out_name, append = FALSE, col_names = TRUE)
+        }
       } else {
         readr::write_csv(add_metadata, file = out_name, append = FALSE, col_names = TRUE)
       }

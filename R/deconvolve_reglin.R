@@ -233,7 +233,7 @@ deconvolve_reglin <- function(
   # residuals before running prewhitened GCV over the full lambda_grid.
   if (isTRUE(prewhiten_gcv) && is.null(prewhiten_rho)) {
     first_pass <- deconvolve_reglin(
-      BOLDobs = BOLDobs,
+      BOLDobs = scaled$y,
       kernel = kernel,
       lambda = max(lambda_grid),
       lambda_grid = max(lambda_grid),
@@ -241,8 +241,8 @@ deconvolve_reglin <- function(
       kernel_grid = kernel_grid,
       hrf_lags = hrf_lags,
       tune_by = tune_by,
-      normalize = normalize,
-      demean = demean,
+      normalize = FALSE,
+      demean = FALSE,
       trim_kernel = FALSE,
       ridge_floor = ridge_floor,
       return_diagnostics = TRUE,
@@ -252,7 +252,7 @@ deconvolve_reglin <- function(
       wiener_psd_smooth = wiener_psd_smooth,
       wiener_psd_floor = wiener_psd_floor,
       gcv_rule = gcv_rule,
-      scaling = scaling
+      scaling = "none"
     )
     first_resid <- decon_first_pass_residuals(
       y = scaled$y,
@@ -262,6 +262,9 @@ deconvolve_reglin <- function(
       tune_by = tune_by
     )
     prewhiten_rho <- resolve_decon_ar1(first_resid, prewhiten_gcv = TRUE, prewhiten_rho = NULL)
+    if (scaling == "noise_sd") {
+      scaled <- scale_decon_input(BOLDobs, scaling = "noise_sd", noise_rho = prewhiten_rho)
+    }
   }
 
   if (backend == "wiener") {
@@ -326,7 +329,11 @@ deconvolve_reglin <- function(
   best_activity <- matrix(NA_real_, nrow = n_latent, ncol = n_signals)
   best_lambda <- if (tune_by == "global") NA_real_ else rep(NA_real_, n_signals)
   best_kernel <- if (tune_by == "global") NA_integer_ else rep(NA_integer_, n_signals)
-  tuning <- vector("list", length(kernels) * length(lambda_grid))
+  n_cand <- length(kernels) * length(lambda_grid)
+  tuning <- vector("list", n_cand)
+  track_sig_1se <- (gcv_rule == "1se" && tune_by == "signal" && n_cand > 1L)
+  gcv_sig_mat <- if (track_sig_1se) matrix(NA_real_, nrow = n_cand, ncol = n_signals) else NULL
+  gcv_se_sig_mat <- if (track_sig_1se) matrix(0.0, nrow = n_cand, ncol = n_signals) else NULL
   tuning_i <- 0L
 
   for (ki in seq_along(kernels)) {
@@ -342,13 +349,20 @@ deconvolve_reglin <- function(
       activity <- solve(lhs, hty)
       fitted <- fit_mat %*% activity
       residual <- y_fit - fitted
-      rss_by_signal <- colSums(residual^2)
+      r2_mat <- residual^2
+      rss_by_signal <- colSums(r2_mat)
       df <- sum(diag(solve(lhs, hth)))
       gcv_denom <- max((n_time - df)^2, .Machine$double.eps)
       gcv_by_signal <- rss_by_signal / gcv_denom
       gcv_se <- decon_gcv_se(gcv_by_signal)
 
       tuning_i <- tuning_i + 1L
+      if (track_sig_1se) {
+        gcv_sig_mat[tuning_i, ] <- gcv_by_signal
+        gcv_se_sig_mat[tuning_i, ] <- decon_signal_gcv_se(
+          rss_by_signal, colSums(r2_mat^2), n_time, gcv_denom
+        )
+      }
       tuning[[tuning_i]] <- data.frame(
         kernel = ki,
         lambda = lam,
@@ -392,6 +406,23 @@ deconvolve_reglin <- function(
     best_activity <- solve(lhs, hty)
     best_lambda <- selected$lambda
     best_kernel <- selected$kernel
+  } else if (track_sig_1se) {
+    sel_idx <- select_1se_signals(tuning, gcv_sig_mat, gcv_se_sig_mat)
+    best_lambda <- tuning$lambda[sel_idx]
+    best_kernel <- tuning$kernel[sel_idx]
+    for (ci in unique(sel_idx)) {
+      cols <- which(sel_idx == ci)
+      ki_sel <- tuning$kernel[ci]
+      lam_sel <- tuning$lambda[ci]
+      hrf <- kernels[[ki_sel]]
+      conv_mat <- decon_convolution_matrix(n_time, hrf)
+      fit_mat <- if (isTRUE(prewhiten_gcv)) apply_ar1_whitening(conv_mat, ar1_rho) else conv_mat
+      hth <- crossprod(fit_mat)
+      hty_sub <- crossprod(fit_mat, y_fit[, cols, drop = FALSE])
+      lhs <- hth + lam_sel * penalty_crossprod
+      diag(lhs) <- diag(lhs) + ridge_floor
+      best_activity[, cols] <- solve(lhs, hty_sub)
+    }
   }
 
   if (isTRUE(trim_kernel)) {
@@ -620,16 +651,25 @@ estimate_decon_noise_sd <- function(y, noise_rho = NULL, noise_psi1 = NULL, nois
       if (length(col) < 6L || any(!is.finite(col)) || stats::sd(col) <= .Machine$double.eps) return(NA_real_)
       stats::cor(col[-length(col)], col[-1L])
     }, numeric(1L))
-    r1_med <- stats::median(r1_d2_emp, na.rm = TRUE)
-    if (is.finite(r1_med)) {
+    ok_emp <- is.finite(r1_d2_emp)
+    if (any(ok_emp)) {
+      # Evaluate high-frequency vs low-frequency autocorrelation strictly per column
+      # (with finite-sample shrinkage and dead-zone) so noise_sd is invariant to voxel batching.
       r1_d2_ar3 <- (-4.0 + 7.0 * gamma1 - 4.0 * gamma2 + gamma3) / pmax(6.0 - 8.0 * gamma1 + 2.0 * gamma2, 0.1)
       r1_d2_ar1 <- -(4.0 - 3.0 * gamma1 + gamma1^2) / (2.0 * (3.0 - gamma1))
-      r1_adj <- pmin(pmax(r1_med - (r1_d2_ar3 - r1_d2_ar1), -2.0 / 3.0), -0.46)
+      w_emp <- n / (n + 150.0)
+      se_dead <- 1.25 / sqrt(n)
+      r1_use <- r1_d2_ar3
+      diff_emp <- r1_d2_emp[ok_emp] - r1_d2_ar3[ok_emp]
+      diff_dz <- sign(diff_emp) * pmax(0.0, abs(diff_emp) - se_dead)
+      r1_use[ok_emp] <- r1_d2_ar3[ok_emp] + w_emp * diff_dz
+      r1_adj <- pmin(pmax(r1_use - (r1_d2_ar3 - r1_d2_ar1), -2.0 / 3.0), -0.46)
       b_q <- 3.0 + 2.0 * r1_adj
       c_q <- 4.0 + 6.0 * r1_adj
       disc_q <- pmax(0.0, b_q * b_q - 4.0 * c_q)
       rho_hf <- pmin(pmax(0.5 * (b_q - sqrt(disc_q)), 0.0), 0.90)
       excess_lf <- pmax(0.0, gamma1 - rho_hf)
+      excess_lf[!ok_emp] <- 0.0
       gamma1_eff <- gamma1 - 0.75 * excess_lf
       gamma2 <- gamma2 - (gamma1^2 - gamma1_eff^2)
       gamma1 <- gamma1_eff
@@ -753,6 +793,36 @@ select_1se_candidate <- function(tuning) {
   eligible[1L, , drop = FALSE]
 }
 
+decon_signal_gcv_se <- function(rss2, rss4, n_time, gcv_denom) {
+  if (n_time <= 1L) return(rep(0.0, length(rss2)))
+  var_num <- pmax(0.0, (n_time / (n_time - 1.0)) * (rss4 - (rss2 * rss2) / n_time))
+  sqrt(var_num) / gcv_denom
+}
+
+select_1se_signals <- function(tuning, gcv_sig_mat, gcv_se_sig_mat) {
+  n_sig <- ncol(gcv_sig_mat)
+  sel <- integer(n_sig)
+  for (j in seq_len(n_sig)) {
+    g_vec <- gcv_sig_mat[, j]
+    se_vec <- gcv_se_sig_mat[, j]
+    if (!any(is.finite(g_vec))) {
+      sel[j] <- 1L
+      next
+    }
+    min_idx <- which.min(g_vec)
+    se_min <- if (is.finite(se_vec[min_idx])) se_vec[min_idx] else 0.0
+    threshold <- g_vec[min_idx] + se_min
+    elig <- which(is.finite(g_vec) & g_vec <= threshold)
+    if (!length(elig)) {
+      sel[j] <- min_idx
+    } else {
+      ord <- order(-tuning$lambda[elig], g_vec[elig], tuning$kernel[elig])
+      sel[j] <- elig[ord[1L]]
+    }
+  }
+  sel
+}
+
 deconvolve_reglin_wiener <- function(
   BOLDobs,
   kernels,
@@ -785,9 +855,13 @@ deconvolve_reglin_wiener <- function(
   best_activity <- matrix(NA_real_, nrow = n_latent, ncol = n_signals)
   best_lambda <- if (tune_by == "global") NA_real_ else rep(NA_real_, n_signals)
   best_kernel <- if (tune_by == "global") NA_integer_ else rep(NA_integer_, n_signals)
-  tuning <- vector("list", length(kernels) * length(lambda_grid))
+  n_cand <- length(kernels) * length(lambda_grid)
+  tuning <- vector("list", n_cand)
   tuning_i <- 0L
-  needs_scores <- return_diagnostics || length(kernels) * length(lambda_grid) > 1L
+  needs_scores <- return_diagnostics || n_cand > 1L
+  track_sig_1se <- needs_scores && wiener_shrinkage == "scalar" && gcv_rule == "1se" && tune_by == "signal"
+  gcv_sig_mat <- if (track_sig_1se) matrix(NA_real_, nrow = n_cand, ncol = n_signals) else NULL
+  gcv_se_sig_mat <- if (track_sig_1se) matrix(0.0, nrow = n_cand, ncol = n_signals) else NULL
 
   for (ki in seq_along(kernels)) {
     fit_kernel <- if (isTRUE(prewhiten_gcv)) ar1_filter_kernel(kernels[[ki]], ar1_rho) else kernels[[ki]]
@@ -832,12 +906,19 @@ deconvolve_reglin_wiener <- function(
       df <- wiener_degrees_freedom(filter, fit_kernel, n_time)
       fitted <- wiener_reconvolve_matrix(activity, fit_kernel, n_time = n_time, fft_plan = plan)
       residual <- y_fit - fitted
-      rss_by_signal <- colSums(residual^2)
+      r2_mat <- residual^2
+      rss_by_signal <- colSums(r2_mat)
       gcv_denom <- max((n_time - df)^2, .Machine$double.eps)
       gcv_by_signal <- if (wiener_shrinkage == "psd") rep(NA_real_, n_signals) else rss_by_signal / gcv_denom
       gcv_se <- if (wiener_shrinkage == "psd") NA_real_ else decon_gcv_se(gcv_by_signal)
 
       tuning_i <- tuning_i + 1L
+      if (track_sig_1se) {
+        gcv_sig_mat[tuning_i, ] <- gcv_by_signal
+        gcv_se_sig_mat[tuning_i, ] <- decon_signal_gcv_se(
+          rss_by_signal, colSums(r2_mat^2), n_time, gcv_denom
+        )
+      }
       tuning[[tuning_i]] <- data.frame(
         kernel = ki,
         lambda = lam,
@@ -873,10 +954,26 @@ deconvolve_reglin_wiener <- function(
     selected <- select_1se_candidate(tuning)
     fit_kernel <- if (isTRUE(prewhiten_gcv)) ar1_filter_kernel(kernels[[selected$kernel]], ar1_rho) else kernels[[selected$kernel]]
     plan <- wiener_fft_plan(n_time, n_latent, fit_kernel)
+    y_fft_sel <- mvfft(rbind(y_fit, matrix(0, plan$n_fft - n_time, n_signals)))
     best_activity <- wiener_deconvolve_matrix(y_fit, fit_kernel, lambda = selected$lambda,
-      n_latent = n_latent, fft_plan = plan, y_fft = y_fft)
+      n_latent = n_latent, fft_plan = plan, y_fft = y_fft_sel)
     best_lambda <- selected$lambda
     best_kernel <- selected$kernel
+  } else if (track_sig_1se) {
+    sel_idx <- select_1se_signals(tuning, gcv_sig_mat, gcv_se_sig_mat)
+    best_lambda <- tuning$lambda[sel_idx]
+    best_kernel <- tuning$kernel[sel_idx]
+    for (ci in unique(sel_idx)) {
+      cols <- which(sel_idx == ci)
+      ki_sel <- tuning$kernel[ci]
+      lam_sel <- tuning$lambda[ci]
+      fit_kernel <- if (isTRUE(prewhiten_gcv)) ar1_filter_kernel(kernels[[ki_sel]], ar1_rho) else kernels[[ki_sel]]
+      plan <- wiener_fft_plan(n_time, n_latent, fit_kernel)
+      y_sub <- y_fit[, cols, drop = FALSE]
+      y_fft_sub <- mvfft(rbind(y_sub, matrix(0, plan$n_fft - n_time, length(cols))))
+      best_activity[, cols] <- wiener_deconvolve_matrix(y_sub, fit_kernel, lambda = lam_sel,
+        n_latent = n_latent, fft_plan = plan, y_fft = y_fft_sub)
+    }
   }
 
   best_activity <- align_wiener_activity(

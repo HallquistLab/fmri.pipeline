@@ -95,7 +95,7 @@ hrf_run_numeric <- function(x, bold, argument) {
 # time (pooling the remaining conditions) and select the focal condition with
 # the strongest mean maximum partial R^2 across usable voxels.
 hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
-    amplitude_model, rho_ref, batch_size, fallback_kernel) {
+    amplitude_model, rho_ref, batch_size, fallback_kernel, spatial_groups = NULL) {
   labels <- as.character(ev$condition)
   durations <- if (is.null(ev$duration)) rep(0, nrow(ev)) else ev$duration
   u_cond <- unique(labels)
@@ -123,8 +123,15 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
       design_columns, max(design_columns), kernels))
   }
   # Screen focal-condition trial-free designs using the reference AR(1) rho.
+  # Allow spatial parcels (or strongly selective ungrouped voxels) to retain
+  # their own focal condition rather than forcing a single whole-brain winner
+  # that would collapse zero-mean trial-varying conditions (e.g., RPEs) in
+  # focal regions when another condition dominates cortical voxel counts.
   cond_cols <- match(labels, u_cond)
-  best_des <- NULL
+  des_list <- vector("list", n_cond)
+  voxel_val_mat <- matrix(NA_real_, nrow = n_cond, ncol = ncol(y))
+  comp_ic <- logical(n_cond)
+  best_ic <- NA_integer_
   best_val <- -Inf
   for (ic in seq_len(n_cond)) {
     idx_e <- which(cond_cols == ic)
@@ -133,36 +140,80 @@ hrf_build_run_design <- function(y, ev, tr, offset, kernels, z, mask,
     cols_ic <- match(cols_ic, unique(cols_ic))
     des_ic <- hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
       cols_ic, max(cols_ic), kernels)
+    des_list[[ic]] <- des_ic
     part_ic <- hrf_score_run_cpp(y, des_ic, z, which(mask), as.integer(batch_size),
       rho = rho_ref, evidence = FALSE, fallback_index = as.integer(fallback_kernel))
     if (isTRUE(part_ic$comparable)) {
+      comp_ic[ic] <- TRUE
       max_scores <- apply(part_ic$scores, 2L, function(col) {
         if (any(is.finite(col))) max(col, na.rm = TRUE) else NA_real_
       })
-      mean_scores <- colMeans(part_ic$scores, na.rm = TRUE)
-      voxel_val <- 0.65 * max_scores + 0.35 * mean_scores
+      voxel_val <- max_scores
+      voxel_val_mat[ic, ] <- voxel_val
       val <- if (any(is.finite(voxel_val))) mean(voxel_val, na.rm = TRUE) else -Inf
       if (is.finite(val) && val > best_val) {
         best_val <- val
-        best_des <- des_ic
+        best_ic <- ic
       }
     }
   }
-  if (!is.null(best_des)) return(best_des)
+  if (!is.na(best_ic)) {
+    best_des <- des_list[[best_ic]]
+    if (sum(comp_ic) > 1L && ncol(y) > 1L) {
+      vox_ic <- rep(best_ic, ncol(y))
+      valid_ic <- which(comp_ic)
+      if (!is.null(spatial_groups) && length(spatial_groups) == ncol(y)) {
+        for (g in unique(spatial_groups)) {
+          g_idx <- which(spatial_groups == g)
+          if (!length(g_idx)) next
+          g_vals <- rowMeans(voxel_val_mat[valid_ic, g_idx, drop = FALSE], na.rm = TRUE)
+          if (any(is.finite(g_vals))) {
+            ic_g <- valid_ic[which.max(ifelse(is.finite(g_vals), g_vals, -Inf))]
+            base_g <- voxel_val_mat[best_ic, g_idx]
+            base_g_mean <- if (any(is.finite(base_g))) mean(base_g, na.rm = TRUE) else -Inf
+            best_g_mean <- g_vals[match(ic_g, valid_ic)]
+            thr_floor <- if (length(g_idx) >= 3L) 0.025 else 0.05
+            thr_gain <- if (length(g_idx) >= 3L) 0.025 else 0.05
+            if (ic_g != best_ic && is.finite(best_g_mean) && best_g_mean > thr_floor &&
+                (!is.finite(base_g_mean) || best_g_mean > base_g_mean + thr_gain)) {
+              vox_ic[g_idx] <- ic_g
+            }
+          }
+        }
+      } else {
+        for (v in seq_len(ncol(y))) {
+          v_vals <- voxel_val_mat[valid_ic, v]
+          if (any(is.finite(v_vals))) {
+            ic_v <- valid_ic[which.max(ifelse(is.finite(v_vals), v_vals, -Inf))]
+            base_v <- voxel_val_mat[best_ic, v]
+            best_v <- voxel_val_mat[ic_v, v]
+            if (ic_v != best_ic && is.finite(best_v) && best_v > 0.05 &&
+                (!is.finite(base_v) || best_v > base_v + 0.03)) {
+              vox_ic[v] <- ic_v
+            }
+          }
+        }
+      }
+      if (any(vox_ic != best_ic)) {
+        attr(best_des, "voxel_design_id") <- vox_ic
+        attr(best_des, "candidate_designs") <- des_list
+      }
+    }
+    return(best_des)
+  }
   design_columns <- seq_len(nrow(ev))
   hrf_event_design_cpp(nrow(y), tr, offset, ev$onset, durations,
     design_columns, max(design_columns), kernels)
 }
 
-# Partition a single run's usable observations into contiguous temporal sub-blocks
-# and score candidate HRFs on each sub-block using the full causal event design
-# and full-run AR(1) noise estimates. This provides within-run cross-block
-# compatibility testing and score pooling when length(bold) == 1L without
-# physically slicing the BOLD matrix or breaking causal HRF carryover across
-# sub-block boundaries.
+# Partition a single run's usable observations into temporal sub-blocks
+# separated by a short causal guard gap and score candidate HRFs on each
+# sub-block using the full causal event design and full-run AR(1) noise
+# estimates. Boundary carryover events whose HRF tail enters a sub-block are
+# retained as a pooled carryover column so active BOLD tails are never omitted.
 hrf_single_run_subblocks <- function(run_name, y, ev, tr, offset, kernels,
     candidate_ids, z, mask, noise_r, amplitude_model, batch_size,
-    fallback_kernel, evidence, noise_model) {
+    fallback_kernel, evidence, noise_model, spatial_groups = NULL) {
   usable_rows <- which(mask)
   n_obs <- length(usable_rows)
   n_kernels <- ncol(kernels)
@@ -188,16 +239,44 @@ hrf_single_run_subblocks <- function(run_name, y, ev, tr, offset, kernels,
     if (n_obs >= 240L && nrow(ev) >= 18L) c(3L, 2L) else 2L
   }
 
+  append_carryover <- function(des_obj, carry_idx) {
+    if (is.null(des_obj) || !length(carry_idx)) return(des_obj)
+    add_col <- function(d_list) {
+      Map(function(x, full_x) {
+        cbind(x, rowSums(full_x[, carry_idx, drop = FALSE]))
+      }, d_list, des_trial_full)
+    }
+    vox_id <- attr(des_obj, "voxel_design_id")
+    cand_d <- attr(des_obj, "candidate_designs")
+    out_d <- add_col(des_obj)
+    if (!is.null(vox_id) && !is.null(cand_d)) {
+      attr(out_d, "voxel_design_id") <- vox_id
+      attr(out_d, "candidate_designs") <- lapply(cand_d, function(dl) if (is.null(dl)) NULL else add_col(dl))
+    }
+    out_d
+  }
+
   best_out <- empty_out
   for (n_blocks in block_candidates) {
     block_id <- ceiling(seq_along(usable_rows) * n_blocks / n_obs)
+    # Trim a short interior boundary buffer when sufficient frames exist so
+    # AR(p) innovations across adjacent sub-blocks are weakly correlated.
+    half_gap <- if (n_obs >= 72L * n_blocks / 2L) {
+      min(max(1L, as.integer(floor(2.0 / max(tr, 0.25)))), as.integer(floor(n_obs / (10L * n_blocks))))
+    } else 0L
     sub_results <- sub_scores <- vector("list", n_blocks)
     sub_names <- paste0(run_name, "_block", seq_len(n_blocks))
     names(sub_results) <- names(sub_scores) <- sub_names
     n_comparable_blocks <- 0L
 
     for (b in seq_len(n_blocks)) {
-      rows_b <- usable_rows[block_id == b]
+      idx_b <- which(block_id == b)
+      if (half_gap > 0L && length(idx_b) > 2L * half_gap + 16L) {
+        lo_trim <- if (b > 1L) half_gap else 0L
+        hi_trim <- if (b < n_blocks) half_gap else 0L
+        idx_b <- idx_b[(1L + lo_trim):(length(idx_b) - hi_trim)]
+      }
+      rows_b <- usable_rows[idx_b]
       mask_b <- rep(FALSE, nrow(y))
       mask_b[rows_b] <- TRUE
 
@@ -213,14 +292,20 @@ hrf_single_run_subblocks <- function(run_name, y, ev, tr, offset, kernels,
             lapply(des_cond_full, function(x) x[, col_ok, drop = FALSE])
         }
       } else {
-        ev_ok <- vapply(seq_len(nrow(ev)), function(e_idx) {
+        ev_ratios <- vapply(seq_len(nrow(ev)), function(e_idx) {
           norms_b <- vapply(des_trial_full, function(x) sqrt(sum(x[rows_b, e_idx]^2)), numeric(1))
           norms_all <- vapply(des_trial_full, function(x) sqrt(sum(x[, e_idx]^2)), numeric(1))
-          min(norms_b) >= 0.10 * max(norms_all, 1e-8)
-        }, logical(1))
+          c(min(norms_b) / max(norms_all, 1e-8), max(norms_b) / max(norms_all, 1e-8))
+        }, numeric(2))
+        ev_ok <- ev_ratios[1L, ] >= 0.12
+        ev_carry <- (!ev_ok) & (ev_ratios[2L, ] > 1e-3)
         if (any(ev_ok)) {
           design_b <- hrf_build_run_design(y, ev[ev_ok, , drop = FALSE], tr, offset,
-            kernels, z, mask_b, amplitude_model, rho_ref, batch_size, fallback_kernel)
+            kernels, z, mask_b, amplitude_model, rho_ref, batch_size, fallback_kernel,
+            spatial_groups = spatial_groups)
+          if (any(ev_carry)) {
+            design_b <- append_carryover(design_b, which(ev_carry))
+          }
         }
       }
 
@@ -240,12 +325,19 @@ hrf_single_run_subblocks <- function(run_name, y, ev, tr, offset, kernels,
         psi2_r <- if ("psi2" %in% names(noise_r)) noise_r$psi2 else rep(0, nrow(noise_r))
         psi3_r <- if ("psi3" %in% names(noise_r)) noise_r$psi3 else rep(0, nrow(noise_r))
         psi4_r <- if ("psi4" %in% names(noise_r)) noise_r$psi4 else rep(0, nrow(noise_r))
-        ar_keys_b <- paste(noise_r$rho, psi1_r, psi2_r, psi3_r, psi4_r, sep = ":")
+        des_id_b <- attr(design_b, "voxel_design_id")
+        cand_des_b <- attr(design_b, "candidate_designs")
+        if (is.null(des_id_b) || is.null(cand_des_b)) {
+          des_id_b <- rep(1L, n_vox)
+          cand_des_b <- list(design_b)
+        }
+        ar_keys_b <- paste(des_id_b, noise_r$rho, psi1_r, psi2_r, psi3_r, psi4_r, sep = ":")
         for (ak in unique(ar_keys_b)) {
           indices <- which(ar_keys_b == ak)
           idx1 <- indices[1L]
           ar_vec <- c(noise_r$rho[idx1], psi1_r[idx1], psi2_r[idx1], psi3_r[idx1], psi4_r[idx1])
-          part <- hrf_score_run_ar(y[, indices, drop = FALSE], design_b, z, rows_b,
+          des_use_b <- cand_des_b[[des_id_b[idx1]]]
+          part <- hrf_score_run_ar(y[, indices, drop = FALSE], des_use_b, z, rows_b,
             as.integer(batch_size), ar_vec = ar_vec, evidence = evidence == "calibrated",
             fallback_index = as.integer(fallback_kernel))
           res_b$scores[, indices] <- part$scores
@@ -543,7 +635,7 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
       next
     }
     design <- hrf_build_run_design(y, ev, tr, offsets[r], kernels, z, mask,
-      amplitude_model, rho_ref, batch_size, fallback_kernel)
+      amplitude_model, rho_ref, batch_size, fallback_kernel, spatial_groups = spatial_groups)
     result <- list(scores = matrix(NA_real_, ncol(kernels), ncol(y)),
       signal_status = rep("insufficient_observations", ncol(y)))
     if (evidence == "calibrated") for (field in c("task_p", "fallback_p", "incompatible_p"))
@@ -553,14 +645,21 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     psi2_r <- if ("psi2" %in% names(noise[[r]])) noise[[r]]$psi2 else rep(0, nrow(noise[[r]]))
     psi3_r <- if ("psi3" %in% names(noise[[r]])) noise[[r]]$psi3 else rep(0, nrow(noise[[r]]))
     psi4_r <- if ("psi4" %in% names(noise[[r]])) noise[[r]]$psi4 else rep(0, nrow(noise[[r]]))
-    ar_keys_r <- paste(noise[[r]]$rho, psi1_r, psi2_r, psi3_r, psi4_r, sep = ":")
+    des_id_r <- attr(design, "voxel_design_id")
+    cand_des_r <- attr(design, "candidate_designs")
+    if (is.null(des_id_r) || is.null(cand_des_r)) {
+      des_id_r <- rep(1L, ncol(y))
+      cand_des_r <- list(design)
+    }
+    ar_keys_r <- paste(des_id_r, noise[[r]]$rho, psi1_r, psi2_r, psi3_r, psi4_r, sep = ":")
     for (ak in unique(ar_keys_r)) {
       indices <- which(ar_keys_r == ak)
       idx1 <- indices[1L]
       rho <- noise[[r]]$rho[idx1]
       ar_vec <- c(rho, psi1_r[idx1], psi2_r[idx1], psi3_r[idx1], psi4_r[idx1])
+      des_use <- cand_des_r[[des_id_r[idx1]]]
       part <- if (sum(mask) >= 3L) {
-        hrf_score_run_ar(y[, indices, drop = FALSE], design, z, which(mask),
+        hrf_score_run_ar(y[, indices, drop = FALSE], des_use, z, which(mask),
           as.integer(batch_size), ar_vec = ar_vec, evidence = evidence == "calibrated",
           fallback_index = as.integer(fallback_kernel))
       } else list(scores = matrix(NA_real_, ncol(kernels), length(indices)),
@@ -594,7 +693,8 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     z_1 <- cbind(intercept = 1, trend = seq(-1, 1, length.out = nrow(bold[[1L]])), nuisance[[1L]])
     subblock_fit <- hrf_single_run_subblocks(names(bold)[1L], bold[[1L]], events[[1L]],
       tr, offsets[1L], kernels, candidate_ids, z_1, mask_1, noise[[1L]],
-      amplitude_model, batch_size, fallback_kernel, evidence, noise_model)
+      amplitude_model, batch_size, fallback_kernel, evidence, noise_model,
+      spatial_groups = spatial_groups)
     if (return_scores && evidence == "calibrated") {
       attr(run_results[[1L]], "subblocks") <- subblock_fit$results
     }
@@ -638,7 +738,8 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
     scores[, counts < min_training_runs] <- NA_real_
     dimnames(scores) <- list(candidate_ids, voxel_ids)
     gate <- if (evidence == "calibrated") hrf_fold_evidence(fold_results, train, counts,
-      scores, fallback_kernel, evidence_alpha, min_r2, kernels = kernels) else NULL
+      scores, fallback_kernel, evidence_alpha, min_r2, kernels = kernels,
+      subblock_mode = is_single_run) else NULL
     anchor <- rep(NA_integer_, length(voxel_ids))
     parcel_n <- integer(length(voxel_ids))
     parcel_rows <- list()
@@ -811,21 +912,33 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
         if (selection_mode == "soft_average") {
           if (!is.null(spatial_groups)) {
             for (g in names(w_parcel_map)) {
-              w_fold[, which(spatial_groups == g)] <- w_parcel_map[[g]]
+              g_sup <- intersect(which(spatial_groups == g), supported)
+              if (length(g_sup)) w_fold[, g_sup] <- w_parcel_map[[g]]
             }
           }
           for (idx_e in seq_along(eligible)) {
             v <- eligible[idx_e]
             sv <- scores[, v]
             if (!any(is.finite(sv)) || max(sv, na.rm = TRUE) < min_r2) {
-              w_fold[, v] <- 0
-              w_fold[fallback_kernel, v] <- 1.0
+              if (!is.null(spatial_groups) && (v %in% supported) &&
+                  !is.null(w_parcel_map[[spatial_groups[v]]])) {
+                w_fold[, v] <- w_parcel_map[[spatial_groups[v]]]
+                chosen[v] <- which.max(w_fold[, v])
+                reason[v] <- "fallback_parcel"
+              } else {
+                w_fold[, v] <- 0
+                w_fold[fallback_kernel, v] <- 1.0
+                chosen[v] <- as.integer(fallback_kernel)
+                reason[v] <- "fallback_prespecified"
+              }
               next
             }
             compat_v <- if (is.null(gate)) rep(TRUE, ncol(kernels)) else gate$compatible[, v]
             if (!any(compat_v)) {
               w_fold[, v] <- 0
               w_fold[fallback_kernel, v] <- 1.0
+              chosen[v] <- as.integer(fallback_kernel)
+              reason[v] <- "fallback_prespecified"
               next
             }
             omega_v <- if (is.null(gate)) {
@@ -837,11 +950,11 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
               obj_v[!compat_v] <- -Inf
               k_v <- which.max(obj_v)
               if (length(k_v) == 1L && is.finite(obj_v[k_v]) && k_v != fallback_kernel &&
-                  sv[k_v] >= sv[fallback_kernel]) {
+                  sv[k_v] >= sv[fallback_kernel] && isTRUE(gate$task_supported[k_v, v])) {
                 p_sh_v <- gate$shape_p_raw[k_v, v]
                 p_tk_v <- gate$task_p_raw[k_v, v]
-                if (is.finite(p_sh_v) && is.finite(p_tk_v) && p_tk_v <= 0.25) {
-                  max(0.0, min(1.0, (-log10(max(p_sh_v, 1e-12)) - 0.5) / 1.5))
+                if (is.finite(p_sh_v) && is.finite(p_tk_v) && p_tk_v <= 0.05 && p_sh_v <= 0.05) {
+                  max(0.0, min(1.0, (-log10(max(p_sh_v, 1e-12)) - 1.3) / 1.2))
                 } else 0.0
               } else 0.0
             }
@@ -879,6 +992,9 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
             chosen[v] <- which.max(w_fold[, v])
             if (reason[v] == "fallback_prespecified" && sum(w_fold[-fallback_kernel, v]) > 0.05) {
               reason[v] <- if (!is.null(spatial_groups) && spatial_strength > 0) "voxel_soft_spatial" else "voxel_soft"
+            } else if (reason[v] == "fallback_parcel" && sum(w_fold[-fallback_kernel, v]) <= 0.05 &&
+                       chosen[v] == fallback_kernel && !is.na(anchor[v]) && anchor[v] != fallback_kernel) {
+              reason[v] <- "fallback_prespecified"
             }
           }
         }
@@ -889,12 +1005,16 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
           if (length(incompat_v)) {
             w_fold[, incompat_v] <- 0
             w_fold[fallback_kernel, incompat_v] <- 1.0
+            reason[incompat_v] <- "fallback_prespecified"
           }
         }
         chosen[eligible] <- max.col(t(w_fold[, eligible, drop = FALSE]), ties.method = "first")
         soft_dep <- eligible[colSums(w_fold[-fallback_kernel, eligible, drop = FALSE]) > 0.05 &
           reason[eligible] == "fallback_prespecified"]
         if (length(soft_dep)) reason[soft_dep] <- "pooled_parcel"
+      }
+      if (selection_mode == "soft_average") {
+        chosen <- max.col(t(w_fold), ties.method = "first")
       }
       selected_score[eligible] <- scores[cbind(chosen[eligible], eligible)]
     }
