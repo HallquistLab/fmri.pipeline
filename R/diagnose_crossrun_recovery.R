@@ -112,6 +112,7 @@ diagnose_crossrun_recovery <- function(deconvolution, events = NULL, lags = 0,
     mask <- if (settings$observation_mask == "fit") fit$specification$valid_rows[[r]] else rep(TRUE, n)
     rows <- which(!is.na(mask) & mask)
     if (length(rows) < 3L) next
+    fw_r <- resolve_run_obs_weights(deconvolution, r, length(rows))
     z <- if (settings$nuisance_mode == "joint") cbind(1, seq(-1, 1, length.out = n),
       fit$specification$nuisance[[r]]) else matrix(numeric(), n, 0L)
     strat <- hrf_stratum_kernels(fit, r)
@@ -127,13 +128,13 @@ diagnose_crossrun_recovery <- function(deconvolution, events = NULL, lags = 0,
       voxels <- which(keys == key & valid); k <- selected[voxels[1L]]; ar <- rho[voxels[1L]]
       ar_op <- if (!is.null(strat$get_ar)) strat$get_ar(voxels[1L]) else ar
       hrf_k <- strat$get_kernel(voxels[1L])
-      operator <- hrf_inverse_operator(n, as.numeric(hrf_k), rows, ar_op, z, settings)
+      operator <- hrf_inverse_operator(n, as.numeric(hrf_k), rows, ar_op, z, settings, obs_weights = fw_r)
       readout_operator <- readout %*% operator
       source <- if (is.null(sources)) hrf_k else sources
       designs <- hrf_event_design_cpp(n, tr, offset, ev$onset, duration, seq_len(m), m, source)
       for (s in seq_len(ncol(source))) {
         y <- designs[[s]][rows, , drop = FALSE]
-        if (settings$scaling != "none") y <- sweep(y, 2L, colMeans(y), "-")
+        if (settings$scaling != "none") y <- center_cols_weighted(y, fw_r)
         recovered <- readout_operator %*% y
         excess <- recovered - ideal
         divisor <- ideal_diagonal
@@ -259,7 +260,11 @@ solve_duration_demix_operator <- function(S_tau, operator, G_tau_unc, G_tau_cent
   if (scaling_mode != "none") {
     # Sherman-Morrison rank-1 adjustment for column-demeaned forward design G_tau_cent
     c0 <- as.numeric(S_tau %*% (operator %*% rep(1, n_obs)))
-    mu_G <- colMeans(G_tau_unc)
+    mu_G <- if (nrow(G_tau_unc) >= 1L) {
+      as.numeric(G_tau_unc[1L, ] - G_tau_cent[1L, ])
+    } else {
+      colMeans(G_tau_unc)
+    }
     u0 <- as.numeric(W_unc %*% c0)
     denom <- 1 - sum(mu_G * u0)
     if (!is.finite(denom) || abs(denom) < 0.05) {
@@ -288,52 +293,117 @@ solve_duration_demix_operator <- function(S_tau, operator, G_tau_unc, G_tau_cent
   list(W = W_full, K_norm = K_norm, eff_gain = eff_gain, eff_gain_vec = eff_gain_vec)
 }
 
-# Propagate observation-level AR(1) noise covariance Sigma_AR1(rho) through a
-# linear trial readout/de-mixing operator B (M_trials x m_obs) in O(m_obs * M)
+resolve_run_obs_weights <- function(deconvolution, r, m_obs) {
+  if (is.null(deconvolution) || is.null(deconvolution$frame_weights) ||
+      length(deconvolution$frame_weights) < r) {
+    return(NULL)
+  }
+  fw <- deconvolution$frame_weights[[r]]
+  if (is.null(fw) || length(fw) != m_obs || !all(is.finite(fw))) {
+    return(NULL)
+  }
+  ws_attr <- attr(fw, "weight_space")
+  fw <- as.numeric(fw)
+  if (!any(abs(fw - 1.0) > 1e-8)) return(NULL)
+  if (!is.null(ws_attr)) attr(fw, "weight_space") <- ws_attr
+  fw
+}
+
+center_cols_weighted <- function(mat, obs_weights = NULL) {
+  if (nrow(mat) == 0L || ncol(mat) == 0L) return(mat)
+  if (!is.null(obs_weights) && length(obs_weights) == nrow(mat) &&
+      all(is.finite(obs_weights)) && any(abs(obs_weights - 1.0) > 1e-8)) {
+    w_pos <- pmax(as.numeric(obs_weights), 1e-8)
+    w_c <- w_pos / sum(w_pos)
+    sweep(mat, 2L, as.numeric(crossprod(w_c, mat)), "-")
+  } else {
+    sweep(mat, 2L, colMeans(mat), "-")
+  }
+}
+
+# Propagate observation-level AR(p) (+ optional rWLS transient) noise covariance
+# through a linear trial readout/de-mixing operator B (M_trials x m_obs) in O(m_obs * p * M)
 # operations without forming a dense m_obs x m_obs covariance matrix.
-# Because an AR(1) process on retained observation indices `rows` has a Markovian
-# forward innovation representation e_{rows[i]} = a_i * e_{rows[i-1]} + s_i * z_i
-# with a_i = rho^(rows[i] - rows[i-1]) and s_i = sqrt(1 - a_i^2), the backward
-# accumulation V[i, ] = B[, i]^T + a_{i+1} * V[i+1, ] satisfies B * Sigma * B^T = U^T * U
-# where U[i, ] = s_i * V[i, ]. This yields the exact M x M trial error covariance.
-compute_ar1_operator_factor <- function(B, rows, rho, center_obs = TRUE) {
+# Under Woodbury rWLS (Sigma = Sigma_sub + diag(delta^2)), U_0 = W_unit^{-T} B_eff^T
+# is updated in O(m * k * M) via the thin SVD of A = W_unit E_S D_S^{1/2}:
+#   U = U_0 + U_A diag(sqrt(1 + d_A^2) - 1) U_A^T U_0,
+# satisfying U^T U = B_eff (Sigma_sub + diag(delta^2)) B_eff^T to machine precision.
+compute_ar1_operator_factor <- function(B, rows, rho, center_obs = TRUE,
+                                        obs_weights = NULL, weight_space = "woodbury") {
+  if (!is.null(obs_weights) && !is.null(attr(obs_weights, "weight_space"))) {
+    weight_space <- as.character(attr(obs_weights, "weight_space"))[1L]
+  }
   if (length(rows) > 0L && ncol(B) > length(rows) && max(rows) <= ncol(B)) {
     B <- B[, rows, drop = FALSE]
   }
   m <- ncol(B)
   M <- nrow(B)
   if (m == 0L || M == 0L) return(matrix(0, m, M))
+  has_obs_w <- !is.null(obs_weights) && length(obs_weights) == m &&
+    all(is.finite(obs_weights)) && any(abs(obs_weights - 1.0) > 1e-8)
+  w_use <- if (has_obs_w) pmin(pmax(as.numeric(obs_weights), 1e-12), 1.0) else NULL
   B_eff <- if (isTRUE(center_obs)) {
-    sweep(B, 1L, rowMeans(B), "-")
+    if (has_obs_w) {
+      w_pos <- pmax(as.numeric(obs_weights), 1e-8)
+      w_c <- w_pos / sum(w_pos)
+      B - tcrossprod(rowSums(B), w_c)
+    } else {
+      sweep(B, 1L, rowMeans(B), "-")
+    }
   } else {
     B
   }
+  Bt <- t(B_eff)
   rho1 <- if (length(rho)) rho[1L] else 0.0
   has_ar1 <- is.finite(rho1) && abs(rho1) >= 1e-10
   has_psi <- m >= 2L && length(rho) >= 2L && any(is.finite(rho[-1L]) & abs(rho[-1L]) >= 1e-10)
-  if ((!has_ar1 && !has_psi) || m == 1L) {
-    return(t(B_eff))
-  }
-  Bt <- t(B_eff)
   rows_use <- if (length(rows) == m) as.integer(rows) else seq_len(m)
-  if (has_psi) {
+  U_0 <- if ((!has_ar1 && !has_psi) || m == 1L) {
+    Bt
+  } else if (has_psi) {
     is_contig <- all(diff(rows_use) == 1L)
     lag_span <- if (is_contig) max(8L, length(rho) + 2L) else max(8L, max(rows_use) - min(rows_use))
     info <- hrf_ar_cascade_info(rho, max_lag = lag_span)
-    if (length(info$phi) == 0L) return(Bt)
-    return(hrf_ar_operator_factor_cpp(
-      Bt, rows_use, rho = 0.0,
-      ar_phi = info$phi, ar_acf = info$acf, sig_u2 = info$sig_u2
-    ))
+    if (length(info$phi) == 0L) {
+      Bt
+    } else {
+      hrf_ar_operator_factor_cpp(
+        Bt, rows_use, rho = 0.0,
+        ar_phi = info$phi, ar_acf = info$acf, sig_u2 = info$sig_u2
+      )
+    }
+  } else {
+    hrf_ar_operator_factor_cpp(Bt, rows_use, rho = as.numeric(rho1))
   }
-  hrf_ar_operator_factor_cpp(Bt, rows_use, rho = as.numeric(rho1))
+  if (!has_obs_w) return(U_0)
+  if (identical(weight_space, "innovation") || (!has_ar1 && !has_psi) || m == 1L) {
+    return(sweep(U_0, 1L, 1.0 / sqrt(pmax(w_use, 1e-12)), "*"))
+  }
+  idx_s <- which(w_use < 1.0 - 1e-8)
+  if (!length(idx_s)) return(U_0)
+  delta_s <- sqrt(pmax(0.0, 1.0 / pmax(w_use[idx_s], 1e-12) - 1.0))
+  E_s <- matrix(0.0, m, length(idx_s))
+  E_s[cbind(idx_s, seq_along(idx_s))] <- delta_s
+  A_mat <- hrf_apply_whitening(E_s, rows_use, rho, unit_marginal = TRUE)
+  sv_a <- svd(A_mat, nv = 0)
+  pos_a <- sv_a$d > 1e-12
+  if (any(pos_a)) {
+    ua <- sv_a$u[, pos_a, drop = FALSE]
+    grow_a <- sqrt(1.0 + sv_a$d[pos_a]^2) - 1.0
+    U_0 <- U_0 + ua %*% sweep(crossprod(ua, U_0), 1L, grow_a, "*")
+  }
+  U_0
 }
 
-compute_ar1_operator_cov <- function(B, rows, rho, center_obs = TRUE) {
+compute_ar1_operator_cov <- function(B, rows, rho, center_obs = TRUE,
+                                     obs_weights = NULL, weight_space = "woodbury") {
   m <- ncol(B)
   M <- nrow(B)
   if (m == 0L || M == 0L) return(matrix(0, M, M))
-  U <- compute_ar1_operator_factor(B, rows, rho, center_obs = center_obs)
+  U <- compute_ar1_operator_factor(
+    B, rows, rho, center_obs = center_obs,
+    obs_weights = obs_weights, weight_space = weight_space
+  )
   crossprod(U)
 }
 
@@ -1027,11 +1097,21 @@ decon_epoch_regression <- function(
       act_r[, valid] <- sweep(act_r[, valid, drop = FALSE], 2L, div_r[valid], "*")
     }
 
+    fw_r <- resolve_run_obs_weights(deconvolution, r, length(rows))
+    w_space <- if (!is.null(settings$rwls_space)) settings$rwls_space else "woodbury"
     Z_vox_r <- if (!is.null(deconvolution$noise_innovations) &&
                    length(deconvolution$noise_innovations) >= r) {
       deconvolution$noise_innovations[[r]]
     } else NULL
     has_z_vox <- is.matrix(Z_vox_r) && nrow(Z_vox_r) == length(rows) && ncol(Z_vox_r) == n_voxels
+    if (has_z_vox && !is.null(fw_r)) {
+      Z_vox_r <- sweep(Z_vox_r, 1L, sqrt(pmax(fw_r, 1e-8)), "*")
+      zn_col <- sqrt(colSums(Z_vox_r^2))
+      pos_zn <- is.finite(zn_col) & zn_col > 1e-12
+      if (any(pos_zn)) {
+        Z_vox_r[, pos_zn] <- sweep(Z_vox_r[, pos_zn, drop = FALSE], 2L, zn_col[pos_zn], "/")
+      }
+    }
     mix_by_key <- list()
 
     if (isTRUE(aggregate_by_parcel)) {
@@ -1205,7 +1285,7 @@ decon_epoch_regression <- function(
       if (exists(s_key, envir = sub_op_cache, inherits = FALSE)) {
         get(s_key, envir = sub_op_cache)
       } else {
-        op_s <- hrf_inverse_operator(n, s_kern[, 1L], rows, s_ar, z, settings)
+        op_s <- hrf_inverse_operator(n, s_kern[, 1L], rows, s_ar, z, settings, obs_weights = fw_r)
         assign(s_key, op_s, envir = sub_op_cache)
         op_s
       }
@@ -1240,7 +1320,7 @@ decon_epoch_regression <- function(
           if (win_div != 1.0 && win_div > 0) {
             G_u <- G_u / win_div
           }
-          G_c <- if (settings$scaling != "none") sweep(G_u, 2L, colMeans(G_u), "-") else G_u
+          G_c <- if (settings$scaling != "none") center_cols_weighted(G_u, fw_r) else G_u
           list(G_unc = G_u, G_cent = G_c)
         }
         base_g <- build_one(hrf_k)
@@ -1355,7 +1435,10 @@ decon_epoch_regression <- function(
         if (any(ok_raw)) {
           m_raw <- sum(ok_raw)
           B_raw <- S_raw_l[ok_raw, , drop = FALSE] %*% operator
-          V_raw <- compute_ar1_operator_cov(B_raw, rows, ar, center_obs = center_obs)
+          V_raw <- compute_ar1_operator_cov(
+            B_raw, rows, ar, center_obs = center_obs,
+            obs_weights = fw_r, weight_space = w_space
+          )
           if (m_raw > 1L) {
             Q_raw <- diag(m_raw) - matrix(1 / m_raw, m_raw, m_raw)
             V_raw_cent <- (Q_raw %*% V_raw %*% Q_raw) / (1 - 1 / m_raw)
@@ -1566,7 +1649,10 @@ decon_epoch_regression <- function(
         M_act_tau <- M_act_list[[li]]
 
         # Compute dimensionless trial innovation factor and error covariance for stratum (r, key, li)
-        U_demix <- compute_ar1_operator_factor(B_demix_tau, rows, ar, center_obs = center_obs)
+        U_demix <- compute_ar1_operator_factor(
+          B_demix_tau, rows, ar, center_obs = center_obs,
+          obs_weights = fw_r, weight_space = w_space
+        )
         U_demix_list[[li]] <- U_demix
         V_demix <- crossprod(U_demix)
         if (m_ok > 1L) {

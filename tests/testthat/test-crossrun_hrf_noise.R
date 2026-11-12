@@ -1832,6 +1832,151 @@ test_that("contiguous-triplet second-difference guards protect noise_sd and SUSA
   expect_true(nrow(diag_scrub$summary) >= 1L)
 })
 
+test_that("rWLS Woodbury and innovation inverse operators match dense GLS references and scrubbing limits", {
+  set.seed(9041)
+  n <- 90L
+  rows <- setdiff(seq_len(n), c(18:21, 55:56))
+  m <- length(rows)
+  k_hrf <- as.numeric(hrf_library(0.8, peak_delays = 5.2, dispersions = 1.0, undershoot_ratios = 6)[, 1L])
+  z_nuis <- cbind(1, seq(-1, 1, length.out = n), sin(seq_len(n) / 9))
+
+  obs_w <- rep(1.0, m)
+  obs_w[c(7L, 28L, 29L, 61L)] <- c(0.08, 0.15, 0.35, 0.03)
+
+  for (ar_vec in list(0.58, c(0.54, 0.15, -0.21, 0.07, -0.04))) {
+    for (w_space in c("woodbury", "innovation")) {
+      st_cpp <- list(
+        lambda = 0.65, penalty = "sobolev", backend = "cpp",
+        ridge_floor = 1e-8, tail_padding = 4L, rwls_space = w_space
+      )
+      st_r <- modifyList(st_cpp, list(backend = "r"))
+      op_cpp <- fmri.pipeline:::hrf_inverse_operator(n, k_hrf, rows, ar_vec, z_nuis, st_cpp, obs_weights = obs_w)
+      op_r <- fmri.pipeline:::hrf_inverse_operator(n, k_hrf, rows, ar_vec, z_nuis, st_r, obs_weights = obs_w)
+      expect_equal(op_cpp, op_r, tolerance = 1e-11)
+    }
+  }
+
+  # Continuous relaxation limit: Woodbury rWLS with w_drop -> 0 converges identically
+  # to hard motion scrubbing (removing drop_idx from valid_rows)!
+  ar5 <- c(0.54, 0.15, -0.21, 0.07, -0.04)
+  drop_local <- c(10L, 35L, 36L)
+  rows_kept <- rows[-drop_local]
+  w_limit <- rep(1.0, m)
+  w_limit[drop_local] <- 1e-10
+  st_lim <- list(
+    lambda = 0.7, penalty = "sobolev", backend = "cpp",
+    ridge_floor = 1e-8, tail_padding = 2L, rwls_space = "woodbury"
+  )
+  op_soft0 <- fmri.pipeline:::hrf_inverse_operator(n, k_hrf, rows, ar5, z_nuis, st_lim, obs_weights = w_limit)
+  op_hard <- fmri.pipeline:::hrf_inverse_operator(n, k_hrf, rows_kept, ar5, z_nuis, st_lim, obs_weights = NULL)
+  expect_equal(op_soft0[, -drop_local, drop = FALSE], op_hard, tolerance = 1e-6)
+  expect_lt(max(abs(op_soft0[, drop_local, drop = FALSE])), 1e-8)
+
+  # Exact Stage-3 trial operator error covariance factor U^T U == B_eff Sigma_rwls B_eff^T
+  M_tr <- 12L
+  B_op <- matrix(stats::rnorm(M_tr * m), M_tr, m)
+  info5 <- fmri.pipeline:::hrf_ar_cascade_info(ar5, max_lag = n)
+  Sigma_ar <- matrix(info5$acf[abs(outer(rows, rows, "-")) + 1L], m, m)
+  w_pos <- pmax(obs_w, 1e-8)
+  w_c <- w_pos / sum(w_pos)
+  B_eff <- B_op - tcrossprod(rowSums(B_op), w_c)
+
+  # Woodbury exact covariance
+  delta2 <- 1.0 / obs_w - 1.0
+  V_dense_wood <- B_eff %*% (Sigma_ar + diag(delta2, m)) %*% t(B_eff)
+  V_fast_wood <- fmri.pipeline:::compute_ar1_operator_cov(
+    B_op, rows, ar5, center_obs = TRUE, obs_weights = obs_w, weight_space = "woodbury"
+  )
+  expect_equal(V_fast_wood, V_dense_wood, tolerance = 1e-12)
+
+  # Innovation exact covariance
+  W_unit <- solve(t(chol(Sigma_ar)))
+  Sigma_innov <- solve(W_unit) %*% diag(1.0 / obs_w, m) %*% t(solve(W_unit))
+  V_dense_innov <- B_eff %*% Sigma_innov %*% t(B_eff)
+  V_fast_innov <- fmri.pipeline:::compute_ar1_operator_cov(
+    B_op, rows, ar5, center_obs = TRUE, obs_weights = obs_w, weight_space = "innovation"
+  )
+  expect_equal(V_fast_innov, V_dense_innov, tolerance = 1e-12)
+})
+
+test_that("end-to-end rWLS deconvolution preserves clean/heavy-neural signals and suppresses sub-scrub spikes", {
+  set.seed(9042)
+  tr <- 0.8
+  n_time <- 180L
+  n_vox <- 16L
+  lib <- hrf_library(tr, peak_delays = c(4.8, 5.8), dispersions = 1.0, undershoot_ratios = 6)
+  h_true <- lib[, 1L, drop = FALSE]
+  info_ar <- fmri.pipeline:::hrf_ar_cascade_info(c(0.55, 0.12, -0.18), max_lag = 16L)
+  parcels <- stats::setNames(rep(c("P1", "P2"), each = 8L), paste0("v", seq_len(n_vox)))
+
+  onsets <- seq(8.0, n_time * tr - 18.0, by = 6.4)
+  m_tr <- length(onsets)
+  ev_df <- data.frame(onset = onsets, duration = 0.0, condition = "stim")
+  des <- fmri.pipeline:::hrf_event_design_cpp(
+    n_time, tr, 0.0, onsets, rep(0.0, m_tr), seq_len(m_tr), m_tr, h_true
+  )[[1L]]
+
+  x_mod1 <- as.numeric(scale(stats::rnorm(m_tr)))
+  x_mod2 <- as.numeric(scale(stats::rnorm(m_tr)))
+  beta_true <- 0.45
+
+  mk_run <- function(x_m, heavy_neural = FALSE) {
+    amp <- 0.7 + beta_true * x_m + stats::rnorm(m_tr, sd = 0.20)
+    if (heavy_neural) amp[c(4L, 11L)] <- amp[c(4L, 11L)] + c(2.6, -2.4)
+    g_ar <- as.numeric(stats::arima.sim(list(ar = info_ar$phi), n = n_time, sd = sqrt(info_ar$sig_u2)))
+    Y <- matrix(0.0, n_time, n_vox, dimnames = list(NULL, names(parcels)))
+    for (v in seq_len(n_vox)) {
+      e_v <- as.numeric(stats::arima.sim(list(ar = info_ar$phi), n = n_time, sd = sqrt(info_ar$sig_u2)))
+      Y[, v] <- 100.0 + as.numeric(des %*% amp) + sqrt(0.35) * g_ar + sqrt(0.65) * e_v
+    }
+    Y
+  }
+
+  # 1. Clean + heavy neural bursts: auto rWLS does not fire falsely and is column-order invariant
+  bold_clean <- list(run1 = mk_run(x_mod1, TRUE), run2 = mk_run(x_mod2, TRUE))
+  events_2 <- list(run1 = ev_df, run2 = ev_df)
+  fit_clean <- estimate_crossrun_hrf(bold_clean, events_2, tr, lib, spatial_groups = parcels, pooling = "parcel")
+  dec_auto <- deconvolve_crossrun_hrf(bold_clean, fit_clean, lambda = 0.7, scaling = "noise_sd", rwls = "auto")
+  dec_none <- deconvolve_crossrun_hrf(bold_clean, fit_clean, lambda = 0.7, scaling = "noise_sd", rwls = "none")
+  expect_equal(dec_auto$frame_weights$run1, rep(1.0, n_time))
+  expect_equal(dec_auto$frame_weights$run2, rep(1.0, n_time))
+  expect_equal(dec_auto$activity, dec_none$activity, tolerance = 1e-12)
+
+  # 2. Sub-threshold observation glitches near task peaks: auto rWLS detects spikes & improves recovery
+  bold_sp <- bold_clean
+  sp_trs <- round(onsets[c(3L, 8L, 14L)] / tr) + 6L
+  for (st in sp_trs) {
+    bold_sp$run1[st, ] <- bold_sp$run1[st, ] + 6.8 * stats::rnorm(n_vox, mean = 0.9, sd = 0.25)
+    bold_sp$run2[st + 1L, ] <- bold_sp$run2[st + 1L, ] - 6.5 * stats::rnorm(n_vox, mean = 0.9, sd = 0.25)
+  }
+  fit_sp <- estimate_crossrun_hrf(bold_sp, events_2, tr, lib, spatial_groups = parcels, pooling = "parcel")
+  dec_sp_none <- deconvolve_crossrun_hrf(bold_sp, fit_sp, lambda = NULL, scaling = "noise_sd", rwls = "none")
+  dec_sp_auto <- deconvolve_crossrun_hrf(bold_sp, fit_sp, lambda = NULL, scaling = "noise_sd", rwls = "auto")
+
+  expect_true(all(dec_sp_auto$frame_weights$run1[sp_trs] < 0.25))
+  expect_gt(stats::median(dec_sp_auto$frame_weights$run1[-sp_trs]), 0.99)
+
+  # Column permutation invariance even when rWLS actively downweights spikes
+  perm <- rev(seq_len(n_vox))
+  bold_perm <- lapply(bold_sp, function(m) m[, perm, drop = FALSE])
+  fit_perm <- estimate_crossrun_hrf(bold_perm, events_2, tr, lib, spatial_groups = parcels[perm], pooling = "parcel")
+  dec_perm <- deconvolve_crossrun_hrf(bold_perm, fit_perm, lambda = dec_sp_auto$settings$lambda,
+                                      scaling = "noise_sd", rwls = "auto")
+  expect_equal(dec_perm$frame_weights$run1, dec_sp_auto$frame_weights$run1, tolerance = 1e-12)
+  expect_equal(as.numeric(dec_perm$activity$run1),
+               as.numeric(dec_sp_auto$activity$run1[, perm, drop = FALSE]), tolerance = 1e-10)
+
+  X_cov <- cbind(mod = c(x_mod1, x_mod2))
+  ep_none <- decon_epoch_regression(dec_sp_none, events_2, target_condition = "stim", lags = 0,
+                                    covariates = X_cov, parcel_groups = parcels, restore_scale = TRUE)
+  ep_auto <- decon_epoch_regression(dec_sp_auto, events_2, target_condition = "stim", lags = 0,
+                                    covariates = X_cov, parcel_groups = parcels, restore_scale = TRUE)
+  err_none <- mean(abs(ep_none$coefficients$beta_corrected - beta_true))
+  err_auto <- mean(abs(ep_auto$coefficients$beta_corrected - beta_true))
+  expect_lt(err_auto, err_none)
+})
+
+
 
 
 

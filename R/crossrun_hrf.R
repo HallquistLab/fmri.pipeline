@@ -1341,8 +1341,17 @@ estimate_crossrun_hrf <- function(bold, events, tr, kernel_grid, nuisance = NULL
 #'   \code{lambda = NULL}.
 #' @param gcv_rule Selection rule (\code{"min"} or \code{"1se"}) used when
 #'   \code{lambda = NULL}.
+#' @param rwls Robust weighted least-squares frame weighting mode for transient
+#'   temporal artifacts (e.g., sub-censoring-threshold motion glitches or RF spikes):
+#'   \code{"auto"} (default; enables \code{"woodbury"} on modern AR/calibrated fits and
+#'   falls back to \code{"none"} on legacy OLS or \code{backend = "wiener"}),
+#'   \code{"none"} (or \code{FALSE}; unweighted GLS),
+#'   \code{"woodbury"} (or \code{TRUE}; additive-transient Sparse Bayesian Learning
+#'   Woodbury covariance \eqn{\Sigma_{\mathrm{AR}} + \mathrm{diag}(\delta^2)}), or
+#'   \code{"innovation"} (Diedrichsen-style innovation-space downweighting).
 #' @return A list with activity matrices, per-run scaling/status tables, the HRF
-#'   fit and frozen inverse settings. Activity matrices retain voxel IDs and carry
+#'   fit, frozen inverse settings, standardized noise innovations, and per-run
+#'   observation \code{frame_weights}. Activity matrices retain voxel IDs and carry
 #'   tr and time_offset attributes for subsequent event alignment.
 #' @details One inverse operator is constructed per selected HRF/run length,
 #'   cached for consecutive runs with identical masks/nuisance designs, and applied using block
@@ -1364,7 +1373,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
     penalty = c("diff2", "diff1", "ridge", "matern1", "sobolev"), backend = c("cpp", "r", "wiener"),
     batch_size = 2048L, tail_padding = 0L, ridge_floor = 1e-8, operator_cache_mb = 128,
     nuisance_mode = NULL, observation_mask = NULL,
-    lambda_grid = 10^seq(-2, 1.0, length.out = 16), gcv_rule = c("min", "1se")) {
+    lambda_grid = 10^seq(-2, 1.0, length.out = 16), gcv_rule = c("min", "1se"),
+    rwls = "auto") {
   hrf_validate_bold(bold)
   if (!inherits(hrf_fit, "crossrun_hrf")) stop("hrf_fit must be a crossrun_hrf object")
   if (!identical(names(bold), hrf_fit$run_ids) || !identical(colnames(bold[[1L]]), hrf_fit$voxel_ids) ||
@@ -1384,9 +1394,177 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
   if (is.null(observation_mask)) observation_mask <- if (modern) "fit" else "all"
   nuisance_mode <- match.arg(nuisance_mode, c("joint", "ignore"))
   observation_mask <- match.arg(observation_mask, c("fit", "all"))
+  if (is.logical(rwls)) {
+    checkmate::assert_flag(rwls)
+    rwls_mode <- if (isTRUE(rwls)) "woodbury" else "none"
+  } else if (is.character(rwls) && length(rwls) == 1L && !is.na(rwls)) {
+    rwls_mode <- match.arg(rwls, c("auto", "none", "woodbury", "innovation"))
+  } else {
+    stop("rwls must be a logical flag or one of 'auto', 'none', 'woodbury', 'innovation'")
+  }
   if (backend == "wiener" && (identical(hrf_fit$settings$noise_model, "ar1") ||
       nuisance_mode != "ignore" || observation_mask != "all"))
     stop("Wiener does not implement masked, nuisance-adjusted AR GLS; use cpp/r, or an OLS fit with nuisance_mode = 'ignore', observation_mask = 'all'")
+  if (backend == "wiener" && rwls_mode %in% c("woodbury", "innovation")) {
+    stop("Wiener backend does not implement rWLS frame weighting; use backend = 'cpp' or 'r'")
+  }
+  if (rwls_mode == "auto" && (!modern || backend == "wiener")) {
+    rwls_mode <- "none"
+  }
+  rwls_space <- if (rwls_mode == "innovation") "innovation" else "woodbury"
+
+  # Per-run noise SD, standardized innovations, and optional global rWLS frame weights
+  # pre-pass (computed once before GCV lambda tuning so tuning also benefits from
+  # precomputed GLS noise_sd and artifact downweighting without redundant QR passes).
+  run_prep <- vector("list", length(bold))
+  frame_weights <- precomputed_nsd <- vector("list", length(bold))
+  names(frame_weights) <- names(precomputed_nsd) <- names(bold)
+  for (r in seq_along(bold)) {
+    y <- bold[[r]]; n <- nrow(y); n_vox <- ncol(y)
+    mask <- if (observation_mask == "fit") hrf_fit$specification$valid_rows[[r]] else rep(TRUE, n)
+    rows <- which(!is.na(mask) & mask)
+    strat <- hrf_stratum_kernels(hrf_fit, r)
+    rho <- strat$rho
+    status <- if (length(rows) >= 3L) decon_signal_status(y[rows, , drop = FALSE]) else
+      rep("insufficient_observations", n_vox)
+    if (identical(hrf_fit$settings$noise_model, "ar1") && !is.null(hrf_fit$noise)) {
+      unknown <- grepl("^insufficient_noise", hrf_fit$noise[[r]]$method)
+      status[status == "ok" & unknown] <- "noise_unidentified"
+    }
+    ok_cols <- which(status == "ok")
+    store_innov <- length(rows) >= 3L && n_vox <= 16384L
+    z_innov_r <- if (store_innov) {
+      matrix(0.0, length(rows), n_vox, dimnames = list(NULL, colnames(y)))
+    } else NULL
+    coh_nsd_r <- rep(NA_real_, n_vox)
+
+    need_rwls <- (rwls_mode != "none") && length(rows) >= 16L && length(ok_cols) >= 1L
+    rwls_cols <- integer(0L)
+    rwls_map <- rep(NA_integer_, n_vox)
+    z_raw_r <- r_obs_r <- NULL
+    if (need_rwls) {
+      if (length(ok_cols) <= 4096L) {
+        rwls_cols <- ok_cols
+      } else {
+        r2_r <- if (!is.null(hrf_fit$selections[[r]]$r2)) {
+          as.numeric(hrf_fit$selections[[r]]$r2[ok_cols])
+        } else {
+          rep(1.0, length(ok_cols))
+        }
+        r2_r[!is.finite(r2_r)] <- -Inf
+        thr_r2 <- sort(r2_r, decreasing = TRUE)[4096L]
+        rwls_cols <- ok_cols[which(r2_r >= thr_r2)]
+        if (length(rwls_cols) > 4096L) rwls_cols <- rwls_cols[seq_len(4096L)]
+      }
+      rwls_map[rwls_cols] <- seq_along(rwls_cols)
+      z_raw_r <- matrix(NA_real_, length(rows), length(rwls_cols))
+      r_obs_r <- matrix(NA_real_, length(rows), length(rwls_cols))
+    }
+
+    strata <- strat$keys
+    task_env_accum <- rep(0.0, length(rows))
+    n_task_strata <- 0L
+    diff1_cols <- function(mat) {
+      if (ncol(mat) == 0L || nrow(mat) < 2L) return(mat)
+      rbind(mat[2:nrow(mat), , drop = FALSE], 0.0) -
+        rbind(0.0, mat[1:(nrow(mat) - 1L), , drop = FALSE])
+    }
+    for (key in unique(strata[status == "ok"])) {
+      columns <- which(strata == key & status == "ok")
+      ar <- rho[columns[1L]]
+      ar_op <- if (!is.null(strat$get_ar)) strat$get_ar(columns[1L]) else ar
+      k_vec <- as.numeric(strat$get_kernel(columns[1L]))
+      x_gls_stratum <- NULL
+      x_trial_stratum <- NULL
+      if (!is.null(hrf_fit$specification$events[[r]]) && length(rows) >= 20L) {
+        mask_decon_bool <- seq_len(n) %in% rows
+        nuis_r <- if (!is.null(hrf_fit$specification$nuisance)) hrf_fit$specification$nuisance[[r]] else matrix(numeric(), n, 0L)
+        z_r_base <- cbind(intercept = 1, trend = seq(-1, 1, length.out = n), nuis_r)
+        off_r <- if (length(hrf_fit$settings$time_offset) >= r) hrf_fit$settings$time_offset[r] else 0.0
+        md_str <- hrf_build_noise_mean_design(n, hrf_fit$specification$events[[r]],
+          hrf_fit$settings$tr, off_r, k_vec, z_r_base, mask_decon_bool)
+        if (md_str$df_nominal >= 16L) {
+          x_gls_stratum <- md_str$design[rows, , drop = FALSE]
+        }
+        if (!is.null(md_str$trial_design) && ncol(md_str$trial_design) > 0L) {
+          td_full <- md_str$trial_design
+          td_d1 <- diff1_cols(td_full)
+          td_d2 <- diff1_cols(td_d1)
+          task_env_accum <- task_env_accum +
+            rowSums(td_full[rows, , drop = FALSE]^2) +
+            0.5 * rowSums(td_d1[rows, , drop = FALSE]^2) +
+            0.25 * rowSums(td_d2[rows, , drop = FALSE]^2)
+          n_task_strata <- n_task_strata + 1L
+          x_trial_stratum <- if (isTRUE(md_str$used_trial_design)) {
+            cbind(td_d1, td_d2)[rows, , drop = FALSE]
+          } else {
+            cbind(td_full, td_d1)[rows, , drop = FALSE]
+          }
+        }
+      }
+      for (indices in split(columns, ceiling(seq_along(columns) / batch_size))) {
+        y_blk <- y[rows, indices, drop = FALSE]
+        idx_rw <- if (need_rwls) which(!is.na(rwls_map[indices])) else integer(0L)
+        do_raw_blk <- length(idx_rw) > 0L
+        gls_res <- hrf_estimate_gls_noise_sd(
+          y_blk, x_gls_stratum, rows, ar_op,
+          return_innovations = store_innov,
+          return_raw_innovations = do_raw_blk,
+          trial_rows = x_trial_stratum
+        )
+        coh_nsd <- if (is.list(gls_res)) gls_res$sd else gls_res
+        coh_nsd_r[indices] <- coh_nsd
+        if (store_innov && is.list(gls_res) && !is.null(gls_res$z_unit)) {
+          z_innov_r[, indices] <- gls_res$z_unit
+        }
+        if (do_raw_blk && is.list(gls_res) && !is.null(gls_res$z_raw)) {
+          dst <- rwls_map[indices[idx_rw]]
+          z_raw_r[, dst] <- gls_res$z_raw[, idx_rw, drop = FALSE]
+          r_obs_r[, dst] <- gls_res$r_obs[, idx_rw, drop = FALSE]
+        }
+      }
+    }
+
+    w_r <- rep(1.0, length(rows))
+    if (need_rwls && !is.null(z_raw_r) && ncol(z_raw_r) >= 1L) {
+      med_or0 <- function(vec) {
+        if (is.null(vec)) return(0.0)
+        val <- stats::median(vec[rwls_cols], na.rm = TRUE)
+        if (is.finite(val)) as.numeric(val) else 0.0
+      }
+      rho_med <- med_or0(rho)
+      p1_med <- med_or0(strat$psi1)
+      p2_med <- med_or0(strat$psi2)
+      p3_med <- med_or0(strat$psi3)
+      p4_med <- med_or0(strat$psi4)
+      ar_rep_r <- if (abs(p3_med) > 1e-10 || abs(p4_med) > 1e-10) {
+        c(rho_med, p1_med, p2_med, p3_med, p4_med)
+      } else if (abs(p1_med) > 1e-10 || abs(p2_med) > 1e-10) {
+        c(rho_med, p1_med, p2_med)
+      } else {
+        rho_med
+      }
+      w_r <- hrf_estimate_rwls_weights(
+        z_raw = z_raw_r,
+        r_obs = r_obs_r,
+        rows = rows,
+        ar_vec = ar_rep_r,
+        mode = rwls_mode,
+        task_env = if (n_task_strata > 0L) (task_env_accum / n_task_strata) else NULL
+      )
+    }
+    frame_weights[[r]] <- w_r
+    precomputed_nsd[[r]] <- coh_nsd_r
+    run_prep[[r]] <- list(
+      rows = rows,
+      strat = strat,
+      rho = rho,
+      status = status,
+      coh_nsd = coh_nsd_r,
+      z_innov = z_innov_r,
+      w_r = w_r
+    )
+  }
 
   # Automatic gain-calibrated, task-weighted prewhitened GCV tuning when lambda = NULL:
   lambda_tuning <- NULL
@@ -1404,7 +1582,9 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       nuisance_mode = nuisance_mode,
       tail_padding = tail_padding,
       backend = backend,
-      gcv_rule = gcv_rule
+      gcv_rule = gcv_rule,
+      frame_weights = frame_weights,
+      precomputed_nsd = precomputed_nsd
     )
     lambda <- tuned$lambda
     lambda_tuning <- tuned$tuning
@@ -1414,7 +1594,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
     backend = backend, tail_padding = as.integer(tail_padding), ridge_floor = ridge_floor,
     batch_size = as.integer(batch_size), operator_cache_mb = operator_cache_mb,
     hrf_selection = "frozen_crossrun", nuisance_mode = nuisance_mode,
-    observation_mask = observation_mask, noise_model = hrf_fit$settings$noise_model)
+    observation_mask = observation_mask, noise_model = hrf_fit$settings$noise_model,
+    rwls = rwls_mode, rwls_space = rwls_space)
   activity <- scaling_tables <- noise_innovations <- vector("list", length(bold))
   names(activity) <- names(scaling_tables) <- names(noise_innovations) <- names(bold)
   operators <- new.env(parent = emptyenv())
@@ -1422,36 +1603,33 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
   cache_keys <- character(); cache_bytes <- 0
   for (r in seq_along(bold)) {
     y <- bold[[r]]; n <- nrow(y)
-    mask <- if (observation_mask == "fit") hrf_fit$specification$valid_rows[[r]] else rep(TRUE, n)
-    rows <- which(!is.na(mask) & mask)
+    prep_r <- run_prep[[r]]
+    rows <- prep_r$rows
+    strat <- prep_r$strat
+    rho <- prep_r$rho
+    status <- prep_r$status
+    coh_nsd_r <- prep_r$coh_nsd
+    z_innov_r <- prep_r$z_innov
+    w_r <- prep_r$w_r
+    w_active <- length(w_r) == length(rows) && any(abs(w_r - 1.0) > 1e-8)
+    w_op <- if (w_active) w_r else NULL
+
     z <- if (nuisance_mode == "joint") cbind(1, seq(-1, 1, length.out = n),
       hrf_fit$specification$nuisance[[r]]) else matrix(numeric(), n, 0L)
-    design <- list(n = n, rows = rows, nuisance = z)
+    design <- list(n = n, rows = rows, nuisance = z, obs_weights = w_op)
     if (!identical(design, cached_design)) {
       rm(list = ls(operators), envir = operators)
       cache_keys <- character(); cache_bytes <- 0
       cached_design <- design
     }
-    strat <- hrf_stratum_kernels(hrf_fit, r)
-    rho <- strat$rho
-    status <- if (length(rows) >= 3L) decon_signal_status(y[rows, , drop = FALSE]) else
-      rep("insufficient_observations", ncol(y))
-    if (identical(hrf_fit$settings$noise_model, "ar1") && !is.null(hrf_fit$noise)) {
-      unknown <- grepl("^insufficient_noise", hrf_fit$noise[[r]]$method)
-      status[status == "ok" & unknown] <- "noise_unidentified"
-    }
     out <- matrix(NA_real_, n, ncol(y), dimnames = dimnames(y))
-    store_innov <- length(rows) >= 3L && ncol(y) <= 16384L
-    z_innov_r <- if (store_innov) {
-      matrix(0.0, length(rows), ncol(y), dimnames = list(NULL, colnames(y)))
-    } else NULL
     centers <- divisors <- noise_sds <- rep(NA_real_, ncol(y))
     # Group voxels into strata that share the exact same (kernel / weight vector, rho) pair.
     # Because the regularized GLS inverse operator M = (H' W' Q_Z W H + lambda P)^-1 H' W' Q_Z W
-    # depends only on (n, kernel, valid_rows, rho, nuisance, lambda, penalty),
+    # depends only on (n, kernel, valid_rows, rho, nuisance, lambda, penalty, obs_weights),
     # all voxels in a stratum share a single n x m_obs inverse operator matrix,
     # turning voxelwise deconvolution into fast BLAS matrix multiplication (M %*% Y_block)
-    # and caching operators across runs when observation masks and nuisance match.
+    # and caching operators across runs when observation masks, nuisance, and weights match.
     strata <- strat$keys
     for (key in unique(strata[status == "ok"])) {
       columns <- which(strata == key & status == "ok")
@@ -1462,26 +1640,9 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       ar_psi3 <- if (!is.null(strat$psi3)) strat$psi3[columns[1L]] else 0.0
       ar_psi4 <- if (!is.null(strat$psi4)) strat$psi4[columns[1L]] else 0.0
       k_vec <- as.numeric(strat$get_kernel(columns[1L]))
-      x_gls_stratum <- NULL
-      x_trial_stratum <- NULL
-      if (!is.null(hrf_fit$specification$events[[r]]) && length(rows) >= 20L) {
-        mask_decon_bool <- seq_len(n) %in% rows
-        nuis_r <- if (!is.null(hrf_fit$specification$nuisance)) hrf_fit$specification$nuisance[[r]] else matrix(numeric(), n, 0L)
-        z_r_base <- cbind(intercept = 1, trend = seq(-1, 1, length.out = n), nuis_r)
-        off_r <- if (length(hrf_fit$settings$time_offset) >= r) hrf_fit$settings$time_offset[r] else 0.0
-        md_str <- hrf_build_noise_mean_design(n, hrf_fit$specification$events[[r]],
-          hrf_fit$settings$tr, off_r, k_vec, z_r_base, mask_decon_bool)
-        if (md_str$df_nominal >= 16L) {
-          x_gls_stratum <- md_str$design[rows, , drop = FALSE]
-        }
-        if (!isTRUE(md_str$used_trial_design) && !is.null(md_str$trial_design) &&
-            ncol(md_str$trial_design) > 0L) {
-          x_trial_stratum <- md_str$trial_design[rows, , drop = FALSE]
-        }
-      }
       if (backend != "wiener") {
         if (exists(key, envir = operators, inherits = FALSE)) operator <- get(key, envir = operators) else {
-          operator <- hrf_inverse_operator(n, k_vec, rows, ar_op, z, settings)
+          operator <- hrf_inverse_operator(n, k_vec, rows, ar_op, z, settings, obs_weights = w_op)
           bytes <- as.numeric(utils::object.size(operator))
           if (bytes <= operator_cache_mb * 1024^2) {
             while (length(cache_keys) && cache_bytes + bytes > operator_cache_mb * 1024^2) {
@@ -1495,15 +1656,7 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       }
       for (indices in split(columns, ceiling(seq_along(columns) / batch_size))) {
         y_blk <- y[rows, indices, drop = FALSE]
-        gls_res <- hrf_estimate_gls_noise_sd(
-          y_blk, x_gls_stratum, rows, ar_op,
-          return_innovations = store_innov,
-          trial_rows = x_trial_stratum
-        )
-        coh_nsd <- if (store_innov) gls_res$sd else gls_res
-        if (store_innov && !is.null(gls_res$z_unit)) {
-          z_innov_r[, indices] <- gls_res$z_unit
-        }
+        coh_nsd <- coh_nsd_r[indices]
         scaled <- scale_decon_input(
           y_blk,
           scaling = scaling,
@@ -1513,7 +1666,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
           noise_psi3 = ar_psi3,
           noise_psi4 = ar_psi4,
           noise_sd_override = if (identical(scaling, "noise_sd")) coh_nsd else NULL,
-          rows = rows
+          rows = rows,
+          obs_weights = w_op
         )
         out[, indices] <- if (backend == "wiener") {
           fit_input <- rbind(scaled$y, matrix(0, tail_padding, length(indices)))
@@ -1539,6 +1693,7 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
     scaling = scaling_tables,
     hrf_fit = hrf_fit,
     settings = settings,
-    noise_innovations = noise_innovations
+    noise_innovations = noise_innovations,
+    frame_weights = frame_weights
   )
 }

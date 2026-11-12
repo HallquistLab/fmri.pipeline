@@ -18,7 +18,8 @@ deconvolve_crossrun_hrf(
   nuisance_mode = NULL,
   observation_mask = NULL,
   lambda_grid = 10^seq(-2, 1, length.out = 16),
-  gcv_rule = c("min", "1se")
+  gcv_rule = c("min", "1se"),
+  rwls = "auto"
 )
 }
 \arguments{
@@ -63,10 +64,20 @@ observations (all). Defaults to fit for AR/calibrated, all for OLS/legacy.}
 
 \item{gcv_rule}{Selection rule (\code{"min"} or \code{"1se"}) used when
 \code{lambda = NULL}.}
+
+\item{rwls}{Robust weighted least-squares frame weighting mode for transient
+temporal artifacts (e.g., sub-censoring-threshold motion glitches or RF spikes):
+\code{"auto"} (default; enables \code{"woodbury"} on modern AR/calibrated fits and
+falls back to \code{"none"} on legacy OLS or \code{backend = "wiener"}),
+\code{"none"} (or \code{FALSE}; unweighted GLS),
+\code{"woodbury"} (or \code{TRUE}; additive-transient Sparse Bayesian Learning
+Woodbury covariance \eqn{\Sigma_{\mathrm{AR}} + \mathrm{diag}(\delta^2)}), or
+\code{"innovation"} (Diedrichsen-style innovation-space downweighting).}
 }
 \value{
 A list with activity matrices, per-run scaling/status tables, the HRF
-  fit and frozen inverse settings. Activity matrices retain voxel IDs and carry
+  fit, frozen inverse settings, standardized noise innovations, and per-run
+  observation \code{frame_weights}. Activity matrices retain voxel IDs and carry
   tr and time_offset attributes for subsequent event alignment.
 }
 \description{

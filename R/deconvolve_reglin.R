@@ -782,13 +782,34 @@ scale_decon_input <- function(
   noise_psi3 = NULL,
   noise_psi4 = NULL,
   noise_sd_override = NULL,
-  rows = NULL
+  rows = NULL,
+  obs_weights = NULL
 ) {
   scaling <- resolve_decon_scaling(scaling, normalize, demean)
-  center <- if (scaling == "none") rep(0, ncol(y)) else colMeans(y)
+  has_w <- !is.null(obs_weights) && length(obs_weights) == nrow(y) &&
+    all(is.finite(obs_weights)) && any(abs(obs_weights - 1.0) > 1e-8)
+  w_c <- if (has_w) {
+    w_pos <- pmax(as.numeric(obs_weights), 1e-8)
+    w_pos / sum(w_pos)
+  } else {
+    NULL
+  }
+  center <- if (scaling == "none") {
+    rep(0, ncol(y))
+  } else if (has_w) {
+    as.numeric(crossprod(w_c, y))
+  } else {
+    colMeans(y)
+  }
   divisor <- rep(1, ncol(y))
   if (scaling == "zscore") {
-    divisor <- apply(y, 2L, stats::sd)
+    if (has_w && nrow(y) >= 2L) {
+      yc <- sweep(y, 2L, center, "-")
+      denom_w <- max(1.0 - sum(w_c^2), 1e-6)
+      divisor <- sqrt(colSums(sweep(yc^2, 1L, w_c, "*")) / denom_w)
+    } else {
+      divisor <- apply(y, 2L, stats::sd)
+    }
     divisor[!is.finite(divisor) | divisor <= .Machine$double.eps] <- 1
   } else if (scaling == "noise_sd") {
     if (!is.null(noise_sd_override)) {
@@ -806,7 +827,12 @@ scale_decon_input <- function(
       )
     }
   } else if (scaling == "psc") {
-    spread <- apply(y, 2L, stats::sd)
+    spread <- if (has_w && nrow(y) >= 2L) {
+      yc <- sweep(y, 2L, center, "-")
+      sqrt(colSums(sweep(yc^2, 1L, w_c, "*")) / max(1.0 - sum(w_c^2), 1e-6))
+    } else {
+      apply(y, 2L, stats::sd)
+    }
     if (any(!is.finite(center) | center <= sqrt(.Machine$double.eps) * spread)) {
       stop("Percent-signal-change scaling requires a positive baseline mean well away from zero; ",
         "use zscore or demean for residualized/zero-mean signals.")

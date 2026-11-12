@@ -51,8 +51,8 @@ hrf_noise_profile_cpp <- function(bold, mean_design, rows, rho_grid, batch_size 
     .Call(`_fmri_pipeline_hrf_noise_profile_cpp`, bold, mean_design, rows, rho_grid, batch_size, rank_tol)
 }
 
-hrf_inverse_operator_cpp <- function(n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding = 0L, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0) {
-    .Call(`_fmri_pipeline_hrf_inverse_operator_cpp`, n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding, ar_phi, ar_acf, sig_u2)
+hrf_inverse_operator_cpp <- function(n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding = 0L, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0, obs_weights = NULL, weight_space = "woodbury") {
+    .Call(`_fmri_pipeline_hrf_inverse_operator_cpp`, n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding, ar_phi, ar_acf, sig_u2, obs_weights, weight_space)
 }
 
 hrf_whiten_apply_cpp <- function(target, rows, rho = 0.0, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0, unit_marginal = FALSE) {

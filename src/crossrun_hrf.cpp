@@ -736,19 +736,26 @@ arma::mat hrf_noise_profile_cpp(const arma::mat& bold, const arma::mat& mean_des
   return profile;
 }
 
-// Exact masked GLS inverse, jointly fitting unpenalized nuisance coefficients.
-// Return only its action on measured rows; optional padded zeros are fixed.
+// Exact masked GLS inverse, jointly fitting unpenalized nuisance coefficients,
+// with optional Diedrichsen-style / Woodbury rWLS observation weights `obs_weights`
+// in (0, 1] on `rows` (`weight_space = "woodbury"` models additive transient variance
+// Sigma_sub + diag((1 - w) / w); `weight_space = "innovation"` scales whitened rows
+// by sqrt(w)). Return only its action on measured rows; optional padded zeros are fixed.
 // [[Rcpp::export]]
 arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
     const Rcpp::IntegerVector& rows, double rho, const arma::mat& nuisance,
     double lambda, const std::string& penalty, double ridge_floor, int tail_padding = 0,
     Rcpp::Nullable<Rcpp::NumericVector> ar_phi = R_NilValue,
     Rcpp::Nullable<Rcpp::NumericVector> ar_acf = R_NilValue,
-    double sig_u2 = 1.0) {
+    double sig_u2 = 1.0,
+    Rcpp::Nullable<Rcpp::NumericVector> obs_weights = R_NilValue,
+    const std::string& weight_space = "woodbury") {
   arma::uvec keep = hrf_rows(rows, n_time);
   if (kernel.n_elem < 2 || !kernel.is_finite() || nuisance.n_rows != (arma::uword)n_time ||
       !std::isfinite(rho) || std::abs(rho) >= 1 || lambda < 0 || ridge_floor < 0 || tail_padding < 0)
     Rcpp::stop("Invalid masked inverse parameters");
+  if (weight_space != "woodbury" && weight_space != "innovation")
+    Rcpp::stop("Unknown weight_space in hrf_inverse_operator_cpp");
   double pen_w0 = 0.0, pen_w1 = 0.0, pen_w2 = 0.0;
   arma::uword pen_band = 0;
   if (penalty == "ridge") {
@@ -770,20 +777,79 @@ arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
     arma::regspace<arma::uvec>(n_time, n_time + tail_padding - 1));
   arma::uword m = keep.n_elem, latent = n_time + tail_padding + history;
 
+  arma::vec w_obs;
+  bool has_obs_w = false;
+  if (obs_weights.isNotNull()) {
+    w_obs = Rcpp::as<arma::vec>(obs_weights.get());
+    if (w_obs.n_elem != measured || !w_obs.is_finite() || arma::any(w_obs <= 0.0))
+      Rcpp::stop("obs_weights must be positive, finite, and match length(rows)");
+    for (arma::uword i = 0; i < measured; ++i) {
+      if (w_obs(i) > 1.0) w_obs(i) = 1.0;
+      if (std::abs(w_obs(i) - 1.0) > 1e-8) has_obs_w = true;
+    }
+  }
+
   arma::vec k_rev = arma::reverse(kernel);
   const double* kp = k_rev.memptr();
 
-  // Cascaded AR(p) path (has_psi == TRUE): fast in-place AR(p) filter / subset
-  // Cholesky + BLAS DGEMM + LAPACK Cholesky solve.
+  // Cascaded AR(p) OR rWLS weighted path: fast in-place AR(p)/AR(1) whitener +
+  // optional low-rank Woodbury square-root update + BLAS DGEMM + LAPACK Cholesky solve.
   ArWhitener whitener;
-  whitener.init(keep, rho, ar_phi, ar_acf, sig_u2);
-  if (whitener.is_ar_p) {
+  const bool use_woodbury = has_obs_w && (weight_space == "woodbury");
+  whitener.init(keep, rho, ar_phi, ar_acf, sig_u2, use_woodbury);
+  if (whitener.is_ar_p || has_obs_w) {
+    arma::mat u_a;
+    arma::vec sh_a;
+    arma::vec sqrt_w_all;
+    double s0_wood = 1.0;
+    if (use_woodbury) {
+      s0_wood = whitener.is_ar_p
+        ? std::sqrt(std::max(sig_u2, 1e-8))
+        : (rho == 0.0 ? 1.0 : std::sqrt(std::max(1.0 - rho * rho, 1e-8)));
+      std::vector<arma::uword> sp_idx;
+      sp_idx.reserve(measured);
+      for (arma::uword i = 0; i < measured; ++i) {
+        if (w_obs(i) < 1.0 - 1e-8) sp_idx.push_back(i);
+      }
+      if (!sp_idx.empty()) {
+        arma::mat a_mat(m, sp_idx.size(), arma::fill::zeros);
+        for (size_t c = 0; c < sp_idx.size(); ++c) {
+          arma::uword ii = sp_idx[c];
+          double w_ii = std::max(w_obs(ii), 1e-8);
+          a_mat(ii, c) = std::sqrt((1.0 - w_ii) / w_ii);
+        }
+        whitener.apply(a_mat);
+        arma::vec d_a;
+        arma::mat v_a;
+        bool ok_svd = arma::svd_econ(u_a, d_a, v_a, a_mat, "left");
+        if (!ok_svd) Rcpp::stop("SVD failed in Woodbury rWLS whitener");
+        sh_a = 1.0 - 1.0 / arma::sqrt(1.0 + arma::square(d_a));
+      }
+    } else if (has_obs_w) {
+      sqrt_w_all.ones(m);
+      sqrt_w_all.head(measured) = arma::sqrt(arma::clamp(w_obs, 1e-8, 1.0));
+    }
+
+    auto apply_eff_whiten = [&](arma::mat& mat_x) {
+      whitener.apply(mat_x);
+      if (use_woodbury) {
+        if (u_a.n_cols > 0) {
+          arma::mat utx = u_a.t() * mat_x;
+          utx.each_col() %= sh_a;
+          mat_x -= u_a * utx;
+        }
+        if (s0_wood != 1.0) mat_x *= s0_wood;
+      } else if (has_obs_w) {
+        mat_x.each_col() %= sqrt_w_all;
+      }
+    };
+
     arma::mat q;
     if (nuisance.n_cols > 0) {
       arma::mat z(m, nuisance.n_cols, arma::fill::zeros);
       z.rows(0, measured - 1) = nuisance.rows(keep.head(measured));
       if (!z.is_finite()) Rcpp::stop("Nuisance values must be finite on usable rows");
-      whitener.apply(z);
+      apply_eff_whiten(z);
       q = hrf_basis(z, 1e-8);
     } else {
       arma::mat z_check = nuisance.rows(keep.head(measured));
@@ -794,10 +860,10 @@ arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel,
       arma::uword r0 = keep(i);
       for (arma::uword u = 0; u < k_len; ++u) h(i, r0 + u) = kp[u];
     }
-    whitener.apply(h);
+    apply_eff_whiten(h);
     arma::mat w_meas(m, measured, arma::fill::zeros);
     w_meas.rows(0, measured - 1).eye();
-    whitener.apply(w_meas);
+    apply_eff_whiten(w_meas);
     if (q.n_cols > 0) {
       h -= q * (q.t() * h);
       w_meas -= q * (q.t() * w_meas);

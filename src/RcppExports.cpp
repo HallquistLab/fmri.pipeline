@@ -96,8 +96,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // hrf_inverse_operator_cpp
-arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel, const Rcpp::IntegerVector& rows, double rho, const arma::mat& nuisance, double lambda, const std::string& penalty, double ridge_floor, int tail_padding, Rcpp::Nullable<Rcpp::NumericVector> ar_phi, Rcpp::Nullable<Rcpp::NumericVector> ar_acf, double sig_u2);
-RcppExport SEXP _fmri_pipeline_hrf_inverse_operator_cpp(SEXP n_timeSEXP, SEXP kernelSEXP, SEXP rowsSEXP, SEXP rhoSEXP, SEXP nuisanceSEXP, SEXP lambdaSEXP, SEXP penaltySEXP, SEXP ridge_floorSEXP, SEXP tail_paddingSEXP, SEXP ar_phiSEXP, SEXP ar_acfSEXP, SEXP sig_u2SEXP) {
+arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel, const Rcpp::IntegerVector& rows, double rho, const arma::mat& nuisance, double lambda, const std::string& penalty, double ridge_floor, int tail_padding, Rcpp::Nullable<Rcpp::NumericVector> ar_phi, Rcpp::Nullable<Rcpp::NumericVector> ar_acf, double sig_u2, Rcpp::Nullable<Rcpp::NumericVector> obs_weights, const std::string& weight_space);
+RcppExport SEXP _fmri_pipeline_hrf_inverse_operator_cpp(SEXP n_timeSEXP, SEXP kernelSEXP, SEXP rowsSEXP, SEXP rhoSEXP, SEXP nuisanceSEXP, SEXP lambdaSEXP, SEXP penaltySEXP, SEXP ridge_floorSEXP, SEXP tail_paddingSEXP, SEXP ar_phiSEXP, SEXP ar_acfSEXP, SEXP sig_u2SEXP, SEXP obs_weightsSEXP, SEXP weight_spaceSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -113,7 +113,9 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_phi(ar_phiSEXP);
     Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_acf(ar_acfSEXP);
     Rcpp::traits::input_parameter< double >::type sig_u2(sig_u2SEXP);
-    rcpp_result_gen = Rcpp::wrap(hrf_inverse_operator_cpp(n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding, ar_phi, ar_acf, sig_u2));
+    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type obs_weights(obs_weightsSEXP);
+    Rcpp::traits::input_parameter< const std::string& >::type weight_space(weight_spaceSEXP);
+    rcpp_result_gen = Rcpp::wrap(hrf_inverse_operator_cpp(n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding, ar_phi, ar_acf, sig_u2, obs_weights, weight_space));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -322,7 +324,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_fmri_pipeline_hrf_event_design_cpp", (DL_FUNC) &_fmri_pipeline_hrf_event_design_cpp, 8},
     {"_fmri_pipeline_hrf_score_run_cpp", (DL_FUNC) &_fmri_pipeline_hrf_score_run_cpp, 12},
     {"_fmri_pipeline_hrf_noise_profile_cpp", (DL_FUNC) &_fmri_pipeline_hrf_noise_profile_cpp, 6},
-    {"_fmri_pipeline_hrf_inverse_operator_cpp", (DL_FUNC) &_fmri_pipeline_hrf_inverse_operator_cpp, 12},
+    {"_fmri_pipeline_hrf_inverse_operator_cpp", (DL_FUNC) &_fmri_pipeline_hrf_inverse_operator_cpp, 14},
     {"_fmri_pipeline_hrf_whiten_apply_cpp", (DL_FUNC) &_fmri_pipeline_hrf_whiten_apply_cpp, 7},
     {"_fmri_pipeline_hrf_ar_operator_factor_cpp", (DL_FUNC) &_fmri_pipeline_hrf_ar_operator_factor_cpp, 6},
     {"_fmri_pipeline_deconvolve_nlreg", (DL_FUNC) &_fmri_pipeline_deconvolve_nlreg, 7},
