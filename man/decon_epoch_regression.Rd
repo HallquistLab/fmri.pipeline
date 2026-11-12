@@ -271,4 +271,3 @@ per-trial operator precision weights and within-run error covariance.
       weights = "precision_weight")}.
   }
 }
-

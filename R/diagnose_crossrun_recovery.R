@@ -361,39 +361,47 @@ compute_ar1_operator_cov <- function(B, rows, rho, center_obs = TRUE) {
 build_other_demix_operator <- function(S_all_0, DG_all_0, ev, o_idx, t_idx, demix_ridge,
     source_model = "impulse", demix_target_trials = TRUE) {
   ok_all <- rowSums(!is.finite(S_all_0)) == 0L
-  if (!any(ok_all) || !length(o_idx)) return(NULL)
+  idx_ok <- which(ok_all)
+  if (!length(idx_ok) || !length(o_idx)) return(NULL)
   m_all <- nrow(ev)
   cond_all <- if (is.null(ev$condition)) rep("event", m_all) else as.character(ev$condition)
-  cond_levels <- unique(cond_all[ok_all])
-  M_cond <- vapply(cond_levels, function(cl) as.numeric(cond_all == cl), numeric(m_all))
-  if (is.null(dim(M_cond))) M_cond <- matrix(M_cond, ncol = 1L)
-  S_ok <- S_all_0[ok_all, , drop = FALSE]
-  R_all_0 <- S_ok %*% DG_all_0
-  R_cond <- R_all_0 %*% M_cond
-  lhs_cond <- crossprod(R_cond) + 1e-4 * mean(diag(crossprod(R_cond))) * diag(ncol(R_cond))
-  A_mean_op <- M_cond %*% solve(lhs_cond, crossprod(R_cond, S_ok))
+  cond_all[is.na(cond_all) | !nzchar(cond_all)] <- "other_unknown"
+  cond_levels <- unique(cond_all[idx_ok])
+  M_cond_full <- vapply(cond_levels, function(cl) as.numeric(cond_all == cl), numeric(m_all))
+  if (is.null(dim(M_cond_full))) M_cond_full <- matrix(M_cond_full, nrow = m_all, ncol = length(cond_levels))
+  M_cond_ok <- M_cond_full[idx_ok, , drop = FALSE]
+  S_ok <- S_all_0[idx_ok, , drop = FALSE]
+  R_ok <- S_ok %*% DG_all_0[, idx_ok, drop = FALSE]
+  R_cond <- R_ok %*% M_cond_ok
+  rc_diag <- diag(crossprod(R_cond))
+  rc_scale <- if (any(is.finite(rc_diag) & rc_diag > 0)) mean(rc_diag[is.finite(rc_diag) & rc_diag > 0]) else 1.0
+  lhs_cond <- crossprod(R_cond) + max(1e-4 * rc_scale, 1e-8) * diag(ncol(R_cond))
+  cond_mean_op <- solve(lhs_cond, crossprod(R_cond, S_ok))
+  A_mean_op <- M_cond_full %*% cond_mean_op
+  A_mean_ok <- M_cond_ok %*% cond_mean_op
 
-  ok_o <- o_idx[o_idx %in% which(ok_all)]
+  ok_o <- o_idx[o_idx %in% idx_ok]
   if (!length(ok_o) || !isTRUE(demix_target_trials) || demix_ridge >= 0.03) {
     return(list(
       L_other = A_mean_op[o_idx, , drop = FALSE],
       L_target_0 = NULL
     ))
   }
-  Res_all_op <- S_ok - R_all_0 %*% A_mean_op
-  diag_all <- pmax(diag(R_all_0), 0.05)
-  C_all <- sweep(R_all_0, 2L, diag_all, "/")
+  Res_ok_op <- S_ok - R_ok %*% A_mean_ok
+  diag_ok <- pmax(diag(R_ok), 0.05)
+  C_ok <- sweep(R_ok, 2L, diag_ok, "/")
   r_eff <- min(max(demix_ridge, 0.025), 0.035)
-  W_1 <- solve(crossprod(C_all) + r_eff * diag(ncol(C_all)), t(C_all))
+  W_1 <- solve(crossprod(C_ok) + r_eff * diag(ncol(C_ok)), t(C_ok))
   # Second-order iterated Tikhonov / Neumann refinement reduces ridge shrinkage bias
-  W_2 <- W_1 + 0.80 * W_1 %*% (diag(nrow(C_all)) - C_all %*% W_1)
-  g_eff <- pmax(diag(W_2 %*% C_all), 0.10)
-  Delta_all_op <- sweep(W_2 %*% Res_all_op, 1L, g_eff * diag_all, "/")
-  alpha_delta <- if (identical(source_model, "impulse")) 1.0 else 0.0
-  A_joint_op <- A_mean_op + alpha_delta * Delta_all_op
+  W_2 <- W_1 + 0.80 * W_1 %*% (diag(nrow(C_ok)) - C_ok %*% W_1)
+  g_eff <- pmax(diag(W_2 %*% C_ok), 0.10)
+  Delta_ok_op <- sweep(W_2 %*% Res_ok_op, 1L, g_eff * diag_ok, "/")
+  A_joint_op <- A_mean_op
+  A_joint_op[idx_ok, ] <- A_mean_ok + Delta_ok_op
+  use_target_0 <- identical(source_model, "impulse") && length(t_idx) > 0L && all(t_idx %in% idx_ok)
   list(
     L_other = A_joint_op[o_idx, , drop = FALSE],
-    L_target_0 = if (identical(source_model, "impulse")) A_joint_op[t_idx, , drop = FALSE] else NULL
+    L_target_0 = if (use_target_0) A_joint_op[t_idx, , drop = FALSE] else NULL
   )
 }
 
@@ -1430,7 +1438,12 @@ decon_epoch_regression <- function(
             if (source_model == "duration" && !is.null(alpha0_hat) && !is.null(DG_target_0_sum) && abs(lags[li]) > 1e-8) {
               k_base_0 <- as.numeric(S_tau[ok_tau, , drop = FALSE] %*% DG_target_0_sum)
               k_base_tau <- rowSums(K_norm)
-              delta_base <- k_base_0 - k_base_tau
+              # Retain only the physical temporal overlap fraction gamma_tau in [0, 1]
+              # between shifted windows [onset + lag, onset + lag + d_i] and [onset, onset + d_i]
+              # so pre-onset (lag < 0) and post-offset lags never receive artificial +alpha0_hat
+              # baseline shifts, while W_tau %*% k_base_tau = 1_m keeps centered trial contrasts invariant.
+              gamma_tau <- mean(pmax(0.0, pmin(1.0, 1.0 - abs(lags[li]) / pmax(dur_target[ok_tau], w_src, 1e-6))))
+              delta_base <- k_base_0 - gamma_tau * k_base_tau
               Y_sub <- Y_sub - outer(delta_base, alpha0_hat)
               if (!is.null(b_alpha0)) {
                 B_sub_tau <- B_sub_tau - tcrossprod(delta_base, b_alpha0)
@@ -1596,7 +1609,12 @@ decon_epoch_regression <- function(
           ac1_vec <- 0
         }
         error_ac1_epochs[[li]][row_span[ok_tau], voxels] <- matrix(ac1_vec, nrow = m_ok, ncol = length(voxels))
-        V_demix_blocks[[li]][[r]][[key]] <- list(ok_tau = ok_tau, V_cent = V_demix_cent, M_post = M_post)
+        V_demix_blocks[[li]][[r]][[key]] <- list(
+          ok_tau = ok_tau,
+          V_raw = V_demix,
+          V_cent = V_demix_cent,
+          M_post = M_post
+        )
       }
 
       # Exact L x L cross-lag trial error covariance across lags in a single BLAS crossprod
@@ -1852,7 +1870,14 @@ decon_epoch_regression <- function(
           pos_in_blk <- match(ok_r_local, ok_tau_idx)
           valid_pos <- !is.na(pos_in_blk)
           if (all(valid_pos)) {
-            Omega_r <- (sig_eff_mat[r, vi]^2) * blk_r$V_cent[pos_in_blk, pos_in_blk, drop = FALSE]
+            if (!is.null(blk_r$V_raw)) {
+              V_raw_sub <- (sig_eff_mat[r, vi]^2) * blk_r$V_raw[pos_in_blk, pos_in_blk, drop = FALSE]
+              Omega_cent_r <- if (m_r > 1L) (Q_mr %*% V_raw_sub %*% Q_mr) else matrix(0.0, 1L, 1L)
+              Omega_r <- if (m_r > 1L) Omega_cent_r / (1.0 - 1.0 / m_r) else V_raw_sub
+            } else {
+              Omega_r <- (sig_eff_mat[r, vi]^2) * blk_r$V_cent[pos_in_blk, pos_in_blk, drop = FALSE]
+              Omega_cent_r <- if (m_r > 1L) ((m_r - 1.0) / m_r) * (Q_mr %*% Omega_r %*% Q_mr) else matrix(0.0, 1L, 1L)
+            }
             if (!is.null(blk_r$M_post)) {
               if (length(pos_in_blk) == nrow(blk_r$M_post)) {
                 M_post_r <- blk_r$M_post
@@ -1868,18 +1893,15 @@ decon_epoch_regression <- function(
             s2_sub <- s2_dem_v[rs_r]
             s2_sub[!is.finite(s2_sub)] <- 1
             Omega_r <- diag(s2_sub, m_r)
+            Omega_cent_r <- if (m_r > 1L) (Q_mr %*% Omega_r %*% Q_mr) else matrix(0.0, 1L, 1L)
             M_post_r <- Q_mr
           }
         } else {
           s2_sub <- s2_dem_v[rs_r]
           s2_sub[!is.finite(s2_sub)] <- 1
           Omega_r <- diag(s2_sub, m_r)
+          Omega_cent_r <- if (m_r > 1L) (Q_mr %*% Omega_r %*% Q_mr) else matrix(0.0, 1L, 1L)
           M_post_r <- Q_mr
-        }
-        Omega_cent_r <- if (m_r > 1L) {
-          ((m_r - 1.0) / m_r) * (Q_mr %*% Omega_r %*% Q_mr)
-        } else {
-          matrix(0.0, 1L, 1L)
         }
         Omega_r_list[[r]] <- Omega_r
         Omega_cent_list[[r]] <- Omega_cent_r
@@ -1919,12 +1941,14 @@ decon_epoch_regression <- function(
 
       s2_ok <- s2_dem_v[ok_v]
       s2_med <- if (any(is.finite(s2_ok) & s2_ok > 0)) stats::median(s2_ok[is.finite(s2_ok) & s2_ok > 0]) else 1
-      tau2_var <- if (tr_M2_marg > 1e-6) max(0, (ss_marg - tr_Omega_cent) / tr_M2_marg) else 0
-      tau2_diff <- if (exp_diff_M2 > 1e-6) max(0, (ss_diff - exp_diff_Om) / exp_diff_M2) else 0
+      tau2_var_raw <- if (tr_M2_marg > 1e-6) (ss_marg - tr_Omega_cent) / tr_M2_marg else 0
+      tau2_diff_raw <- if (exp_diff_M2 > 1e-6) (ss_diff - exp_diff_Om) / exp_diff_M2 else 0
       mad_y <- stats::mad(y_dem_v[ok_v], constant = 1.4826, na.rm = TRUE)
       s2_cent_med <- s2_med * max(0.5, df_marg / max(1, n_ok))
-      tau2_mad <- if (is.finite(mad_y)) max(0, mad_y^2 - s2_cent_med) else 0
-      tau2_marginal <- 0.45 * tau2_var + 0.35 * tau2_diff + 0.20 * tau2_mad
+      m2_cent_scale <- max(0.5, tr_M2_marg / max(1, n_ok))
+      tau2_mad_raw <- if (is.finite(mad_y)) (mad_y^2 - s2_cent_med) / m2_cent_scale else 0
+      tau2_marginal_raw <- 0.45 * tau2_var_raw + 0.35 * tau2_diff_raw + 0.20 * tau2_mad_raw
+      tau2_marginal <- max(0, tau2_marginal_raw)
 
       if (n_terms > 0L) {
         X_ok <- X_pool[ok_v, , drop = FALSE]
@@ -1942,13 +1966,14 @@ decon_epoch_regression <- function(
 
         tr_proj_Omega <- max(0, tr_Omega_cent - sum(diag(xtx_inv_tilde %*% xOx_sum)))
         denom_resid <- max(1.0, tr_M2_marg - sum(diag(xtx_inv_tilde %*% xM2x_sum)))
-        tau2_resid <- max(0, (sum(resid_unw^2) - tr_proj_Omega) / denom_resid)
+        tau2_resid_raw <- (sum(resid_unw^2) - tr_proj_Omega) / denom_resid
+        tau2_resid <- max(0, tau2_resid_raw)
         tau2_bio <- if (identical(eff_tau2_mode, "marginal")) {
           tau2_marginal
         } else if (identical(eff_tau2_mode, "residual")) {
           tau2_resid
         } else {
-          0.65 * tau2_resid + 0.35 * tau2_marginal
+          max(0, 0.65 * tau2_resid_raw + 0.35 * tau2_marginal_raw)
         }
       } else {
         df_v <- max(1L, n_ok - max(1L, n_runs_active))
@@ -1997,7 +2022,12 @@ decon_epoch_regression <- function(
               Sigma_tot_r <- Omega_cent_r + tau2_zca * tcrossprod(M_post_r)
               Phi_r <- compute_zca_whitening_matrix(Sigma_tot_r, eig_floor = 0.08, offdiag_scale = 0.90)
               yr_zca <- as.numeric(Phi_r %*% yr_cent)
-              s2_zca_r <- pmax(0, rowSums((Phi_r %*% Omega_r) * Phi_r))
+              cent_div_r <- if (m_r > 1L) (1.0 - 1.0 / m_r) else 1.0
+              s2_zca_r <- if (m_r > 1L) {
+                pmax(0, rowSums((Phi_r %*% Omega_cent_r) * Phi_r)) / cent_div_r
+              } else {
+                pmax(0, rowSums((Phi_r %*% Omega_r) * Phi_r))
+              }
               se_zca_r <- sqrt(s2_zca_r)
               rel_zca_r <- tau2_eff / (tau2_eff + s2_zca_r)
               whitened_y_epochs[[li]][rs_ok, vi] <- mean(yr_raw) + yr_zca
@@ -2099,7 +2129,12 @@ decon_epoch_regression <- function(
         }
 
         if (isTRUE(whiten_panel)) {
-          s2_zca_r <- pmax(0, rowSums((Phi_r %*% Omega_r) * Phi_r))
+          cent_div_r <- if (m_r > 1L) (1.0 - 1.0 / m_r) else 1.0
+          s2_zca_r <- if (m_r > 1L) {
+            pmax(0, rowSums((Phi_r %*% Omega_cent_r) * Phi_r)) / cent_div_r
+          } else {
+            pmax(0, rowSums((Phi_r %*% Omega_r) * Phi_r))
+          }
           se_zca_r <- sqrt(s2_zca_r)
           rel_zca_r <- tau2_eff / (tau2_eff + s2_zca_r)
           whitened_y_epochs[[li]][rs_ok, vi] <- mean(yr_raw) + yr_zca
@@ -3313,7 +3348,7 @@ decon_connectivity_repair <- function(
     s2 <- psi_seed_proj
     ok_s <- is.finite(s2) & (s2 > 0)
     if (any(ok_s)) {
-      v_obs <- stats::var(seed_c, na.rm = TRUE)
+      v_obs <- mean(seed_c^2, na.rm = TRUE)
       t2_est <- max(0.05 * stats::median(s2[ok_s]), v_obs - mean(s2[ok_s]))
       t2_est / (t2_est + s2)
     } else {
@@ -3326,7 +3361,7 @@ decon_connectivity_repair <- function(
       s2 <- psi_t0_proj
       ok_s <- is.finite(s2) & (s2 > 0)
       if (any(ok_s)) {
-        v_obs <- stats::var(targ_t0_c, na.rm = TRUE)
+        v_obs <- mean(targ_t0_c^2, na.rm = TRUE)
         t2_est <- max(0.05 * stats::median(s2[ok_s]), v_obs - mean(s2[ok_s]))
         t2_est / (t2_est + s2)
       } else {

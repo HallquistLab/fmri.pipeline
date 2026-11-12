@@ -1,13 +1,43 @@
 # Legacy filenames and BIDS-style source paths remain a fallback. Explicit
 # metadata is needed when the naming convention does not identify a run.
 parse_decon_identity <- function(path, fields = c("id", "run", "session")) {
-  tokens <- unlist(strsplit(path, "[/\\\\._]", perl = TRUE), use.names = FALSE)
   labels <- c(id = "sub", run = "run", session = "ses")
+  ignore_words <- c(
+    "subject", "subjects", "subcortical", "subset", "subsets", "subspace",
+    "subanalysis", "subproject", "subprojects",
+    "session", "sessions",
+    "run", "runs", "running", "runtime", "runtimes"
+  )
+  base_tokens <- unlist(strsplit(basename(path), "[/\\\\._]", perl = TRUE), use.names = FALSE)
+  dir_part <- dirname(path)
+  dir_tokens <- if (!identical(dir_part, ".") && nzchar(dir_part)) {
+    unlist(strsplit(dir_part, "[/\\\\._]", perl = TRUE), use.names = FALSE)
+  } else {
+    character(0)
+  }
+
+  extract_values <- function(toks, label, allow_legacy_alpha) {
+    if (!length(toks)) return(character(0))
+    toks <- toks[nzchar(toks) & !(tolower(toks) %in% ignore_words)]
+    if (!length(toks)) return(character(0))
+    explicit_pat <- paste0("^", label, "(-[[:alnum:]]+|[0-9]+[[:alnum:]]*)$")
+    explicit_hits <- toks[grepl(explicit_pat, toks)]
+    if (length(explicit_hits)) {
+      return(unique(sub(paste0("^", label, "-?"), "", explicit_hits)))
+    }
+    if (!allow_legacy_alpha) return(character(0))
+    legacy_pat <- paste0("^", label, "[[:alpha:]][[:alnum:]]*$")
+    legacy_hits <- toks[grepl(legacy_pat, toks)]
+    unique(sub(paste0("^", label), "", legacy_hits))
+  }
+
   result <- list()
   for (field in fields) {
     label <- labels[[field]]
-    candidates <- tokens[grepl(paste0("^", label, "-?[[:alnum:]]+$"), tokens)]
-    values <- unique(sub(paste0("^", label, "-?"), "", candidates))
+    values <- extract_values(base_tokens, label, allow_legacy_alpha = TRUE)
+    if (!length(values) && length(dir_tokens)) {
+      values <- extract_values(dir_tokens, label, allow_legacy_alpha = FALSE)
+    }
     if (length(values) > 1L) {
       stop("Ambiguous ", field, " in path; supply file_manifest: ", path)
     }

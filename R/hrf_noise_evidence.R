@@ -709,19 +709,37 @@ hrf_cauchy_p <- function(p, upper_bound = 0.90) {
 #   3. depart: Fisher-combined pairwise encompassing F-test vs fallback_kernel
 #      has p <= alpha AND mean score strictly exceeds fallback_kernel (the
 #      fallback kernel itself is exempt from the departure requirement).
-hrf_fold_evidence <- function(results, train, counts, scores, fallback, alpha, min_r2, kernels = NULL) {
+hrf_fold_evidence <- function(results, train, counts, scores, fallback, alpha, min_r2,
+                              kernels = NULL, subblock_mode = FALSE) {
   k <- nrow(scores); v <- ncol(scores)
   eff <- if (is.null(kernels)) list(task = k, shape = max(1L, k - 1L)) else hrf_effective_candidates(kernels)
   combine <- function(field, multiplicity) {
     logs <- matrix(0, k, v)
+    cauchy_sum <- if (isTRUE(subblock_mode)) matrix(0, k, v) else NULL
     for (r in train) {
       p <- results[[r]][[field]]
       if (is.null(p)) next
-      p[!is.finite(p)] <- 1
+      ok_p <- is.finite(p)
+      p[!ok_p] <- 1
       logs <- logs + log(pmax(p, .Machine$double.xmin))
+      if (isTRUE(subblock_mode)) {
+        p_c <- pmin(pmax(p, 1e-15), 0.90)
+        t_c <- tan((0.5 - p_c) * pi)
+        t_c[!ok_p] <- 0
+        cauchy_sum <- cauchy_sum + t_c
+      }
     }
     raw <- matrix(stats::pchisq(as.vector(-2 * logs),
       df = rep(2 * pmax(counts, 1L), each = k), lower.tail = FALSE), k, v)
+    if (isTRUE(subblock_mode)) {
+      # Guard against residual within-run sub-block dependence (shared AR fit and
+      # boundary carryover) using Brown-scaled Fisher + Cauchy tail bound.
+      c_scale <- ifelse(counts >= 2L, 1.15, 1.0)
+      raw_brown <- matrix(stats::pchisq(as.vector(sweep(-2 * logs, 2L, c_scale, "/")),
+        df = rep(2 * pmax(counts, 1L) / c_scale, each = k), lower.tail = FALSE), k, v)
+      raw_cauchy <- 0.5 - atan(sweep(cauchy_sum, 2L, pmax(counts, 1L), "/")) / pi
+      raw <- pmax(raw, pmin(raw_brown, raw_cauchy))
+    }
     raw[, counts == 0] <- NA_real_
     out <- pmin(raw * multiplicity, 1)
     out[, counts == 0] <- NA_real_

@@ -153,26 +153,32 @@ arma::mat decon_hty_transposed_cpp(
   return hty_t;
 }
 
-// Compute residual rss_by_signal from activity_t (n_signals x n_latent) and y_t (n_signals x n_time)
+// Compute residual rss_by_signal (and optional rss4_by_signal = sum_t r_t^4)
+// from activity_t (n_signals x n_latent) and y_t (n_signals x n_time)
 arma::rowvec decon_rss_from_activity_t_cpp(
   const arma::mat& y_t,
   const arma::mat& activity_t,
   const arma::vec& w0,
   const arma::vec& w_rest,
-  int shift_rest
+  int shift_rest,
+  arma::rowvec* rss4_out = nullptr
 ) {
   int n_signals = y_t.n_rows;
   int n_time = y_t.n_cols;
   int len0 = w0.n_elem;
   int len_r = w_rest.n_elem;
   arma::vec rss(n_signals, arma::fill::zeros);
+  arma::vec rss4(rss4_out ? n_signals : 0, arma::fill::zeros);
   arma::vec diff_t(n_signals);
+  arma::vec sq_t(n_signals);
 
   diff_t = y_t.col(0);
   for (int j = 0; j < len0; ++j) {
     diff_t -= w0(j) * activity_t.col(j);
   }
-  rss += arma::square(diff_t);
+  sq_t = arma::square(diff_t);
+  rss += sq_t;
+  if (rss4_out) rss4 += arma::square(sq_t);
 
   for (int t = 1; t < n_time; ++t) {
     int base = t - shift_rest;
@@ -180,8 +186,11 @@ arma::rowvec decon_rss_from_activity_t_cpp(
     for (int j = 0; j < len_r; ++j) {
       diff_t -= w_rest(j) * activity_t.col(base + j);
     }
-    rss += arma::square(diff_t);
+    sq_t = arma::square(diff_t);
+    rss += sq_t;
+    if (rss4_out) rss4 += arma::square(sq_t);
   }
+  if (rss4_out) *rss4_out = rss4.t();
   return rss.t();
 }
 
@@ -493,6 +502,9 @@ Rcpp::RObject deconvolve_reglin_cpp(
   // A single candidate needs no residuals, effective df, or GCV unless the
   // caller requests diagnostics. The inverse problem itself is unchanged.
   bool needs_scores = return_diagnostics || n_tuning > 1;
+  bool track_sig_1se = needs_scores && !tune_global && gcv_rule == "1se" && n_tuning > 1;
+  arma::mat gcv_sig_mat(track_sig_1se ? n_tuning : 0, track_sig_1se ? n_signals : 0, arma::fill::value(NA_REAL));
+  arma::mat gcv_se_sig_mat(track_sig_1se ? n_tuning : 0, track_sig_1se ? n_signals : 0, arma::fill::zeros);
 
   for (int ki = 0; ki < n_kernels; ++ki) {
     arma::vec hrf = kernels.col(ki);
@@ -532,12 +544,26 @@ Rcpp::RObject deconvolve_reglin_cpp(
         }
       }
 
-      arma::rowvec rss_by_signal = decon_rss_from_activity_t_cpp(y_t, activity_t, w0, w_rest, shift_rest);
+      arma::rowvec rss4_by_signal;
+      arma::rowvec rss_by_signal = decon_rss_from_activity_t_cpp(
+        y_t, activity_t, w0, w_rest, shift_rest, track_sig_1se ? &rss4_by_signal : nullptr
+      );
       double denom = std::pow(n_time - df, 2.0);
       if (denom < std::numeric_limits<double>::epsilon()) {
         denom = std::numeric_limits<double>::epsilon();
       }
       arma::rowvec gcv_by_signal = rss_by_signal / denom;
+      if (track_sig_1se) {
+        gcv_sig_mat.row(tuning_i) = gcv_by_signal;
+        if (n_time > 1) {
+          double t_fac = static_cast<double>(n_time) / static_cast<double>(n_time - 1);
+          arma::rowvec var_num = arma::clamp(
+            t_fac * (rss4_by_signal - arma::square(rss_by_signal) / static_cast<double>(n_time)),
+            0.0, R_PosInf
+          );
+          gcv_se_sig_mat.row(tuning_i) = arma::sqrt(var_num) / denom;
+        }
+      }
       double mean_gcv = arma::mean(gcv_by_signal);
       double gcv_se = 0.0;
       if (n_signals > 1) {
@@ -610,6 +636,81 @@ Rcpp::RObject deconvolve_reglin_cpp(
     }
     best_lambda_global = selected_lambda;
     best_kernel_global = selected_kernel + 1;
+  } else if (track_sig_1se) {
+    arma::ivec sel_cand(n_signals, arma::fill::zeros);
+    for (int si = 0; si < n_signals; ++si) {
+      arma::vec g_col = gcv_sig_mat.col(si);
+      arma::vec se_col = gcv_se_sig_mat.col(si);
+      arma::uvec fin = arma::find_finite(g_col);
+      if (fin.is_empty()) {
+        sel_cand(si) = 0;
+        continue;
+      }
+      arma::uword min_idx = fin(g_col.elem(fin).index_min());
+      double se_min = std::isfinite(se_col(min_idx)) ? se_col(min_idx) : 0.0;
+      double threshold = g_col(min_idx) + se_min;
+      int selected_idx = static_cast<int>(min_idx);
+      double selected_lambda = tuning_lambda(selected_idx);
+      double selected_gcv = g_col(selected_idx);
+      int selected_k = tuning_kernel(selected_idx);
+
+      for (int ci = 0; ci < n_tuning; ++ci) {
+        if (std::isfinite(g_col(ci)) && g_col(ci) <= threshold) {
+          bool larger_lambda = tuning_lambda(ci) > selected_lambda;
+          bool same_lambda_better = tuning_lambda(ci) == selected_lambda && g_col(ci) < selected_gcv;
+          bool same_both_earlier_k = tuning_lambda(ci) == selected_lambda &&
+            g_col(ci) == selected_gcv && tuning_kernel(ci) < selected_k;
+          if (larger_lambda || same_lambda_better || same_both_earlier_k) {
+            selected_idx = ci;
+            selected_lambda = tuning_lambda(ci);
+            selected_gcv = g_col(ci);
+            selected_k = tuning_kernel(ci);
+          }
+        }
+      }
+      sel_cand(si) = selected_idx;
+      best_lambda_signal(si) = selected_lambda;
+      best_kernel_signal(si) = selected_k;
+    }
+
+    arma::ivec uniq_cands = arma::unique(sel_cand);
+    for (arma::uword ui = 0; ui < uniq_cands.n_elem; ++ui) {
+      int ci = uniq_cands(ui);
+      arma::uvec sig_rows = arma::find(sel_cand == ci);
+      int selected_kernel = tuning_kernel(ci) - 1;
+      double selected_lambda = tuning_lambda(ci);
+      arma::vec hrf = kernels.col(selected_kernel);
+      arma::vec w0, w_rest;
+      int shift_rest = 0;
+      build_whitened_kernel_rows(hrf, prewhiten_gcv, ar1_rho, w0, w_rest, shift_rest);
+      arma::mat hth_band = decon_hth_band_cpp(n_time, n_latent, band, w0, w_rest, shift_rest);
+      arma::mat y_sub_t = y_t.rows(sig_rows);
+      arma::mat hty_sub_t = decon_hty_transposed_cpp(y_sub_t, n_latent, w0, w_rest, shift_rest);
+      l_band = hth_band + selected_lambda * penalty_band;
+      l_band.row(0) += ridge_floor;
+      arma::mat act_sub_t;
+      if (chol_band_lower_inplace(l_band, band)) {
+        act_sub_t = hty_sub_t;
+        solve_band_chol_transposed(l_band, band, act_sub_t);
+      } else {
+        arma::mat conv_mat = decon_convolution_matrix_cpp(n_time, hrf);
+        arma::mat fit_mat = prewhiten_gcv ? apply_ar1_whitening_cpp(conv_mat, ar1_rho) : conv_mat;
+        arma::mat hth = fit_mat.t() * fit_mat;
+        arma::mat hty = fit_mat.t() * y_sub_t.t();
+        arma::mat lhs = hth;
+        for (int j = 0; j < n_latent; ++j) {
+          lhs(j, j) += selected_lambda * penalty_band(0, j) + ridge_floor;
+          int d_max = std::min(band, n_latent - 1 - j);
+          for (int d = 1; d <= d_max; ++d) {
+            double p_val = selected_lambda * penalty_band(d, j);
+            lhs(j + d, j) += p_val;
+            lhs(j, j + d) += p_val;
+          }
+        }
+        act_sub_t = solve_sympd_fallback(lhs, hty).t();
+      }
+      best_activity_t.rows(sig_rows) = act_sub_t;
+    }
   }
 
   arma::mat best_activity = best_activity_t.t();

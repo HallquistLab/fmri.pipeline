@@ -720,8 +720,10 @@ evt_align_decon_files <- function(d_files, trial_df, alignment = list(), aggrega
     registerDoSEQ()
   }
 
+  align_pkgs <- c("dplyr", "readr", "data.table",
+    if ("fmri.pipeline" %in% loadedNamespaces()) "fmri.pipeline")
   elist <- foreach(fname = iter(d_files),
-    .packages = c("dplyr", "readr", "data.table", "fmri.pipeline"),
+    .packages = align_pkgs,
     .export = c("resolve_decon_identity", "parse_decon_identity", "match_decon_trials"),
     .errorhandling = "pass") %dopar% {
     identity <- NULL

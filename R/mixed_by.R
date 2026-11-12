@@ -381,8 +381,18 @@ mixed_by <- function(data, outcomes = NULL, rhs_model_formulae = NULL, model_for
       if (any(bad_w)) {
         w_vec[bad_w] <- NA_real_
       }
+      vv_mod <- intersect(all.vars(model_formula), names(data))
+      comp_mod <- if (length(vv_mod)) {
+        stats::complete.cases(as.data.frame(data)[, vv_mod, drop = FALSE])
+      } else {
+        rep(TRUE, nrow(data))
+      }
       ok_w <- is.finite(w_vec) & (w_vec > 0)
-      if (any(ok_w)) {
+      ok_active <- ok_w & comp_mod
+      if (any(ok_active)) {
+        m_w <- mean(w_vec[ok_active])
+        w_vec[ok_w] <- w_vec[ok_w] / m_w
+      } else if (any(ok_w)) {
         w_vec[ok_w] <- w_vec[ok_w] / mean(w_vec[ok_w])
       }
       if (engine == "jlmer") {
