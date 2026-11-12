@@ -15,9 +15,18 @@ decon_connectivity_repair(
   control_target_seed_lag = FALSE,
   orthogonalize_seed_x = TRUE,
   method = c("mmoms", "mmom", "eb_predictor", "naive_gls", "naive_unweighted"),
+  shared_error = c("auto", "zero", "supplied"),
+  err_xy_col = NULL,
   use_whitened = NULL,
   region_col = NULL,
   id_col = "id",
+  run_col = "run",
+  trial_col = "trial",
+  lag_col = "evt_time",
+  y_col = NULL,
+  se_col = NULL,
+  eb_col = NULL,
+  modulator = NULL,
   return_augmented_panel = FALSE
 )
 }
@@ -61,6 +70,17 @@ Empirical-Bayes shrunk predictor on likelihood-only outcome),
 \code{"naive_gls"} (precision-weighted WLS without predictor error
 subtraction), or \code{"naive_unweighted"} (unweighted OLS).}
 
+\item{shared_error}{Policy for cross-parcel shared observation-error covariance
+between seed and target readouts: \code{"auto"} (default; propagates Stage-2/3
+Empirical-Bayes prewhitened innovation correlation \code{unit_error_cor} or
+\code{shared_noise_loading}), \code{"zero"} (assumes zero cross-parcel noise
+correlation while still propagating same-parcel cross-lag error correlation when
+\code{control_target_seed_lag = TRUE}), or \code{"supplied"} (reads per-trial raw
+seed--target error covariance from \code{err_xy_col}).}
+
+\item{err_xy_col}{Optional column name supplying per-trial raw seed--target error
+covariance when \code{shared_error = "supplied"}.}
+
 \item{use_whitened}{Logical; if \code{TRUE}, uses \code{decon_demixed_whitened}
 and \code{se_whitened} when present. Defaults to \code{FALSE} for
 \code{"mmoms"} and \code{"mmom"} (so elementwise PPI products are formed on
@@ -73,6 +93,20 @@ unmixed trial states before error correction) and \code{TRUE} for
 
 \item{id_col}{Column name identifying subjects in \code{panel_dt} (default
 \code{"id"}).}
+
+\item{run_col}{Run identifier column name (default \code{"run"}).}
+
+\item{trial_col}{Within-run trial identifier column name (default \code{"trial"}).}
+
+\item{lag_col}{Within-trial lag column name (default \code{"evt_time"}).}
+
+\item{y_col}{Optional readout column override.}
+
+\item{se_col}{Optional trial standard-error column override.}
+
+\item{eb_col}{Optional Empirical-Bayes trial readout column override.}
+
+\item{modulator}{Optional alias for \code{covariates}.}
 
 \item{return_augmented_panel}{Logical; if \code{TRUE}, returns the merged
 trial panel augmented with moment-preserving REPAIR predictor columns
