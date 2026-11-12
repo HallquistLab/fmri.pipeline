@@ -101,7 +101,11 @@ optional duration (seconds, default zero). Names/order must match bold.</p></dd>
 
 <dt id="arg-kernel-grid">kernel_grid<a class="anchor" aria-label="anchor" href="#arg-kernel-grid"></a></dt>
 <dd><p>Matrix or list of equal-length candidate causal HRFs, sampled
-at tr starting at lag zero. Use hrf_library() or supply explicit candidates.</p></dd>
+at tr starting at lag zero. Use <code><a href="hrf_library.html">hrf_library()</a></code> or supply explicit
+candidates; honors <code>attr(kernel_grid, "normalize")</code> (<code>"signed_sum"</code>,
+<code>"positive_lobe"</code>, or <code>"peak"</code>), automatically switching to
+<code>"positive_lobe"</code> when unattributed candidates span heterogeneous
+undershoot ratios (and defaulting to <code>"signed_sum"</code> otherwise).</p></dd>
 
 
 <dt id="arg-nuisance">nuisance<a class="anchor" aria-label="anchor" href="#arg-nuisance"></a></dt>
@@ -229,10 +233,10 @@ groups) to differ from HRF selection parcels.</p></dd>
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>An object of class crossrun_hrf with normalized kernels, per-target-run
   selections and training manifests, parcel anchors, run status/design summaries,
-  optional candidate scores, voxel/run IDs, and frozen settings. When
-  `selection_mode = "soft_average"`, also includes per-target-run candidate
-  weight matrices (`kernel_weights`) and unit-sum composite HRF kernel
-  matrices (`selected_kernels`).</p>
+  optional candidate scores, voxel/run IDs, and frozen settings (including
+  <code>settings$kernel_normalize</code>). When <code>selection_mode = "soft_average"</code>,
+  also includes per-target-run candidate weight matrices (<code>kernel_weights</code>)
+  and normalized composite HRF kernel matrices (<code>selected_kernels</code>).</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>

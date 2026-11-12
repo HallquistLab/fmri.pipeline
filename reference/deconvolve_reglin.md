@@ -27,7 +27,8 @@ deconvolve_reglin(
   wiener_psd_smooth = 7L,
   wiener_psd_floor = 1e-08,
   gcv_rule = c("min", "1se"),
-  scaling = NULL
+  scaling = NULL,
+  kernel_normalize = c("auto", "signed_sum", "positive_lobe", "peak")
 )
 ```
 
@@ -56,7 +57,7 @@ deconvolve_reglin(
   regularization penalty: `"diff2"` for smooth second differences,
   `"diff1"` for smooth first differences, `"ridge"` for amplitude
   shrinkage, `"matern1"` for a damped first-order
-  Matérn/Ornstein-Uhlenbeck penalty (`0.10 * I + 0.90 * crossprod(D1)`),
+  Matern/Ornstein-Uhlenbeck penalty (`0.10 * I + 0.90 * crossprod(D1)`),
   or `"sobolev"` for a critically damped second-order Sobolev penalty
   (`0.05 * I + 0.45 * crossprod(D1) + 0.50 * crossprod(D2)`) that
   suppresses negative sidelobe ringing and stabilizes low frequencies.
@@ -150,6 +151,15 @@ deconvolve_reglin(
   with noise variance. When supplied, overrides `normalize` and
   `demean`. Otherwise those flags retain their existing behavior; the
   default is z-scoring.
+
+- kernel_normalize:
+
+  Normalization applied to `kernel` or `kernel_grid`: `"auto"` (default;
+  honors `attr(..., "normalize")` when present, switches to
+  `"positive_lobe"` when candidate kernels span heterogeneous undershoot
+  ratios, and uses `"signed_sum"` otherwise), `"signed_sum"`
+  (`sum(h) == 1`), `"positive_lobe"` (`sum(pmax(h, 0)) == 1`), or
+  `"peak"` (`max(h) == 1`).
 
 ## Value
 

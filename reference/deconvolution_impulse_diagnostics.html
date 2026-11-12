@@ -75,7 +75,8 @@ known HRF, and measure their recovery and entry into other event windows.</p>
 <span>  tail_padding <span class="op">=</span> <span class="fl">0L</span>,</span>
 <span>  source_trials <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  batch_size <span class="op">=</span> <span class="fl">32L</span>,</span>
-<span>  return_timeseries <span class="op">=</span> <span class="cn">FALSE</span></span>
+<span>  return_timeseries <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  kernel_normalize <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"auto"</span>, <span class="st">"signed_sum"</span>, <span class="st">"positive_lobe"</span>, <span class="st">"peak"</span><span class="op">)</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -88,7 +89,8 @@ known HRF, and measure their recovery and entry into other event windows.</p>
 
 
 <dt id="arg-kernel">kernel<a class="anchor" aria-label="anchor" href="#arg-kernel"></a></dt>
-<dd><p>Frozen inverse-model HRF. Normalized to unit sum.</p></dd>
+<dd><p>Frozen inverse-model HRF, normalized according to
+<code>kernel_normalize</code>.</p></dd>
 
 
 <dt id="arg-n-time">n_time<a class="anchor" aria-label="anchor" href="#arg-n-time"></a></dt>
@@ -130,7 +132,8 @@ nonlinear estimators are not supported.</p></dd>
 
 <dt id="arg-forward-kernel">forward_kernel<a class="anchor" aria-label="anchor" href="#arg-forward-kernel"></a></dt>
 <dd><p>Generating HRF, defaulting to kernel. Use a different
-shape for a specified HRF-mismatch experiment. Also normalized to unit sum.</p></dd>
+shape for a specified HRF-mismatch experiment, normalized with the same
+<code>kernel_normalize</code> convention as <code>kernel</code>.</p></dd>
 
 
 <dt id="arg-prewhiten-rho">prewhiten_rho<a class="anchor" aria-label="anchor" href="#arg-prewhiten-rho"></a></dt>
@@ -168,6 +171,15 @@ All event_data rows remain target windows. Subset sources for large schedules.</
 <dt id="arg-return-timeseries">return_timeseries<a class="anchor" aria-label="anchor" href="#arg-return-timeseries"></a></dt>
 <dd><p>Include full acquisition-grid truth, BOLD, and
 recovered activity for each selected source (default FALSE).</p></dd>
+
+
+<dt id="arg-kernel-normalize">kernel_normalize<a class="anchor" aria-label="anchor" href="#arg-kernel-normalize"></a></dt>
+<dd><p>Normalization applied to both <code>kernel</code> and
+<code>forward_kernel</code>: <code>"auto"</code> (default; honors <code>attr(..., "normalize")</code>
+when present, switches to <code>"positive_lobe"</code> when <code>kernel</code> and
+<code>forward_kernel</code> differ in undershoot ratio, and uses
+<code>"signed_sum"</code> otherwise), <code>"signed_sum"</code>, <code>"positive_lobe"</code>,
+or <code>"peak"</code>.</p></dd>
 
 </dl></div>
     <div class="section level2">

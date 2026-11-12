@@ -56,7 +56,10 @@
 <span>  dispersions <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0.8</span>, <span class="fl">1</span>, <span class="fl">1.2</span><span class="op">)</span>,</span>
 <span>  undershoot_ratios <span class="op">=</span> <span class="fl">6</span>,</span>
 <span>  duration <span class="op">=</span> <span class="fl">32</span>,</span>
-<span>  preset <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"custom"</span>, <span class="st">"standard"</span>, <span class="st">"extended"</span>, <span class="st">"medusa"</span>, <span class="st">"dense"</span><span class="op">)</span></span>
+<span>  preset <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"custom"</span>, <span class="st">"standard"</span>, <span class="st">"extended"</span>, <span class="st">"canonical_27"</span>, <span class="st">"dense"</span>, <span class="st">"manifold"</span>,</span>
+<span>    <span class="st">"enet"</span>, <span class="st">"medusa"</span><span class="op">)</span>,</span>
+<span>  normalize <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"auto"</span>, <span class="st">"signed_sum"</span>, <span class="st">"positive_lobe"</span>, <span class="st">"peak"</span><span class="op">)</span>,</span>
+<span>  n_enet <span class="op">=</span> <span class="fl">45L</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -77,7 +80,8 @@
 
 
 <dt id="arg-undershoot-ratios">undershoot_ratios<a class="anchor" aria-label="anchor" href="#arg-undershoot-ratios"></a></dt>
-<dd><p>Positive response-to-undershoot ratios.</p></dd>
+<dd><p>Positive response-to-undershoot ratios (<code>&gt; 1</code>;
+<code>Inf</code> gives a pure single-gamma HRF with zero post-stimulus undershoot).</p></dd>
 
 
 <dt id="arg-duration">duration<a class="anchor" aria-label="anchor" href="#arg-duration"></a></dt>
@@ -85,24 +89,45 @@
 
 
 <dt id="arg-preset">preset<a class="anchor" aria-label="anchor" href="#arg-preset"></a></dt>
-<dd><p>Optional preset grid configuration: `"custom"` (default, uses
-supplied `peak_delays`, `dispersions`, `undershoot_ratios`), `"standard"`
-(delays 5, 6, 7s; dispersions 0.8, 1, 1.2), `"extended"` (delays 4–8s;
-dispersions 0.8, 1, 1.25), `"medusa"` (recommended 0.5s medium grid:
-delays 4–8s by 0.5s; dispersions 0.9, 1.0, 1.1; 27 candidates), or
-`"dense"` (delays 4–8.5s by 0.5s; dispersions 0.8, 1, 1.2, 1.4).</p></dd>
+<dd><p>Optional preset grid configuration: <code>"custom"</code> (default, uses
+supplied <code>peak_delays</code>, <code>dispersions</code>, <code>undershoot_ratios</code>),
+<code>"standard"</code> (delays 5, 6, 7s; dispersions 0.8, 1, 1.2),
+<code>"extended"</code> (delays 4–8s; dispersions 0.8, 1, 1.25),
+<code>"canonical_27"</code> (fixed-undershoot 0.5s canonical grid: delays 4–8s by
+0.5s; dispersions 0.9, 1.0, 1.1; 27 candidates), <code>"dense"</code> (delays
+4–8.5s by 0.5s; dispersions 0.8, 1, 1.2, 1.4), <code>"manifold"</code> or
+<code>"medusa"</code> (pruned 3D physiological manifold spanning
+fast/narrow/minimal-undershoot subcortical through slow cortical shapes;
+~44 candidates), or <code>"enet"</code> (maximin cosine epsilon-net covering the
+expanded 3D parameter cube with <code>n_enet</code> candidates).</p></dd>
+
+
+<dt id="arg-normalize">normalize<a class="anchor" aria-label="anchor" href="#arg-normalize"></a></dt>
+<dd><p>Normalization convention across candidate columns: <code>"auto"</code>
+(uses <code>"positive_lobe"</code> whenever undershoot varies across candidates,
+includes <code>Inf</code>, differs from the canonical fixed ratio 6, or uses
+<code>"manifold"</code>, <code>"medusa"</code>, or <code>"enet"</code> so varying undershoot
+ratios do not inflate deconvolved neural amplitudes; uses <code>"signed_sum"</code>
+for legacy fixed-ratio-6 grids), <code>"signed_sum"</code> (<code>sum(h) == 1</code>),
+<code>"positive_lobe"</code> (<code>sum(pmax(h, 0)) == 1</code>), or <code>"peak"</code>
+(<code>max(h) == 1</code>).</p></dd>
+
+
+<dt id="arg-n-enet">n_enet<a class="anchor" aria-label="anchor" href="#arg-n-enet"></a></dt>
+<dd><p>Number of candidates retained when <code>preset = "enet"</code> (default 45).</p></dd>
 
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>A unit-sum kernel matrix, with time rows, candidate columns, and a
-  parameters attribute. The canonical candidate (6, 1, 6) is first if present.</p>
+    <p>A normalized kernel matrix, with time rows, candidate columns, and
+  <code>parameters</code>, <code>tr</code>, and <code>normalize</code> attributes. The canonical
+  candidate <code>(6, 1, 6)</code> is first if present.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>Candidates use the SPM difference-of-gammas parameterization with
-  undershoot delay 16 seconds and undershoot dispersion 1. These are candidate
-  shapes, not a universally validated range for every population or protocol.</p>
+  undershoot delay 16 seconds and undershoot dispersion 1. Setting
+  <code>undershoot_ratios = Inf</code> omits the negative gamma lobe (single-gamma HRF).</p>
     </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

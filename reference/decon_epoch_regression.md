@@ -301,8 +301,11 @@ surfaces, and biophysical Windkessel-Balloon + `fmrisim` scanner
 realism), the recommended end-to-end configuration is:
 
 1.  **Stage 0–1 (HRF Estimation):** Use
-    `hrf_library(tr, preset = "medusa")` (0.5s peak-delay grid over 4–8s
-    with dispersions 0.9, 1.0, 1.1; 27 candidates) and
+    `hrf_library(tr, preset = "medusa")` (pruned 3D physiological
+    manifold spanning fast/narrow/minimal-undershoot subcortical through
+    slow cortical HRFs with positive-lobe normalization; ~44 candidates,
+    or `preset = "canonical_27"` for the 27-candidate fixed-undershoot
+    canonical grid) and
     [`estimate_crossrun_hrf`](https://hallquistlab.github.io/fmri.pipeline/reference/estimate_crossrun_hrf.md)
     with `noise_model = "ar1"`, `evidence = "calibrated"`,
     `selection_mode = "soft_average"` (evidence-weighted HRF kernel

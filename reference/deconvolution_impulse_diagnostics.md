@@ -29,7 +29,8 @@ deconvolution_impulse_diagnostics(
   tail_padding = 0L,
   source_trials = NULL,
   batch_size = 32L,
-  return_timeseries = FALSE
+  return_timeseries = FALSE,
+  kernel_normalize = c("auto", "signed_sum", "positive_lobe", "peak")
 )
 ```
 
@@ -41,7 +42,7 @@ deconvolution_impulse_diagnostics(
 
 - kernel:
 
-  Frozen inverse-model HRF. Normalized to unit sum.
+  Frozen inverse-model HRF, normalized according to `kernel_normalize`.
 
 - n_time:
 
@@ -83,7 +84,8 @@ deconvolution_impulse_diagnostics(
 - forward_kernel:
 
   Generating HRF, defaulting to kernel. Use a different shape for a
-  specified HRF-mismatch experiment. Also normalized to unit sum.
+  specified HRF-mismatch experiment, normalized with the same
+  `kernel_normalize` convention as `kernel`.
 
 - prewhiten_rho:
 
@@ -123,6 +125,14 @@ deconvolution_impulse_diagnostics(
 
   Include full acquisition-grid truth, BOLD, and recovered activity for
   each selected source (default FALSE).
+
+- kernel_normalize:
+
+  Normalization applied to both `kernel` and `forward_kernel`: `"auto"`
+  (default; honors `attr(..., "normalize")` when present, switches to
+  `"positive_lobe"` when `kernel` and `forward_kernel` differ in
+  undershoot ratio, and uses `"signed_sum"` otherwise), `"signed_sum"`,
+  `"positive_lobe"`, or `"peak"`.
 
 ## Value
 

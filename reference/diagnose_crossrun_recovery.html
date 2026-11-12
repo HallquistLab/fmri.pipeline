@@ -86,8 +86,10 @@ lags = -1:3 produces a five-sample window sum at TR = 1.</p></dd>
 
 <dt id="arg-source-kernel-grid">source_kernel_grid<a class="anchor" aria-label="anchor" href="#arg-source-kernel-grid"></a></dt>
 <dd><p>Optional normalized HRF candidates used to generate
-synthetic BOLD. Default uses each stratum's fitted HRF. Supplying alternatives
-evaluates sensitivity to HRF mismatch; it does not estimate the true HRF.</p></dd>
+synthetic BOLD. Default uses each stratum's fitted HRF. Honors
+<code>attr(source_kernel_grid, "normalize")</code> when present, otherwise matching
+the fitted normalization mode. Supplying alternatives evaluates sensitivity
+to HRF mismatch; it does not estimate the true HRF.</p></dd>
 
 
 <dt id="arg-return-matrices">return_matrices<a class="anchor" aria-label="anchor" href="#arg-return-matrices"></a></dt>

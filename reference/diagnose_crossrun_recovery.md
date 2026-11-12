@@ -40,7 +40,9 @@ diagnose_crossrun_recovery(
 - source_kernel_grid:
 
   Optional normalized HRF candidates used to generate synthetic BOLD.
-  Default uses each stratum's fitted HRF. Supplying alternatives
+  Default uses each stratum's fitted HRF. Honors
+  `attr(source_kernel_grid, "normalize")` when present, otherwise
+  matching the fitted normalization mode. Supplying alternatives
   evaluates sensitivity to HRF mismatch; it does not estimate the true
   HRF.
 

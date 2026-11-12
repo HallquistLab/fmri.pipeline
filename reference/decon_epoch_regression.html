@@ -343,8 +343,11 @@ covariate columns for downstream <code><a href="mixed_by.html">mixed_by()</a></c
   temporal alignment, inter-region connectivity, factorial power surfaces, and
   biophysical Windkessel-Balloon + <code>fmrisim</code> scanner realism), the
   recommended end-to-end configuration is:</p><ol><li><p><strong>Stage 0–1 (HRF Estimation):</strong> Use
-      <code>hrf_library(tr, preset = "medusa")</code> (0.5s peak-delay grid over
-      4–8s with dispersions 0.9, 1.0, 1.1; 27 candidates) and
+      <code>hrf_library(tr, preset = "medusa")</code> (pruned 3D physiological
+      manifold spanning fast/narrow/minimal-undershoot subcortical through
+      slow cortical HRFs with positive-lobe normalization; ~44 candidates, or
+      <code>preset = "canonical_27"</code> for the 27-candidate fixed-undershoot
+      canonical grid) and
       <code><a href="estimate_crossrun_hrf.html">estimate_crossrun_hrf</a></code> with <code>noise_model = "ar1"</code>,
       <code>evidence = "calibrated"</code>, <code>selection_mode = "soft_average"</code>
       (evidence-weighted HRF kernel averaging across locally supported

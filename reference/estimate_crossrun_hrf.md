@@ -58,7 +58,13 @@ estimate_crossrun_hrf(
 - kernel_grid:
 
   Matrix or list of equal-length candidate causal HRFs, sampled at tr
-  starting at lag zero. Use hrf_library() or supply explicit candidates.
+  starting at lag zero. Use
+  [`hrf_library()`](https://hallquistlab.github.io/fmri.pipeline/reference/hrf_library.md)
+  or supply explicit candidates; honors `attr(kernel_grid, "normalize")`
+  (`"signed_sum"`, `"positive_lobe"`, or `"peak"`), automatically
+  switching to `"positive_lobe"` when unattributed candidates span
+  heterogeneous undershoot ratios (and defaulting to `"signed_sum"`
+  otherwise).
 
 - nuisance:
 
@@ -188,10 +194,11 @@ estimate_crossrun_hrf(
 
 An object of class crossrun_hrf with normalized kernels, per-target-run
 selections and training manifests, parcel anchors, run status/design
-summaries, optional candidate scores, voxel/run IDs, and frozen
-settings. When \`selection_mode = "soft_average"\`, also includes
-per-target-run candidate weight matrices (\`kernel_weights\`) and
-unit-sum composite HRF kernel matrices (\`selected_kernels\`).
+summaries, optional candidate scores, voxel/run IDs, and frozen settings
+(including `settings$kernel_normalize`). When
+`selection_mode = "soft_average"`, also includes per-target-run
+candidate weight matrices (`kernel_weights`) and normalized composite
+HRF kernel matrices (`selected_kernels`).
 
 ## Details
 

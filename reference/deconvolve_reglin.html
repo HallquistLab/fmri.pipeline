@@ -74,7 +74,8 @@ inverse convolution problem for one or more BOLD signals.</p>
 <span>  wiener_psd_smooth <span class="op">=</span> <span class="fl">7L</span>,</span>
 <span>  wiener_psd_floor <span class="op">=</span> <span class="fl">1e-08</span>,</span>
 <span>  gcv_rule <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"min"</span>, <span class="st">"1se"</span><span class="op">)</span>,</span>
-<span>  scaling <span class="op">=</span> <span class="cn">NULL</span></span>
+<span>  scaling <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  kernel_normalize <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"auto"</span>, <span class="st">"signed_sum"</span>, <span class="st">"positive_lobe"</span>, <span class="st">"peak"</span><span class="op">)</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -105,7 +106,7 @@ or a numeric vector.</p></dd>
 <dd><p>regularization penalty: <code>"diff2"</code> for smooth second
 differences, <code>"diff1"</code> for smooth first differences, <code>"ridge"</code>
 for amplitude shrinkage, <code>"matern1"</code> for a damped first-order
-Matérn/Ornstein-Uhlenbeck penalty (<code>0.10 * I + 0.90 * crossprod(D1)</code>), or
+Matern/Ornstein-Uhlenbeck penalty (<code>0.10 * I + 0.90 * crossprod(D1)</code>), or
 <code>"sobolev"</code> for a critically damped second-order Sobolev penalty
 (<code>0.05 * I + 0.45 * crossprod(D1) + 0.50 * crossprod(D2)</code>) that suppresses negative
 sidelobe ringing and stabilizes low frequencies.</p></dd>
@@ -200,6 +201,15 @@ autocorrelation when available), standardizing SNR without conflating
 neural task variance with noise variance. When supplied,
 overrides <code>normalize</code> and <code>demean</code>. Otherwise those flags retain
 their existing behavior; the default is z-scoring.</p></dd>
+
+
+<dt id="arg-kernel-normalize">kernel_normalize<a class="anchor" aria-label="anchor" href="#arg-kernel-normalize"></a></dt>
+<dd><p>Normalization applied to <code>kernel</code> or
+<code>kernel_grid</code>: <code>"auto"</code> (default; honors <code>attr(..., "normalize")</code>
+when present, switches to <code>"positive_lobe"</code> when candidate kernels span
+heterogeneous undershoot ratios, and uses <code>"signed_sum"</code> otherwise),
+<code>"signed_sum"</code> (<code>sum(h) == 1</code>), <code>"positive_lobe"</code>
+(<code>sum(pmax(h, 0)) == 1</code>), or <code>"peak"</code> (<code>max(h) == 1</code>).</p></dd>
 
 </dl></div>
     <div class="section level2">
