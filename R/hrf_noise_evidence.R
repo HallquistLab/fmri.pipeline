@@ -147,12 +147,21 @@ hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_
     if (m < 3L || p_vox == 0L) return(z_fb)
     ok_c <- which(colSums(!is.finite(mat)) == 0L)
     if (!length(ok_c)) return(z_fb)
-    d2_c <- mat[3:m, ok_c, drop = FALSE] - 2.0 * mat[2:(m - 1L), ok_c, drop = FALSE] + mat[1:(m - 2L), ok_c, drop = FALSE]
+    tri_idx <- which((rows[3:m] - rows[1:(m - 2L)]) == 2L)
+    if (length(tri_idx) >= 2L) {
+      d2_c <- mat[tri_idx + 2L, ok_c, drop = FALSE] -
+        2.0 * mat[tri_idx + 1L, ok_c, drop = FALSE] +
+        mat[tri_idx, ok_c, drop = FALSE]
+      out_rows <- tri_idx + 2L
+    } else {
+      d2_c <- mat[3:m, ok_c, drop = FALSE] - 2.0 * mat[2:(m - 1L), ok_c, drop = FALSE] + mat[1:(m - 2L), ok_c, drop = FALSE]
+      out_rows <- 3:m
+    }
     d2_c <- sweep(d2_c, 2L, colMeans(d2_c), "-")
     nrm_c <- sqrt(colSums(d2_c^2))
     good_c <- is.finite(nrm_c) & nrm_c > .Machine$double.eps
     if (any(good_c)) {
-      z_fb[3:m, ok_c[good_c]] <- sweep(d2_c[, good_c, drop = FALSE], 2L, nrm_c[good_c], "/")
+      z_fb[out_rows, ok_c[good_c]] <- sweep(d2_c[, good_c, drop = FALSE], 2L, nrm_c[good_c], "/")
     }
     z_fb
   }
@@ -167,7 +176,8 @@ hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_
     p3 <- if (length(ar_vec) >= 4L) ar_vec[4L] else 0.0
     p4 <- if (length(ar_vec) >= 5L) ar_vec[5L] else 0.0
     fallback_d2_sd <- estimate_decon_noise_sd(
-      y_rows, noise_rho = r1, noise_psi1 = p1, noise_psi2 = p2, noise_psi3 = p3, noise_psi4 = p4
+      y_rows, noise_rho = r1, noise_psi1 = p1, noise_psi2 = p2, noise_psi3 = p3, noise_psi4 = p4,
+      rows = rows
     )
   }
   if (is.null(x_rows) || m < 20L) {
@@ -175,8 +185,18 @@ hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_
     return(if (isTRUE(return_innovations)) list(sd = sd_fb, z_unit = make_d2_unit(y_rows)) else sd_fb)
   }
 
-  w_unit <- hrf_whitening_matrix(rows, ar_vec, unit_marginal = TRUE)
-  wx <- w_unit %*% x_rows
+  x_rows <- as.matrix(x_rows)
+  ok_cols <- which(colSums(!is.finite(y_rows)) == 0L)
+  want_trial_proj <- isTRUE(return_innovations) && !is.null(trial_rows) && ncol(trial_rows) > 0L
+  w_bundle <- hrf_apply_whitening(
+    list(
+      wx = x_rows,
+      wy = if (length(ok_cols)) y_rows[, ok_cols, drop = FALSE] else NULL,
+      wt = if (want_trial_proj) as.matrix(trial_rows) else NULL
+    ),
+    rows = rows, ar_vec = ar_vec, unit_marginal = TRUE
+  )
+  wx <- w_bundle$wx
   nrm <- sqrt(colSums(wx^2)); nrm[nrm == 0] <- 1.0
   sv <- svd(sweep(wx, 2L, nrm, "/"), nv = 0)
   rk <- if (length(sv$d) && sv$d[1L] > 0) sum(sv$d > 1e-8 * sv$d[1L]) else 0L
@@ -189,12 +209,11 @@ hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_
   q <- if (rk > 0L) sv$u[, seq_len(rk), drop = FALSE] else matrix(0.0, m, 0L)
   out_sd <- rep(NA_real_, p_vox)
   z_unit <- if (isTRUE(return_innovations)) matrix(0.0, m, p_vox) else NULL
-  ok_cols <- which(colSums(!is.finite(y_rows)) == 0L)
   if (!length(ok_cols)) {
     return(if (isTRUE(return_innovations)) list(sd = out_sd, z_unit = z_unit) else out_sd)
   }
 
-  wy <- w_unit %*% y_rows[, ok_cols, drop = FALSE]
+  wy <- w_bundle$wy
   e_mat <- if (rk > 0L) wy - q %*% crossprod(q, wy) else wy
   lev <- if (rk > 0L) rowSums(q^2) else rep(0.0, m)
   keep_t <- (1.0 - lev) > 0.10
@@ -210,8 +229,8 @@ hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_
   e_innov <- e_mat
   keep_innov <- keep_t
   inv_sd_innov <- inv_sd_t
-  if (isTRUE(return_innovations) && !is.null(trial_rows) && ncol(trial_rows) > 0L && (df_res > 24L)) {
-    wt <- w_unit %*% trial_rows
+  if (want_trial_proj && (df_res > 24L)) {
+    wt <- w_bundle$wt
     if (rk > 0L) wt <- wt - q %*% crossprod(q, wt)
     nrm_t <- sqrt(colSums(wt^2))
     pos_t <- nrm_t > 1e-8
@@ -380,25 +399,33 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
       return(psi_zero)
     }
     q_eff <- if (q_use == 4L && length(lag_idx[[3L]]) >= 24L && length(lag_idx[[4L]]) >= 24L) 4L else 2L
-    w1 <- hrf_whitening_matrix(rows, rho_val)
     r_lags <- numeric(q_eff)
     w_tot <- 0.0
     df_acc <- 0.0
     u_chunks <- list()
     w_chunks <- list()
     vox_sigs <- k_sigs[vox_idx]
-    for (sg in unique(vox_sigs)) {
+    u_sigs_psi <- unique(vox_sigs)
+    in_psi_list <- vector("list", 2L * length(u_sigs_psi))
+    for (si in seq_along(u_sigs_psi)) {
+      sg <- u_sigs_psi[si]
+      sub_v <- vox_idx[vox_sigs == sg]
+      in_psi_list[[2L * si - 1L]] <- des_list[[sg]][rows, , drop = FALSE]
+      in_psi_list[[2L * si]] <- y[rows, sub_v, drop = FALSE]
+    }
+    w_psi_list <- hrf_apply_whitening(in_psi_list, rows, rho_val, unit_marginal = FALSE)
+    for (si in seq_along(u_sigs_psi)) {
+      sg <- u_sigs_psi[si]
       sub_pos <- which(vox_sigs == sg)
-      sub_v <- vox_idx[sub_pos]
       sub_w <- vox_weights[sub_pos]
-      wz <- w1 %*% des_list[[sg]][rows, , drop = FALSE]
+      wz <- w_psi_list[[2L * si - 1L]]
       norm_z <- sqrt(colSums(wz^2)); norm_z[norm_z == 0] <- 1
       sv <- svd(sweep(wz, 2L, norm_z, "/"), nv = 0)
       rk <- if (length(sv$d) && sv$d[1L] > 0) sum(sv$d > 1e-8 * sv$d[1L]) else 0L
       df_res <- n_mask - rk
       if (df_res < 20L) next
       q_des <- if (rk > 0L) sv$u[, seq_len(rk), drop = FALSE] else matrix(0, n_mask, 0L)
-      wy <- w1 %*% y[rows, sub_v, drop = FALSE]
+      wy <- w_psi_list[[2L * si]]
       res1 <- if (rk > 0L) wy - q_des %*% crossprod(q_des, wy) else wy
       v_norms <- sqrt(colSums(res1^2))
       ok_v <- is.finite(v_norms) & v_norms > 1e-10
@@ -506,17 +533,26 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
     best_idx <- ip0$best
     psi_hat <- estimate_psi_weighted(vox_idx, w_norm, rho_hat)
     if (n_mask >= 64L && any(abs(psi_hat) > 1e-4)) {
-      w_psi <- hrf_whitening_matrix(rows, c(0.0, psi_hat), unit_marginal = TRUE)
       prof_2 <- matrix(NA_real_, length(rho_grid), length(vox_idx))
       vox_sigs <- k_sigs[vox_idx]
-      for (sg in unique(vox_sigs)) {
+      u_sigs_ref <- unique(vox_sigs)
+      in_ref_list <- vector("list", 2L * length(u_sigs_ref))
+      for (si in seq_along(u_sigs_ref)) {
+        sg <- u_sigs_ref[si]
+        sub_v <- vox_idx[vox_sigs == sg]
+        y_rows_sub <- y[rows, sub_v, drop = FALSE]
+        in_ref_list[[2L * si - 1L]] <- sweep(y_rows_sub, 2L, colMeans(y_rows_sub), "-")
+        in_ref_list[[2L * si]] <- des_list[[sg]][rows, , drop = FALSE]
+      }
+      w_ref_list <- hrf_apply_whitening(in_ref_list, rows, c(0.0, psi_hat), unit_marginal = TRUE)
+      for (si in seq_along(u_sigs_ref)) {
+        sg <- u_sigs_ref[si]
         sub_pos <- which(vox_sigs == sg)
         sub_v <- vox_idx[sub_pos]
         y_f <- y[, sub_v, drop = FALSE]
         d_f <- des_list[[sg]]
-        y_c <- sweep(y_f[rows, , drop = FALSE], 2L, colMeans(y_f[rows, , drop = FALSE]), "-")
-        y_f[rows, ] <- w_psi %*% y_c
-        d_f[rows, ] <- w_psi %*% d_f[rows, , drop = FALSE]
+        y_f[rows, ] <- w_ref_list[[2L * si - 1L]]
+        d_f[rows, ] <- w_ref_list[[2L * si]]
         prof_2[, sub_pos] <- hrf_noise_profile_cpp(
           y_f, d_f, rows, rho_grid, as.integer(batch_size)
         )
@@ -591,9 +627,25 @@ hrf_estimate_noise <- function(y, events, tr, offset, kernels, fallback, z, mask
       out$method[index] <- if (fit_g$boundary) "pooled_reml_grid_boundary" else "pooled_reml"
       out$n_voxels[index] <- length(usable)
     } else {
-      d2_u <- y[rows[3:n_mask], usable, drop = FALSE] -
-        2 * y[rows[2:(n_mask - 1L)], usable, drop = FALSE] +
-        y[rows[1:(n_mask - 2L)], usable, drop = FALSE]
+      # Restrict SUSAN's auxiliary second-difference scale feature to gap-free
+      # contiguous triplets on the acquisition clock so drift/task jumps across
+      # censored motion segments never contaminate `raw_lsd`.
+      tri_idx <- if (n_mask >= 3L) which((rows[3:n_mask] - rows[1:(n_mask - 2L)]) == 2L) else integer(0)
+      if (length(tri_idx) >= 8L) {
+        d2_u <- y[rows[tri_idx + 2L], usable, drop = FALSE] -
+          2 * y[rows[tri_idx + 1L], usable, drop = FALSE] +
+          y[rows[tri_idx], usable, drop = FALSE]
+      } else {
+        pair_idx <- if (n_mask >= 2L) which((rows[2:n_mask] - rows[1:(n_mask - 1L)]) == 1L) else integer(0)
+        if (length(pair_idx) >= 6L) {
+          d2_u <- y[rows[pair_idx + 1L], usable, drop = FALSE] -
+            y[rows[pair_idx], usable, drop = FALSE]
+        } else {
+          d2_u <- y[rows[3:n_mask], usable, drop = FALSE] -
+            2 * y[rows[2:(n_mask - 1L)], usable, drop = FALSE] +
+            y[rows[1:(n_mask - 2L)], usable, drop = FALSE]
+        }
+      }
       raw_lsd <- log(pmax(apply(d2_u, 2L, stats::mad, center = 0), 1e-12))
       lsd_scale <- max(stats::sd(raw_lsd), 0.25)
       rho_scale <- max(0.12, 0.50 * stats::sd(ind_rhos))
@@ -1054,6 +1106,42 @@ hrf_whitening_matrix <- function(rows, rho, unit_marginal = FALSE) {
   if (isTRUE(unit_marginal)) w_unit else w_unit * sig_u
 }
 
+# Apply exact AR(1) or cascaded AR(p) Cholesky whitening to a matrix (or list of
+# matrices) on observed acquisition indices `rows` via O(m * p) C++ ArWhitener,
+# matching `hrf_whitening_matrix(rows, ar_vec, unit_marginal) %*% X` without
+# allocating a dense m x m matrix in R.
+hrf_apply_whitening <- function(target, rows, ar_vec, unit_marginal = FALSE) {
+  rows <- as.integer(rows)
+  m <- length(rows)
+  as_mat_target <- function(obj) {
+    if (is.list(obj)) {
+      lapply(obj, function(el) if (is.null(el)) NULL else as.matrix(el))
+    } else {
+      as.matrix(obj)
+    }
+  }
+  if (m <= 1L || !length(ar_vec)) return(as_mat_target(target))
+  has_psi <- length(ar_vec) >= 2L && any(is.finite(ar_vec[-1L]) & abs(ar_vec[-1L]) > 1e-10)
+  if (!has_psi) {
+    rho1 <- ar_vec[1L]
+    if (!is.finite(rho1) || abs(rho1) <= 1e-12) return(as_mat_target(target))
+    rho1 <- min(max(rho1, -0.95), 0.95)
+    return(hrf_whiten_apply_cpp(
+      target = as_mat_target(target), rows = rows, rho = rho1,
+      unit_marginal = isTRUE(unit_marginal)
+    ))
+  }
+  is_contig <- all(diff(rows) == 1L)
+  lag_span <- if (is_contig) max(8L, length(ar_vec) + 2L) else max(8L, max(rows) - min(rows))
+  info <- hrf_ar_cascade_info(ar_vec, max_lag = lag_span)
+  if (!length(info$phi)) return(as_mat_target(target))
+  hrf_whiten_apply_cpp(
+    target = as_mat_target(target), rows = rows, rho = 0.0,
+    ar_phi = info$phi, ar_acf = info$acf, sig_u2 = info$sig_u2,
+    unit_marginal = isTRUE(unit_marginal)
+  )
+}
+
 hrf_score_run_ar <- function(y_sub, design, z, rows, batch_size, ar_vec,
     evidence = FALSE, fallback_index = 1L) {
   rho1 <- if (length(ar_vec)) ar_vec[1L] else 0.0
@@ -1321,7 +1409,8 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
       noise_psi2 = psi2_t,
       noise_psi3 = psi3_t,
       noise_psi4 = psi4_t,
-      noise_sd_override = nsd_tune
+      noise_sd_override = nsd_tune,
+      rows = rows_t
     )$y
     if (identical(nuisance_mode, "joint")) {
       nuis_j <- if (!is.null(hrf_fit$specification$nuisance)) hrf_fit$specification$nuisance[[r_tune]] else matrix(numeric(), n_t, 0L)
@@ -1368,7 +1457,8 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
           noise_psi1 = psi1_t,
           noise_psi2 = psi2_t,
           noise_psi3 = psi3_t,
-          noise_psi4 = psi4_t
+          noise_psi4 = psi4_t,
+          rows = rows_t
         )$y
         y_tune <- cbind(p_scaled, sc_vox[, seq_len(min(32L, ncol(sc_vox))), drop = FALSE])
       }
@@ -1413,8 +1503,7 @@ hrf_tune_decon_lambda <- function(bold, hrf_fit, lambda_grid, scaling = "zscore"
     t1 <- min(n_win, t0 + 1L)
 
     h_full <- decon_convolution_matrix(n_win, k_tune)[seq_len(n_win), , drop = FALSE]
-    w_win <- hrf_whitening_matrix(seq_len(n_win), ar_t)
-    wh <- w_win %*% h_full
+    wh <- hrf_apply_whitening(h_full, seq_len(n_win), ar_t, unit_marginal = FALSE)
     hth <- crossprod(wh)
     p_pen <- decon_penalty_crossprod(ncol(wh), penalty)
     idx_lat <- (l_k - 1L) + seq_len(n_win)

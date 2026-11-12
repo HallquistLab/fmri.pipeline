@@ -55,6 +55,14 @@ hrf_inverse_operator_cpp <- function(n_time, kernel, rows, rho, nuisance, lambda
     .Call(`_fmri_pipeline_hrf_inverse_operator_cpp`, n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding, ar_phi, ar_acf, sig_u2)
 }
 
+hrf_whiten_apply_cpp <- function(target, rows, rho = 0.0, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0, unit_marginal = FALSE) {
+    .Call(`_fmri_pipeline_hrf_whiten_apply_cpp`, target, rows, rho, ar_phi, ar_acf, sig_u2, unit_marginal)
+}
+
+hrf_ar_operator_factor_cpp <- function(bt, rows, rho = 0.0, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0) {
+    .Call(`_fmri_pipeline_hrf_ar_operator_factor_cpp`, bt, rows, rho, ar_phi, ar_acf, sig_u2)
+}
+
 #' C++ port of Bush and Cisler 2013, Magnetic Resonance Imaging
 #' Adapted from the original provided by Keith Bush
 #' as well as C++ code from Jiang Bian
