@@ -1104,7 +1104,7 @@ decon_epoch_regression <- function(
       deconvolution$noise_innovations[[r]]
     } else NULL
     has_z_vox <- is.matrix(Z_vox_r) && nrow(Z_vox_r) == length(rows) && ncol(Z_vox_r) == n_voxels
-    if (has_z_vox && !is.null(fw_r)) {
+    if (has_z_vox && !is.null(fw_r) && !isTRUE(attr(Z_vox_r, "rwls_whitened"))) {
       Z_vox_r <- sweep(Z_vox_r, 1L, sqrt(pmax(fw_r, 1e-8)), "*")
       zn_col <- sqrt(colSums(Z_vox_r^2))
       pos_zn <- is.finite(zn_col) & zn_col > 1e-12

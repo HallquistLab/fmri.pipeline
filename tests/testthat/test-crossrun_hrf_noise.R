@@ -1955,6 +1955,12 @@ test_that("end-to-end rWLS deconvolution preserves clean/heavy-neural signals an
 
   expect_true(all(dec_sp_auto$frame_weights$run1[sp_trs] < 0.25))
   expect_gt(stats::median(dec_sp_auto$frame_weights$run1[-sp_trs]), 0.99)
+  expect_true(isTRUE(attr(dec_sp_auto$noise_innovations$run1, "rwls_whitened")))
+  cor_z_none <- stats::cor(rowMeans(dec_sp_none$noise_innovations$run1[, 1:8]),
+                           rowMeans(dec_sp_none$noise_innovations$run1[, 9:16]))
+  cor_z_auto <- stats::cor(rowMeans(dec_sp_auto$noise_innovations$run1[, 1:8]),
+                           rowMeans(dec_sp_auto$noise_innovations$run1[, 9:16]))
+  expect_lt(cor_z_auto, cor_z_none)
 
   # Column permutation invariance even when rWLS actively downweights spikes
   perm <- rev(seq_len(n_vox))

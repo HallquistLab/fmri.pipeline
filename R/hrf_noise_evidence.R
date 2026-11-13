@@ -139,7 +139,7 @@ hrf_build_noise_mean_design <- function(n_obs, events, tr, offset, kernel_col, z
 # retains >99% REML efficiency on clean Gaussian data while bounding motion spikes.
 hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_sd = NULL,
                                       return_innovations = FALSE, trial_rows = NULL,
-                                      return_raw_innovations = FALSE) {
+                                      return_raw_innovations = FALSE, obs_weights = NULL) {
   y_rows <- as.matrix(y_rows)
   m <- length(rows)
   p_vox <- ncol(y_rows)
@@ -202,14 +202,56 @@ hrf_estimate_gls_noise_sd <- function(y_rows, x_rows, rows, ar_vec, fallback_d2_
   want_trial_proj <- (isTRUE(return_innovations) || isTRUE(return_raw_innovations)) &&
     !is.null(trial_rows) && ncol(trial_rows) > 0L
   y_ok <- if (length(ok_cols)) y_rows[, ok_cols, drop = FALSE] else NULL
+  has_obs_w <- !is.null(obs_weights) && length(obs_weights) == m &&
+    any(abs(as.numeric(obs_weights) - 1.0) > 1e-6)
+  w_sp <- if (has_obs_w && identical(attr(obs_weights, "weight_space"), "innovation")) {
+    "innovation"
+  } else {
+    "woodbury"
+  }
+  e_act_mat <- NULL
+  if (has_obs_w && w_sp == "woodbury") {
+    w_cl <- pmin(pmax(as.numeric(obs_weights), 1e-4), 1.0)
+    act_idx <- which(w_cl < 1.0 - 1e-6)
+    if (length(act_idx) > 0L) {
+      e_act_mat <- matrix(0.0, m, length(act_idx))
+      d_act <- sqrt(pmax(1.0 / w_cl[act_idx] - 1.0, 0.0))
+      for (jj in seq_along(act_idx)) {
+        e_act_mat[act_idx[jj], jj] <- d_act[jj]
+      }
+    }
+  }
   w_bundle <- hrf_apply_whitening(
     list(
       wx = x_rows,
       wy = y_ok,
-      wt = if (want_trial_proj) as.matrix(trial_rows) else NULL
+      wt = if (want_trial_proj) as.matrix(trial_rows) else NULL,
+      we = e_act_mat
     ),
     rows = rows, ar_vec = ar_vec, unit_marginal = TRUE
   )
+  if (has_obs_w) {
+    if (w_sp == "innovation") {
+      sw <- sqrt(pmax(as.numeric(obs_weights), 1e-8))
+      w_bundle$wx <- sweep(w_bundle$wx, 1L, sw, "*")
+      if (!is.null(w_bundle$wy)) w_bundle$wy <- sweep(w_bundle$wy, 1L, sw, "*")
+      if (!is.null(w_bundle$wt)) w_bundle$wt <- sweep(w_bundle$wt, 1L, sw, "*")
+    } else if (!is.null(w_bundle$we) && ncol(w_bundle$we) > 0L) {
+      sv_we <- svd(w_bundle$we, nv = 0L)
+      pos_we <- sv_we$d > 1e-8
+      if (any(pos_we)) {
+        u_we <- sv_we$u[, pos_we, drop = FALSE]
+        fac_we <- 1.0 / sqrt(1.0 + sv_we$d[pos_we]^2) - 1.0
+        apply_wood <- function(mat_in) {
+          if (is.null(mat_in)) return(NULL)
+          mat_in + u_we %*% sweep(crossprod(u_we, mat_in), 1L, fac_we, "*")
+        }
+        w_bundle$wx <- apply_wood(w_bundle$wx)
+        w_bundle$wy <- apply_wood(w_bundle$wy)
+        w_bundle$wt <- apply_wood(w_bundle$wt)
+      }
+    }
+  }
   wx <- w_bundle$wx
   nrm <- sqrt(colSums(wx^2)); nrm[nrm == 0] <- 1.0
   sv <- svd(sweep(wx, 2L, nrm, "/"), nv = if (isTRUE(return_raw_innovations)) ncol(wx) else 0L)

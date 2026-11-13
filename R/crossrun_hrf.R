@@ -1475,7 +1475,8 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
       ar_op <- if (!is.null(strat$get_ar)) strat$get_ar(columns[1L]) else ar
       k_vec <- as.numeric(strat$get_kernel(columns[1L]))
       x_gls_stratum <- NULL
-      x_trial_stratum <- NULL
+      x_trial_innov <- NULL
+      x_trial_raw <- NULL
       if (!is.null(hrf_fit$specification$events[[r]]) && length(rows) >= 20L) {
         mask_decon_bool <- seq_len(n) %in% rows
         nuis_r <- if (!is.null(hrf_fit$specification$nuisance)) hrf_fit$specification$nuisance[[r]] else matrix(numeric(), n, 0L)
@@ -1495,10 +1496,13 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
             0.5 * rowSums(td_d1[rows, , drop = FALSE]^2) +
             0.25 * rowSums(td_d2[rows, , drop = FALSE]^2)
           n_task_strata <- n_task_strata + 1L
-          x_trial_stratum <- if (isTRUE(md_str$used_trial_design)) {
+          if (!isTRUE(md_str$used_trial_design)) {
+            x_trial_innov <- cbind(td_full, td_d1)[rows, , drop = FALSE]
+          }
+          x_trial_raw <- if (isTRUE(md_str$used_trial_design)) {
             cbind(td_d1, td_d2)[rows, , drop = FALSE]
           } else {
-            cbind(td_full, td_d1)[rows, , drop = FALSE]
+            x_trial_innov
           }
         }
       }
@@ -1508,13 +1512,13 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
         do_raw_blk <- length(idx_rw) > 0L
         gls_res <- hrf_estimate_gls_noise_sd(
           y_blk, x_gls_stratum, rows, ar_op,
-          return_innovations = store_innov,
+          return_innovations = store_innov && !do_raw_blk,
           return_raw_innovations = do_raw_blk,
-          trial_rows = x_trial_stratum
+          trial_rows = if (do_raw_blk) x_trial_raw else x_trial_innov
         )
         coh_nsd <- if (is.list(gls_res)) gls_res$sd else gls_res
         coh_nsd_r[indices] <- coh_nsd
-        if (store_innov && is.list(gls_res) && !is.null(gls_res$z_unit)) {
+        if (store_innov && !do_raw_blk && is.list(gls_res) && !is.null(gls_res$z_unit)) {
           z_innov_r[, indices] <- gls_res$z_unit
         }
         if (do_raw_blk && is.list(gls_res) && !is.null(gls_res$z_raw)) {
@@ -1552,6 +1556,59 @@ deconvolve_crossrun_hrf <- function(bold, hrf_fit, lambda = NULL, scaling = "zsc
         mode = rwls_mode,
         task_env = if (n_task_strata > 0L) (task_env_accum / n_task_strata) else NULL
       )
+    }
+
+    # Refresh `coh_nsd_r` and `z_innov_r` in the exact rWLS-whitened GLS space
+    # (and without `x_trial_raw` derivative projection when `used_trial_design == TRUE`)
+    # so downstream parcel/cross-parcel error covariances (`M-MOMS` shared_error) match
+    # the exact post-rWLS residual geometry without unweighted spike-projection smearing.
+    if (need_rwls) {
+      w_active_r <- any(abs(w_r - 1.0) > 1e-6)
+      w_obs_arg <- if (w_active_r) w_r else NULL
+      for (key in unique(strata[status == "ok"])) {
+        columns <- which(strata == key & status == "ok")
+        if (!w_active_r && !any(!is.na(rwls_map[columns]))) next
+        ar <- rho[columns[1L]]
+        ar_op <- if (!is.null(strat$get_ar)) strat$get_ar(columns[1L]) else ar
+        k_vec <- as.numeric(strat$get_kernel(columns[1L]))
+        x_gls_stratum <- NULL
+        x_trial_innov <- NULL
+        if (!is.null(hrf_fit$specification$events[[r]]) && length(rows) >= 20L) {
+          mask_decon_bool <- seq_len(n) %in% rows
+          nuis_r <- if (!is.null(hrf_fit$specification$nuisance)) hrf_fit$specification$nuisance[[r]] else matrix(numeric(), n, 0L)
+          z_r_base <- cbind(intercept = 1, trend = seq(-1, 1, length.out = n), nuis_r)
+          off_r <- if (length(hrf_fit$settings$time_offset) >= r) hrf_fit$settings$time_offset[r] else 0.0
+          md_str <- hrf_build_noise_mean_design(n, hrf_fit$specification$events[[r]],
+            hrf_fit$settings$tr, off_r, k_vec, z_r_base, mask_decon_bool)
+          if (md_str$df_nominal >= 16L) {
+            x_gls_stratum <- md_str$design[rows, , drop = FALSE]
+          }
+          if (!isTRUE(md_str$used_trial_design) && !is.null(md_str$trial_design) && ncol(md_str$trial_design) > 0L) {
+            td_full <- md_str$trial_design
+            td_d1 <- diff1_cols(td_full)
+            x_trial_innov <- cbind(td_full, td_d1)[rows, , drop = FALSE]
+          }
+        }
+        for (indices in split(columns, ceiling(seq_along(columns) / batch_size))) {
+          y_blk <- y[rows, indices, drop = FALSE]
+          gls_clean <- hrf_estimate_gls_noise_sd(
+            y_blk, x_gls_stratum, rows, ar_op,
+            return_innovations = store_innov,
+            return_raw_innovations = FALSE,
+            trial_rows = x_trial_innov,
+            obs_weights = w_obs_arg
+          )
+          if (!w_active_r) {
+            coh_nsd_r[indices] <- if (is.list(gls_clean)) gls_clean$sd else gls_clean
+          }
+          if (store_innov && is.list(gls_clean) && !is.null(gls_clean$z_unit)) {
+            z_innov_r[, indices] <- gls_clean$z_unit
+          }
+        }
+      }
+      if (store_innov && w_active_r && !is.null(z_innov_r)) {
+        attr(z_innov_r, "rwls_whitened") <- TRUE
+      }
     }
     frame_weights[[r]] <- w_r
     precomputed_nsd[[r]] <- coh_nsd_r
