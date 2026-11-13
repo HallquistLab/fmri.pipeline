@@ -23,7 +23,6 @@
 # produced vignettes
 vignettes/*.html
 vignettes/*.pdf
-medusa_deconvolution_review_prs_42_53.html
 
 # OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
 .httr-oauth

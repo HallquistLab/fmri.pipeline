@@ -39,68 +39,6 @@ convolve_double_gamma <- function(stimulus, a1 = 6.0, a2 = 12.0, b1 = 0.9, b2 = 
     .Call(`_fmri_pipeline_convolve_double_gamma`, stimulus, a1, a2, b1, b2, cc)
 }
 
-hrf_event_design_cpp <- function(n_time, tr, offset, onsets, durations, conditions, n_conditions, kernels) {
-    .Call(`_fmri_pipeline_hrf_event_design_cpp`, n_time, tr, offset, onsets, durations, conditions, n_conditions, kernels)
-}
-
-hrf_score_run_cpp <- function(bold, designs, nuisance, rows, batch_size = 2048L, rank_tol = 1e-8, rho = 0, evidence = FALSE, fallback_index = 1L, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0) {
-    .Call(`_fmri_pipeline_hrf_score_run_cpp`, bold, designs, nuisance, rows, batch_size, rank_tol, rho, evidence, fallback_index, ar_phi, ar_acf, sig_u2)
-}
-
-hrf_noise_profile_cpp <- function(bold, mean_design, rows, rho_grid, batch_size = 2048L, rank_tol = 1e-8) {
-    .Call(`_fmri_pipeline_hrf_noise_profile_cpp`, bold, mean_design, rows, rho_grid, batch_size, rank_tol)
-}
-
-hrf_inverse_operator_cpp <- function(n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding = 0L, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0) {
-    .Call(`_fmri_pipeline_hrf_inverse_operator_cpp`, n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding, ar_phi, ar_acf, sig_u2)
-}
-
-hrf_whiten_apply_cpp <- function(target, rows, rho = 0.0, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0, unit_marginal = FALSE) {
-    .Call(`_fmri_pipeline_hrf_whiten_apply_cpp`, target, rows, rho, ar_phi, ar_acf, sig_u2, unit_marginal)
-}
-
-hrf_ar_operator_factor_cpp <- function(bt, rows, rho = 0.0, ar_phi = NULL, ar_acf = NULL, sig_u2 = 1.0) {
-    .Call(`_fmri_pipeline_hrf_ar_operator_factor_cpp`, bt, rows, rho, ar_phi, ar_acf, sig_u2)
-}
-
-#' C++ port of Bush and Cisler 2013, Magnetic Resonance Imaging
-#' Adapted from the original provided by Keith Bush
-#' as well as C++ code from Jiang Bian
-#'
-#' @name deconvolve_nlreg
-#' @param BOLDobs matrix of observed BOLD timeseries (n_timepoints x n_signals)
-#' @param kernel  assumed kernel of the BOLD signal (e.g., from spm_hrf)
-#' @param nev_lr  learning rate for the assignment of neural events. Default: .01
-#' @param epsilon relative error change (termination condition). Default: .005
-#' @param beta slope of the sigmoid transfer function (higher = more nonlinear)
-#' @param normalize whether to unit-normalize (z-score) \code{BOLDobs} before deconvolution. Default: TRUE
-#' @param trim_kernel whether to remove the first K time points from the deconvolved vector, corresponding to
-#'            kernel leftovers from convolution. Default: TRUE
-#'
-#' @details
-#' This function deconvolves the BOLD signal using Bush 2011 method
-#'
-#' Author:      Keith Bush, PhD
-#' Institution: University of Arkansas at Little Rock
-#' Date:        Aug. 9, 2013
-#'
-#' The original code did not unit normalize the BOLD signal in advance, but in my testing, this
-#' proves useful in many cases (unless you want to mess with the learning rate a lot), especially
-#' when the time series has a non-zero mean (e.g., mean 100).
-#'
-#' @return A time series of the same length containing reconstructed neural events
-#' @author Michael Hallquist
-#' @export
-NULL
-
-deconvolve_nlreg <- function(BOLDobs, kernel, nev_lr = .01, epsilon = .005, beta = 40, normalize = TRUE, trim_kernel = TRUE) {
-    .Call(`_fmri_pipeline_deconvolve_nlreg`, BOLDobs, kernel, nev_lr, epsilon, beta, normalize, trim_kernel)
-}
-
-deconvolve_reglin_cpp <- function(BOLDobs, kernels, lambda_grid, penalty, tune_by, normalize, demean, trim_kernel, ridge_floor, return_diagnostics, prewhiten_gcv, prewhiten_rho, gcv_rule) {
-    .Call(`_fmri_pipeline_deconvolve_reglin_cpp`, BOLDobs, kernels, lambda_grid, penalty, tune_by, normalize, demean, trim_kernel, ridge_floor, return_diagnostics, prewhiten_gcv, prewhiten_rho, gcv_rule)
-}
-
 #' Internal port of fsl do_convolve
 #'
 #' @name do_convolve
@@ -117,69 +55,8 @@ do_convolve <- function(input, kernel, phase = 0L, renorm = TRUE) {
     .Call(`_fmri_pipeline_do_convolve`, input, kernel, phase, renorm)
 }
 
-#' Dsigmoid transform
-#'
-#' @name dsigmoid
-#' @param x value to be transformed
-#' @param beta slope (steepness) of sigmoid transform
-#' @keywords internal
-NULL
-
-dsigmoid <- function(x, beta = 1) {
-    .Call(`_fmri_pipeline_dsigmoid`, x, beta)
-}
-
-#' Extract selected voxel time series in a specified order
-#'
-#' @param infile Path to a scalar NIfTI image, optionally gzipped.
-#' @param voxel_indices One-based linear indices within the spatial volume.
-#' @return A voxels by volumes numeric matrix, in the supplied index order.
-#' @details Uses the RNifti C++ API, including NIfTI slope/intercept scaling,
-#'   without creating a full double-precision R array or intermediate text file.
-#'   Spatial alignment with the atlas must be checked by the caller.
-#' @keywords internal
-extract_nifti_voxel_ts <- function(infile, voxel_indices) {
-    .Call(`_fmri_pipeline_extract_nifti_voxel_ts`, infile, voxel_indices)
-}
-
 gammapdf <- function(vals, mu, var) {
     .Call(`_fmri_pipeline_gammapdf`, vals, mu, var)
-}
-
-#' This function creates K shifts of a neural events vector according to the kernel length, K.
-#'
-#' @name generate_feature
-#' @param encoding The neural events vector (same length as BOLD time series)
-#' @param K The length of the kernel
-#' @return A matrix of length(encoding) rows and K columns, where each column contains a successively
-#'    lagged copy of the encoding vector
-#'
-#' @details This is an internal function that is used inside a while loop by deconvolve_nlreg.
-#'   Profiling of the algorithm revealed that this is the primary bottleneck, so I ported it to
-#'   an Rcpp function
-#' @author Michael Hallquist
-NULL
-
-generate_feature <- function(encoding, K) {
-    .Call(`_fmri_pipeline_generate_feature`, encoding, K)
-}
-
-#' This function creates K shifts of a neural events vector according to the kernel length, K.
-#'
-#' @name generate_feature_armadillo
-#' @param encoding The neural events vector (same length as BOLD time series)
-#' @param K The length of the kernel
-#' @return A matrix of length(encoding) rows and K columns, where each column contains a successively
-#'    lagged copy of the encoding vector
-#'
-#' @details This is an internal function that is used inside a while loop by deconvolve_nlreg.
-#'   Profiling of the algorithm revealed that this is the primary bottleneck, so I ported it to
-#'   an Rcpp function
-#' @author Michael Hallquist
-NULL
-
-generate_feature_armadillo <- function(encoding, K) {
-    .Call(`_fmri_pipeline_generate_feature_armadillo`, encoding, K)
 }
 
 #' Get Dimensions of a NIfTI Image
@@ -251,18 +128,5 @@ NULL
 
 subset_nifti_volumes <- function(infile, tpts, mode, outfile) {
     invisible(.Call(`_fmri_pipeline_subset_nifti_volumes`, infile, tpts, mode, outfile))
-}
-
-#' Sigmoid transform
-#'
-#' @name sigmoid
-#' @param x value to be transformed by sigmoid
-#' @param beta beta slope (steepness) of sigmoid transform
-#'
-#' @keywords internal
-NULL
-
-sigmoid <- function(x, beta = 1) {
-    .Call(`_fmri_pipeline_sigmoid`, x, beta)
 }
 

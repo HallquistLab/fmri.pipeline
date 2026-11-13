@@ -6,7 +6,7 @@
 \alias{fmri.pipeline-package}
 \title{fmri.pipeline: Analysis of fMRI Data on HPC clusters}
 \description{
-Setup of GLM and deconvolution analyses for large-scale fMRI analyses of fMRI data.
+Setup, submission, and tracking of hierarchical fMRI GLM analyses on high-performance computing clusters.
 }
 \seealso{
 Useful links:

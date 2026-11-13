@@ -39,157 +39,6 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// hrf_event_design_cpp
-Rcpp::List hrf_event_design_cpp(int n_time, double tr, double offset, const arma::vec& onsets, const arma::vec& durations, const Rcpp::IntegerVector& conditions, int n_conditions, const arma::mat& kernels);
-RcppExport SEXP _fmri_pipeline_hrf_event_design_cpp(SEXP n_timeSEXP, SEXP trSEXP, SEXP offsetSEXP, SEXP onsetsSEXP, SEXP durationsSEXP, SEXP conditionsSEXP, SEXP n_conditionsSEXP, SEXP kernelsSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< int >::type n_time(n_timeSEXP);
-    Rcpp::traits::input_parameter< double >::type tr(trSEXP);
-    Rcpp::traits::input_parameter< double >::type offset(offsetSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type onsets(onsetsSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type durations(durationsSEXP);
-    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type conditions(conditionsSEXP);
-    Rcpp::traits::input_parameter< int >::type n_conditions(n_conditionsSEXP);
-    Rcpp::traits::input_parameter< const arma::mat& >::type kernels(kernelsSEXP);
-    rcpp_result_gen = Rcpp::wrap(hrf_event_design_cpp(n_time, tr, offset, onsets, durations, conditions, n_conditions, kernels));
-    return rcpp_result_gen;
-END_RCPP
-}
-// hrf_score_run_cpp
-Rcpp::List hrf_score_run_cpp(const arma::mat& bold, const Rcpp::List& designs, const arma::mat& nuisance, const Rcpp::IntegerVector& rows, int batch_size, double rank_tol, double rho, bool evidence, int fallback_index, Rcpp::Nullable<Rcpp::NumericVector> ar_phi, Rcpp::Nullable<Rcpp::NumericVector> ar_acf, double sig_u2);
-RcppExport SEXP _fmri_pipeline_hrf_score_run_cpp(SEXP boldSEXP, SEXP designsSEXP, SEXP nuisanceSEXP, SEXP rowsSEXP, SEXP batch_sizeSEXP, SEXP rank_tolSEXP, SEXP rhoSEXP, SEXP evidenceSEXP, SEXP fallback_indexSEXP, SEXP ar_phiSEXP, SEXP ar_acfSEXP, SEXP sig_u2SEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< const arma::mat& >::type bold(boldSEXP);
-    Rcpp::traits::input_parameter< const Rcpp::List& >::type designs(designsSEXP);
-    Rcpp::traits::input_parameter< const arma::mat& >::type nuisance(nuisanceSEXP);
-    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type rows(rowsSEXP);
-    Rcpp::traits::input_parameter< int >::type batch_size(batch_sizeSEXP);
-    Rcpp::traits::input_parameter< double >::type rank_tol(rank_tolSEXP);
-    Rcpp::traits::input_parameter< double >::type rho(rhoSEXP);
-    Rcpp::traits::input_parameter< bool >::type evidence(evidenceSEXP);
-    Rcpp::traits::input_parameter< int >::type fallback_index(fallback_indexSEXP);
-    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_phi(ar_phiSEXP);
-    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_acf(ar_acfSEXP);
-    Rcpp::traits::input_parameter< double >::type sig_u2(sig_u2SEXP);
-    rcpp_result_gen = Rcpp::wrap(hrf_score_run_cpp(bold, designs, nuisance, rows, batch_size, rank_tol, rho, evidence, fallback_index, ar_phi, ar_acf, sig_u2));
-    return rcpp_result_gen;
-END_RCPP
-}
-// hrf_noise_profile_cpp
-arma::mat hrf_noise_profile_cpp(const arma::mat& bold, const arma::mat& mean_design, const Rcpp::IntegerVector& rows, const arma::vec& rho_grid, int batch_size, double rank_tol);
-RcppExport SEXP _fmri_pipeline_hrf_noise_profile_cpp(SEXP boldSEXP, SEXP mean_designSEXP, SEXP rowsSEXP, SEXP rho_gridSEXP, SEXP batch_sizeSEXP, SEXP rank_tolSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< const arma::mat& >::type bold(boldSEXP);
-    Rcpp::traits::input_parameter< const arma::mat& >::type mean_design(mean_designSEXP);
-    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type rows(rowsSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type rho_grid(rho_gridSEXP);
-    Rcpp::traits::input_parameter< int >::type batch_size(batch_sizeSEXP);
-    Rcpp::traits::input_parameter< double >::type rank_tol(rank_tolSEXP);
-    rcpp_result_gen = Rcpp::wrap(hrf_noise_profile_cpp(bold, mean_design, rows, rho_grid, batch_size, rank_tol));
-    return rcpp_result_gen;
-END_RCPP
-}
-// hrf_inverse_operator_cpp
-arma::mat hrf_inverse_operator_cpp(int n_time, const arma::vec& kernel, const Rcpp::IntegerVector& rows, double rho, const arma::mat& nuisance, double lambda, const std::string& penalty, double ridge_floor, int tail_padding, Rcpp::Nullable<Rcpp::NumericVector> ar_phi, Rcpp::Nullable<Rcpp::NumericVector> ar_acf, double sig_u2);
-RcppExport SEXP _fmri_pipeline_hrf_inverse_operator_cpp(SEXP n_timeSEXP, SEXP kernelSEXP, SEXP rowsSEXP, SEXP rhoSEXP, SEXP nuisanceSEXP, SEXP lambdaSEXP, SEXP penaltySEXP, SEXP ridge_floorSEXP, SEXP tail_paddingSEXP, SEXP ar_phiSEXP, SEXP ar_acfSEXP, SEXP sig_u2SEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< int >::type n_time(n_timeSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type kernel(kernelSEXP);
-    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type rows(rowsSEXP);
-    Rcpp::traits::input_parameter< double >::type rho(rhoSEXP);
-    Rcpp::traits::input_parameter< const arma::mat& >::type nuisance(nuisanceSEXP);
-    Rcpp::traits::input_parameter< double >::type lambda(lambdaSEXP);
-    Rcpp::traits::input_parameter< const std::string& >::type penalty(penaltySEXP);
-    Rcpp::traits::input_parameter< double >::type ridge_floor(ridge_floorSEXP);
-    Rcpp::traits::input_parameter< int >::type tail_padding(tail_paddingSEXP);
-    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_phi(ar_phiSEXP);
-    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_acf(ar_acfSEXP);
-    Rcpp::traits::input_parameter< double >::type sig_u2(sig_u2SEXP);
-    rcpp_result_gen = Rcpp::wrap(hrf_inverse_operator_cpp(n_time, kernel, rows, rho, nuisance, lambda, penalty, ridge_floor, tail_padding, ar_phi, ar_acf, sig_u2));
-    return rcpp_result_gen;
-END_RCPP
-}
-// hrf_whiten_apply_cpp
-SEXP hrf_whiten_apply_cpp(SEXP target, const Rcpp::IntegerVector& rows, double rho, Rcpp::Nullable<Rcpp::NumericVector> ar_phi, Rcpp::Nullable<Rcpp::NumericVector> ar_acf, double sig_u2, bool unit_marginal);
-RcppExport SEXP _fmri_pipeline_hrf_whiten_apply_cpp(SEXP targetSEXP, SEXP rowsSEXP, SEXP rhoSEXP, SEXP ar_phiSEXP, SEXP ar_acfSEXP, SEXP sig_u2SEXP, SEXP unit_marginalSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< SEXP >::type target(targetSEXP);
-    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type rows(rowsSEXP);
-    Rcpp::traits::input_parameter< double >::type rho(rhoSEXP);
-    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_phi(ar_phiSEXP);
-    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_acf(ar_acfSEXP);
-    Rcpp::traits::input_parameter< double >::type sig_u2(sig_u2SEXP);
-    Rcpp::traits::input_parameter< bool >::type unit_marginal(unit_marginalSEXP);
-    rcpp_result_gen = Rcpp::wrap(hrf_whiten_apply_cpp(target, rows, rho, ar_phi, ar_acf, sig_u2, unit_marginal));
-    return rcpp_result_gen;
-END_RCPP
-}
-// hrf_ar_operator_factor_cpp
-arma::mat hrf_ar_operator_factor_cpp(const arma::mat& bt, const Rcpp::IntegerVector& rows, double rho, Rcpp::Nullable<Rcpp::NumericVector> ar_phi, Rcpp::Nullable<Rcpp::NumericVector> ar_acf, double sig_u2);
-RcppExport SEXP _fmri_pipeline_hrf_ar_operator_factor_cpp(SEXP btSEXP, SEXP rowsSEXP, SEXP rhoSEXP, SEXP ar_phiSEXP, SEXP ar_acfSEXP, SEXP sig_u2SEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< const arma::mat& >::type bt(btSEXP);
-    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type rows(rowsSEXP);
-    Rcpp::traits::input_parameter< double >::type rho(rhoSEXP);
-    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_phi(ar_phiSEXP);
-    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::NumericVector> >::type ar_acf(ar_acfSEXP);
-    Rcpp::traits::input_parameter< double >::type sig_u2(sig_u2SEXP);
-    rcpp_result_gen = Rcpp::wrap(hrf_ar_operator_factor_cpp(bt, rows, rho, ar_phi, ar_acf, sig_u2));
-    return rcpp_result_gen;
-END_RCPP
-}
-// deconvolve_nlreg
-arma::mat deconvolve_nlreg(arma::mat BOLDobs, const arma::vec& kernel, double nev_lr, double epsilon, double beta, bool normalize, bool trim_kernel);
-RcppExport SEXP _fmri_pipeline_deconvolve_nlreg(SEXP BOLDobsSEXP, SEXP kernelSEXP, SEXP nev_lrSEXP, SEXP epsilonSEXP, SEXP betaSEXP, SEXP normalizeSEXP, SEXP trim_kernelSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< arma::mat >::type BOLDobs(BOLDobsSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type kernel(kernelSEXP);
-    Rcpp::traits::input_parameter< double >::type nev_lr(nev_lrSEXP);
-    Rcpp::traits::input_parameter< double >::type epsilon(epsilonSEXP);
-    Rcpp::traits::input_parameter< double >::type beta(betaSEXP);
-    Rcpp::traits::input_parameter< bool >::type normalize(normalizeSEXP);
-    Rcpp::traits::input_parameter< bool >::type trim_kernel(trim_kernelSEXP);
-    rcpp_result_gen = Rcpp::wrap(deconvolve_nlreg(BOLDobs, kernel, nev_lr, epsilon, beta, normalize, trim_kernel));
-    return rcpp_result_gen;
-END_RCPP
-}
-// deconvolve_reglin_cpp
-Rcpp::RObject deconvolve_reglin_cpp(arma::mat BOLDobs, const arma::mat& kernels, const arma::vec& lambda_grid, const std::string& penalty, const std::string& tune_by, bool normalize, bool demean, bool trim_kernel, double ridge_floor, bool return_diagnostics, bool prewhiten_gcv, double prewhiten_rho, const std::string& gcv_rule);
-RcppExport SEXP _fmri_pipeline_deconvolve_reglin_cpp(SEXP BOLDobsSEXP, SEXP kernelsSEXP, SEXP lambda_gridSEXP, SEXP penaltySEXP, SEXP tune_bySEXP, SEXP normalizeSEXP, SEXP demeanSEXP, SEXP trim_kernelSEXP, SEXP ridge_floorSEXP, SEXP return_diagnosticsSEXP, SEXP prewhiten_gcvSEXP, SEXP prewhiten_rhoSEXP, SEXP gcv_ruleSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< arma::mat >::type BOLDobs(BOLDobsSEXP);
-    Rcpp::traits::input_parameter< const arma::mat& >::type kernels(kernelsSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type lambda_grid(lambda_gridSEXP);
-    Rcpp::traits::input_parameter< const std::string& >::type penalty(penaltySEXP);
-    Rcpp::traits::input_parameter< const std::string& >::type tune_by(tune_bySEXP);
-    Rcpp::traits::input_parameter< bool >::type normalize(normalizeSEXP);
-    Rcpp::traits::input_parameter< bool >::type demean(demeanSEXP);
-    Rcpp::traits::input_parameter< bool >::type trim_kernel(trim_kernelSEXP);
-    Rcpp::traits::input_parameter< double >::type ridge_floor(ridge_floorSEXP);
-    Rcpp::traits::input_parameter< bool >::type return_diagnostics(return_diagnosticsSEXP);
-    Rcpp::traits::input_parameter< bool >::type prewhiten_gcv(prewhiten_gcvSEXP);
-    Rcpp::traits::input_parameter< double >::type prewhiten_rho(prewhiten_rhoSEXP);
-    Rcpp::traits::input_parameter< const std::string& >::type gcv_rule(gcv_ruleSEXP);
-    rcpp_result_gen = Rcpp::wrap(deconvolve_reglin_cpp(BOLDobs, kernels, lambda_grid, penalty, tune_by, normalize, demean, trim_kernel, ridge_floor, return_diagnostics, prewhiten_gcv, prewhiten_rho, gcv_rule));
-    return rcpp_result_gen;
-END_RCPP
-}
 // do_convolve
 arma::vec do_convolve(const arma::vec& input, const arma::vec& kernel, const int phase, const bool renorm);
 RcppExport SEXP _fmri_pipeline_do_convolve(SEXP inputSEXP, SEXP kernelSEXP, SEXP phaseSEXP, SEXP renormSEXP) {
@@ -204,30 +53,6 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// dsigmoid
-arma::vec dsigmoid(const arma::vec& x, double beta);
-RcppExport SEXP _fmri_pipeline_dsigmoid(SEXP xSEXP, SEXP betaSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< const arma::vec& >::type x(xSEXP);
-    Rcpp::traits::input_parameter< double >::type beta(betaSEXP);
-    rcpp_result_gen = Rcpp::wrap(dsigmoid(x, beta));
-    return rcpp_result_gen;
-END_RCPP
-}
-// extract_nifti_voxel_ts
-Rcpp::NumericMatrix extract_nifti_voxel_ts(std::string infile, Rcpp::NumericVector voxel_indices);
-RcppExport SEXP _fmri_pipeline_extract_nifti_voxel_ts(SEXP infileSEXP, SEXP voxel_indicesSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< std::string >::type infile(infileSEXP);
-    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type voxel_indices(voxel_indicesSEXP);
-    rcpp_result_gen = Rcpp::wrap(extract_nifti_voxel_ts(infile, voxel_indices));
-    return rcpp_result_gen;
-END_RCPP
-}
 // gammapdf
 arma::vec gammapdf(const arma::vec& vals, const float mu, const float var);
 RcppExport SEXP _fmri_pipeline_gammapdf(SEXP valsSEXP, SEXP muSEXP, SEXP varSEXP) {
@@ -238,30 +63,6 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const float >::type mu(muSEXP);
     Rcpp::traits::input_parameter< const float >::type var(varSEXP);
     rcpp_result_gen = Rcpp::wrap(gammapdf(vals, mu, var));
-    return rcpp_result_gen;
-END_RCPP
-}
-// generate_feature
-NumericMatrix generate_feature(NumericVector encoding, int K);
-RcppExport SEXP _fmri_pipeline_generate_feature(SEXP encodingSEXP, SEXP KSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< NumericVector >::type encoding(encodingSEXP);
-    Rcpp::traits::input_parameter< int >::type K(KSEXP);
-    rcpp_result_gen = Rcpp::wrap(generate_feature(encoding, K));
-    return rcpp_result_gen;
-END_RCPP
-}
-// generate_feature_armadillo
-arma::mat generate_feature_armadillo(const arma::vec& encoding, int K);
-RcppExport SEXP _fmri_pipeline_generate_feature_armadillo(SEXP encodingSEXP, SEXP KSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< const arma::vec& >::type encoding(encodingSEXP);
-    Rcpp::traits::input_parameter< int >::type K(KSEXP);
-    rcpp_result_gen = Rcpp::wrap(generate_feature_armadillo(encoding, K));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -303,40 +104,15 @@ BEGIN_RCPP
     return R_NilValue;
 END_RCPP
 }
-// sigmoid
-arma::vec sigmoid(const arma::vec& x, double beta);
-RcppExport SEXP _fmri_pipeline_sigmoid(SEXP xSEXP, SEXP betaSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< const arma::vec& >::type x(xSEXP);
-    Rcpp::traits::input_parameter< double >::type beta(betaSEXP);
-    rcpp_result_gen = Rcpp::wrap(sigmoid(x, beta));
-    return rcpp_result_gen;
-END_RCPP
-}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_fmri_pipeline_convolve_cpp", (DL_FUNC) &_fmri_pipeline_convolve_cpp, 2},
     {"_fmri_pipeline_convolve_double_gamma", (DL_FUNC) &_fmri_pipeline_convolve_double_gamma, 6},
-    {"_fmri_pipeline_hrf_event_design_cpp", (DL_FUNC) &_fmri_pipeline_hrf_event_design_cpp, 8},
-    {"_fmri_pipeline_hrf_score_run_cpp", (DL_FUNC) &_fmri_pipeline_hrf_score_run_cpp, 12},
-    {"_fmri_pipeline_hrf_noise_profile_cpp", (DL_FUNC) &_fmri_pipeline_hrf_noise_profile_cpp, 6},
-    {"_fmri_pipeline_hrf_inverse_operator_cpp", (DL_FUNC) &_fmri_pipeline_hrf_inverse_operator_cpp, 12},
-    {"_fmri_pipeline_hrf_whiten_apply_cpp", (DL_FUNC) &_fmri_pipeline_hrf_whiten_apply_cpp, 7},
-    {"_fmri_pipeline_hrf_ar_operator_factor_cpp", (DL_FUNC) &_fmri_pipeline_hrf_ar_operator_factor_cpp, 6},
-    {"_fmri_pipeline_deconvolve_nlreg", (DL_FUNC) &_fmri_pipeline_deconvolve_nlreg, 7},
-    {"_fmri_pipeline_deconvolve_reglin_cpp", (DL_FUNC) &_fmri_pipeline_deconvolve_reglin_cpp, 13},
     {"_fmri_pipeline_do_convolve", (DL_FUNC) &_fmri_pipeline_do_convolve, 4},
-    {"_fmri_pipeline_dsigmoid", (DL_FUNC) &_fmri_pipeline_dsigmoid, 2},
-    {"_fmri_pipeline_extract_nifti_voxel_ts", (DL_FUNC) &_fmri_pipeline_extract_nifti_voxel_ts, 2},
     {"_fmri_pipeline_gammapdf", (DL_FUNC) &_fmri_pipeline_gammapdf, 3},
-    {"_fmri_pipeline_generate_feature", (DL_FUNC) &_fmri_pipeline_generate_feature, 2},
-    {"_fmri_pipeline_generate_feature_armadillo", (DL_FUNC) &_fmri_pipeline_generate_feature_armadillo, 2},
     {"_fmri_pipeline_get_nifti_dim", (DL_FUNC) &_fmri_pipeline_get_nifti_dim, 1},
     {"_fmri_pipeline_mat2df", (DL_FUNC) &_fmri_pipeline_mat2df, 4},
     {"_fmri_pipeline_subset_nifti_volumes", (DL_FUNC) &_fmri_pipeline_subset_nifti_volumes, 4},
-    {"_fmri_pipeline_sigmoid", (DL_FUNC) &_fmri_pipeline_sigmoid, 2},
     {NULL, NULL, 0}
 };
 
