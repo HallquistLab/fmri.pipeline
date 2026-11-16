@@ -8,6 +8,7 @@ build_3dlmer_command(
   prefix,
   model_formula,
   qVars = NULL,
+  qVarCenters = NULL,
   glt_codes = NULL,
   data_table_file,
   mask = NULL,
@@ -21,6 +22,8 @@ build_3dlmer_command(
 \item{model_formula}{Fixed-effects formula string.}
 
 \item{qVars}{Character vector of quantitative variables.}
+
+\item{qVarCenters}{Optional numeric vector of centering values corresponding to \code{qVars}.}
 
 \item{glt_codes}{List, character vector, or data frame of named GLT code strings.}
 

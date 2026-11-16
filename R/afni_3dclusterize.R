@@ -203,7 +203,7 @@ afni_3dclusterize <- R6::R6Class("afni_3dclusterize",
 
       if (!is.null(private$pvt_idat)) str <- glue("{str} -idat {private$pvt_idat}")
       if (private$pvt_sided == "one") {
-        str <- glue("{str} -1sided {private$pvt_one_thresh} {private$pvt_one_tail}")
+        str <- glue("{str} -1sided {private$pvt_one_tail} {private$pvt_one_thresh}")
       } else if (private$pvt_sided == "two") {
         str <- glue("{str} -2sided {private$pvt_lower_thresh} {private$pvt_upper_thresh}")
       } else if (private$pvt_sided == "bi") {

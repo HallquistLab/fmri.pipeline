@@ -162,7 +162,7 @@ place_dmat_on_time_grid <- function(dmat, convolve=TRUE, run_timing=NULL, bdm_ar
             n_vols = bdm_args$run_volumes[i], reg = reg, tr = bdm_args$tr,
             normalization = bdm_args$normalizations[j], rm_zeros = bdm_args$rm_zeros[j],
             center_values = bdm_args$center_values, convmax_1 = bdm_args$convmax_1[j],
-            demean_convolved = FALSE, high_pass = bdm_args$high_pass, convolve = convolve,
+            demean_convolved = isTRUE(attr(reg, "demean_convolved")), high_pass = bdm_args$high_pass, convolve = convolve,
             ts_multiplier = bdm_args$ts_multiplier[[j]][[i]],
             hrf_parameters = bdm_args$hrf_parameters, lg=lg
           )
@@ -191,6 +191,11 @@ place_dmat_on_time_grid <- function(dmat, convolve=TRUE, run_timing=NULL, bdm_ar
 
       attr(concat_timing, "event") <- attr(this_reg[[1]], "event")
       attr(concat_timing, "physio_only") <- attr(this_reg[[1]], "physio_only")
+      attr(concat_timing, "return_deriv") <- attr(this_reg[[1]], "return_deriv")
+      attr(concat_timing, "is_parametric") <- attr(this_reg[[1]], "is_parametric")
+      attr(concat_timing, "precentered_parametric") <- attr(this_reg[[1]], "precentered_parametric")
+      attr(concat_timing, "formula_weighted") <- attr(this_reg[[1]], "formula_weighted")
+      attr(concat_timing, "demean_convolved") <- attr(this_reg[[1]], "demean_convolved")
 
       #concat runs of the ts_multiplier within the current regressor
       this_ts_multiplier <- bdm_args$ts_multiplier[[reg]]
@@ -200,12 +205,12 @@ place_dmat_on_time_grid <- function(dmat, convolve=TRUE, run_timing=NULL, bdm_ar
       all.convolve <- convolve_regressor(n_vols=sum(bdm_args$run_volumes), reg=concat_timing, tr=bdm_args$tr,
                          normalization=bdm_args$normalizations[reg], rm_zeros = bdm_args$rm_zeros[reg],
                          center_values=bdm_args$center_values, convmax_1=bdm_args$convmax_1[reg],
-                         demean_convolved = FALSE, high_pass=bdm_args$high_pass, convolve=convolve,
+                         demean_convolved = isTRUE(attr(concat_timing, "demean_convolved")), high_pass=bdm_args$high_pass, convolve=convolve,
                          ts_multiplier=concat_ts_multiplier,
                          hrf_parameters = bdm_args$hrf_parameters, lg=lg)
 
       #now, to be consistent with code below (and elsewhere), split back into runs
-      splitreg <- split(all.convolve, do.call(c, sapply(seq_along(bdm_args$run_volumes), function(x) { rep(x, bdm_args$run_volumes[x]) })))
+      splitreg <- split(all.convolve, do.call(c, lapply(seq_along(bdm_args$run_volumes), function(x) { rep(x, bdm_args$run_volumes[x]) })))
 
       return(splitreg)
     })
@@ -219,25 +224,61 @@ place_dmat_on_time_grid <- function(dmat, convolve=TRUE, run_timing=NULL, bdm_ar
     })
   }
 
-  #If we are convolving regressors, also consider whether to add temporal derivatives
-  #handle the addition of temporal dervitives
-  if (convolve && any(bdm_args$add_derivs)) {
-    which_vars <- which(dimnames(dmat)[[2]] %in% names(bdm_args$signals)[bdm_args$add_derivs])
+  # Compute orthogonalized temporal derivatives for signals flagged via expand_signal (return_deriv = TRUE)
+  deriv_cols <- which(vapply(seq_len(dim(dmat)[2L]), function(j) isTRUE(attr(dmat[[1L, j]], "return_deriv")), logical(1)))
+  if (convolve && length(deriv_cols) > 0L) {
+    deriv_names <- dimnames(dmat)[[2L]][deriv_cols]
+    message("Computing orthogonalized temporal derivatives for ", paste(deriv_names, collapse = ", "))
+    dmat_convolved <- lapply(dmat_convolved, function(run) {
+      present_deriv <- intersect(deriv_names, names(run))
+      if (length(present_deriv) == 0L) return(run)
+      base_names <- setdiff(names(run), present_deriv)
+      X_base <- if (length(base_names) > 0L) as.matrix(run[, base_names, drop = FALSE]) else matrix(numeric(0), nrow = nrow(run), ncol = 0L)
+      if (ncol(X_base) > 0L) {
+        active_base <- apply(X_base, 2, function(col) {
+          s <- stats::sd(col, na.rm = TRUE)
+          !is.na(s) && s > 1e-12
+        })
+        X_base <- X_base[, active_base, drop = FALSE]
+      }
+      for (dn in present_deriv) {
+        dx <- c(0, diff(as.numeric(run[[dn]])))
+        s_dx <- stats::sd(dx, na.rm = TRUE)
+        if (is.na(s_dx) || s_dx <= 1e-12) {
+          run[[dn]] <- rep(0, nrow(run))
+        } else if (ncol(X_base) > 0L) {
+          run[[dn]] <- as.numeric(stats::lm.fit(x = cbind(1, X_base), y = dx)$residuals)
+        } else {
+          run[[dn]] <- dx - mean(dx, na.rm = TRUE)
+        }
+      }
+      run
+    })
+  } else if (convolve && any(bdm_args$add_derivs)) {
+    which_vars <- which(as.logical(bdm_args$add_derivs))
     message("Adding temporal derivatives for ", paste(dimnames(dmat)[[2]][which_vars], collapse=", "), ", orthogonalized against design matrix")
 
     dmat_convolved <- lapply(dmat_convolved, function(run) {
-      X <- as.matrix(run) #need as a matrix for lm call
+      X <- as.matrix(run)
+      active_base <- apply(X, 2, function(col) {
+        s <- stats::sd(col, na.rm = TRUE)
+        !is.na(s) && s > 1e-12
+      })
+      X_active <- X[, active_base, drop = FALSE]
 
       X_derivatives <- do.call(cbind, lapply(which_vars, function(col) {
         dx <- c(0, diff(X[, col]))
-
-        ##orthogonalize wrt design
-        return(residuals(lm(dx ~ X)))
+        s_dx <- stats::sd(dx, na.rm = TRUE)
+        if (is.na(s_dx) || s_dx <= 1e-12) return(rep(0, nrow(X)))
+        if (ncol(X_active) > 0L) {
+          return(as.numeric(stats::lm.fit(x = cbind(1, X_active), y = dx)$residuals))
+        }
+        dx - mean(dx, na.rm = TRUE)
       }))
 
       colnames(X_derivatives) <- paste0("d_", colnames(X)[which_vars])
 
-      cbind(run, X_derivatives) #return design matrix with derivatives added
+      cbind(run, X_derivatives)
     })
   }
 
@@ -293,6 +334,10 @@ convolve_regressor <- function(n_vols, reg, tr=1.0, normalization="none", rm_zer
   event_name <- attr(reg, "event")
   reg_name <- attr(reg, "reg_name")
   physio_only <- ifelse(isTRUE(attr(reg, "physio_only")), TRUE, FALSE)
+  # Read these before subsetting late events, which drops matrix attributes.
+  is_param_reg <- isTRUE(attr(reg, "is_parametric"))
+  is_precentered <- isTRUE(attr(reg, "precentered_parametric"))
+  formula_weighted <- isTRUE(attr(reg, "formula_weighted"))
 
   # check for the possibility that the onset of an event falls after the number of good volumes in the run
   # if so, this should be omitted from the convolution altogether
@@ -354,9 +399,21 @@ convolve_regressor <- function(n_vols, reg, tr=1.0, normalization="none", rm_zer
 
     # Handle mean centering of parametric values prior to convolution
     # This is useful when one wishes to dissociate variance due to parametric modulation versus stimulus occurrence
-    # Don't demean a constant regressor such as an event regressor (all values = 1)
-    if (length(values) > 1L && !all(is.na(values)) && center_values && sd(values, na.rm = TRUE) > 1e-5) {
-      values <- values - mean(values, na.rm = TRUE)
+    # Don't demean a constant regressor such as an event regressor (all values = 1) unless explicitly marked is_parametric
+    # Formula weights define the coefficient basis used by the contrasts. Only raw
+    # parametric values may be centered; shifting signed factor weights changes it.
+    if (!is_precentered && !formula_weighted && isTRUE(center_values)) {
+      if (isTRUE(is_param_reg)) {
+        if (length(values) <= 1L || all(is.na(values)) || stats::sd(values, na.rm = TRUE) <= 1e-5) {
+          lg$info("Parametric regressor '%s' has <= 1 event or zero variance in run; centered regressor is all-zero.", reg_name)
+          ret <- matrix(0, nrow = n_vols, ncol = 1)
+          colnames(ret) <- reg_name
+          return(ret)
+        }
+        values <- values - mean(values, na.rm = TRUE)
+      } else if (length(values) > 1L && !all(is.na(values)) && stats::sd(values, na.rm = TRUE) > 1e-5) {
+        values <- values - mean(values, na.rm = TRUE)
+      }
     }
   }
 

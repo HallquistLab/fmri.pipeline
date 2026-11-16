@@ -6448,6 +6448,14 @@ for { set session 1 } { $session <= $fmri(multiple) } { incr session 1 } {
 	set find_std [ feat5:find_std $feat_files($session) stats/tdof_t$copenumber ]
 	if { $find_std != 0 } {
 	    set tdof_list "$tdof_list $find_std"
+	} elseif { [ file exists $feat_files($session)/stats/dof ] } {
+	    set std_cope [ feat5:find_std $feat_files($session) stats/$copename ]
+	    if { $std_cope != 0 } {
+		set THEDOF [ exec sh -c "cat $feat_files($session)/stats/dof" ]
+		set std_stats_dir [ file dirname $std_cope ]
+		fsl:exec "${FSLDIR}/bin/fslmaths $std_cope -mul 0 -add $THEDOF ${std_stats_dir}/FEtdof_t${copenumber}"
+		set tdof_list "$tdof_list ${std_stats_dir}/FEtdof_t${copenumber}"
+	    }
 	}
     } else {
 	set THEDOF [ exec sh -c "cat $feat_files($session)/stats/dof" ]
@@ -6640,7 +6648,9 @@ if { $fmri(mixed_yn) == 4 } {
 	    incr evnn 1
 	}
     }
-    if { [ imtest tdof_filtered_func_data ] } {
+    set has_valid_tdof 0
+    if { [ imtest tdof_filtered_func_data ] && [ exec sh -c "${FSLDIR}/bin/fslnvols tdof_filtered_func_data 2> /dev/null" ] == $fmri(npts) } {
+	set has_valid_tdof 1
 	fsl:exec "$FSLDIR/bin/fslsplit tdof_filtered_func_data tmptdof -z"
     }
 
@@ -6648,7 +6658,7 @@ if { $fmri(mixed_yn) == 4 } {
     for { set slice 0 } { $slice < $DIMZ } { incr slice 1 } {
         set pad [ format %04d $slice ]
 	set DOFS ""
-	if { [ imtest tdof_filtered_func_data ] } {
+	if { $has_valid_tdof } {
 	    set DOFS "--dvc=tmptdof$pad"
 	}
 	set FLAMEp $FLAME

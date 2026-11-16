@@ -463,7 +463,7 @@ validate_beta_series_occurrences <- function(s_aligned, s, signal_name) {
 #' @return list of data.tables, one per run, with trial, onset, duration, value columns
 #' @keywords internal
 #' @noRd
-align_signal_with_events <- function(s, events, lg = NULL) {
+align_signal_with_events <- function(s, events, lg = NULL, center_values = TRUE) {
   if (is.null(lg)) lg <- lgr::get_logger()
   
   # Validate signal has required event element
@@ -598,10 +598,38 @@ align_signal_with_events <- function(s, events, lg = NULL) {
   # neural events. Exact duplicate records are removed before convolution.
   s_aligned <- collapse_duplicate_occurrences(s_aligned, s, signal_name, lg)
   validate_beta_series_occurrences(s_aligned, s, signal_name)
-  
+
+  # For formula-coded parametric signals (e.g., additive ~ A + B or contr.sum), center raw
+  # modulator values per run BEFORE multiplying by signed/overlapping contrast weights.
+  precentered_param <- FALSE
+  if (isTRUE(s$formula_weighted) && isTRUE(s$is_parametric) && "wi_weight" %in% names(s_aligned)) {
+    if (isTRUE(center_values) && nrow(s_aligned) > 0L) {
+      for (rn in unique(s_aligned$run_number)) {
+        r_idx <- which(s_aligned$run_number == rn & !is.na(s_aligned$value))
+        if (length(r_idx) <= 1L || stats::sd(s_aligned$value[r_idx]) <= 1e-5) {
+          s_aligned$value[r_idx] <- 0
+        } else {
+          s_aligned$value[r_idx] <- s_aligned$value[r_idx] - mean(s_aligned$value[r_idx])
+        }
+      }
+      precentered_param <- TRUE
+    }
+    s_aligned$value <- s_aligned$value * s_aligned$wi_weight
+  }
+
   # Split by run and format for dmat
-  retsplit <- split_signal_by_run(s_aligned, event_runs, s$event, s$physio_only)
-  
+  retsplit <- split_signal_by_run(
+    s_aligned,
+    event_runs,
+    s$event,
+    s$physio_only,
+    return_deriv = isTRUE(s$return_deriv),
+    is_parametric = isTRUE(s$is_parametric),
+    precentered_parametric = precentered_param,
+    demean_convolved = isTRUE(s$demean_convolved),
+    formula_weighted = isTRUE(s$formula_weighted)
+  )
+
   return(retsplit)
 }
 
@@ -681,7 +709,10 @@ apply_signal_duration <- function(s_aligned, duration_spec, signal_name = "<unna
 #' @return named list of data.tables by run
 #' @keywords internal
 #' @noRd
-split_signal_by_run <- function(s_aligned, event_runs, event_name, physio_only = FALSE) {
+split_signal_by_run <- function(s_aligned, event_runs, event_name, physio_only = FALSE,
+                                return_deriv = FALSE, is_parametric = FALSE,
+                                precentered_parametric = FALSE, demean_convolved = FALSE,
+                                formula_weighted = FALSE) {
   retdf <- s_aligned %>%
     dplyr::select("run_number", "trial", "onset", "duration", "value") %>%
     dplyr::mutate(run_number = factor(.data$run_number, levels = event_runs)) %>%
@@ -691,10 +722,15 @@ split_signal_by_run <- function(s_aligned, event_runs, event_name, physio_only =
   retsplit <- split(retdf, by = "run_number", keep.by = FALSE, sorted = TRUE)
   names(retsplit) <- paste0("run_number", names(retsplit))
   
-  # Tag with event and physio attributes
+  # Tag with event, physio, derivative, and centering attributes
   retsplit <- lapply(retsplit, function(rr) {
     attr(rr, "event") <- event_name
     if (isTRUE(physio_only)) attr(rr, "physio_only") <- TRUE
+    if (isTRUE(return_deriv)) attr(rr, "return_deriv") <- TRUE
+    if (isTRUE(is_parametric)) attr(rr, "is_parametric") <- TRUE
+    if (isTRUE(precentered_parametric)) attr(rr, "precentered_parametric") <- TRUE
+    if (isTRUE(formula_weighted)) attr(rr, "formula_weighted") <- TRUE
+    if (isTRUE(demean_convolved)) attr(rr, "demean_convolved") <- TRUE
     return(rr)
   })
   
@@ -711,9 +747,9 @@ split_signal_by_run <- function(s_aligned, event_runs, event_name, physio_only =
 #' @return named list of aligned signals (each is a list of runs)
 #' @keywords internal
 #' @noRd
-align_all_signals <- function(signals_expanded, events, lg = NULL) {
+align_all_signals <- function(signals_expanded, events, lg = NULL, center_values = TRUE) {
   lapply(signals_expanded, function(s) {
-    align_signal_with_events(s, events, lg)
+    align_signal_with_events(s, events, lg, center_values = center_values)
   })
 }
 
@@ -804,7 +840,7 @@ extract_signal_config <- function(signals_expanded) {
 #'   }
 #' @keywords internal
 #' @noRd
-expand_and_align_signals <- function(signals, events, lg = NULL) {
+expand_and_align_signals <- function(signals, events, lg = NULL, center_values = TRUE) {
   if (is.null(lg)) lg <- lgr::get_logger()
   
   # Prepare signals (ensure beta_series is set)
@@ -814,7 +850,7 @@ expand_and_align_signals <- function(signals, events, lg = NULL) {
   signals_expanded <- expand_signals_list(signals)
   
   # Align each signal with events
-  signals_aligned <- align_all_signals(signals_expanded, events, lg)
+  signals_aligned <- align_all_signals(signals_expanded, events, lg, center_values = center_values)
   
   # Extract configuration for convolution
   signal_config <- extract_signal_config(signals_expanded)
@@ -1186,15 +1222,37 @@ format_afni_run_string <- function(onsets, durations, values) {
 #' @noRd
 compute_collinearity_convolved <- function(dmat_convolved) {
   lapply(dmat_convolved, function(run) {
-    corvals <- stats::cor(run, use = "pairwise.complete.obs")
-    vif_mat <- data.frame(cbind(dummy = stats::rnorm(nrow(run)), run))
-    vif_form <- stats::as.formula(paste("dummy ~ 1 +", paste(names(run), collapse = " + ")))
-    
-    var_infl <- tryCatch(
-      car::vif(stats::lm(vif_form, data = vif_mat)),
-      error = function(e) NA
+    corvals <- suppressWarnings(stats::cor(run, use = "pairwise.complete.obs"))
+    col_names <- names(run)
+    if (length(col_names) < 2L) {
+      return(list(r = corvals, vif = stats::setNames(rep(1, length(col_names)), col_names)))
+    }
+
+    sds <- vapply(run, function(col) stats::sd(col, na.rm = TRUE), numeric(1))
+    non_const <- !is.na(sds) & sds > 1e-12
+    if (sum(non_const) < 2L) {
+      var_infl <- stats::setNames(rep(NA_real_, length(col_names)), col_names)
+      if (sum(non_const) == 1L) var_infl[non_const] <- 1
+      return(list(r = corvals, vif = var_infl))
+    }
+
+    active_cols <- col_names[non_const]
+    vif_mat <- data.frame(dummy = stats::rnorm(nrow(run)), run[, active_cols, drop = FALSE], check.names = FALSE)
+    quoted_cols <- paste0("`", gsub("`", "", active_cols, fixed = TRUE), "`")
+    vif_form <- stats::as.formula(paste("dummy ~ 1 +", paste(quoted_cols, collapse = " + ")))
+
+    active_vif <- tryCatch(
+      {
+        vv <- car::vif(stats::lm(vif_form, data = vif_mat))
+        names(vv) <- gsub("^`|`$", "", names(vv))
+        vv
+      },
+      error = function(e) stats::setNames(rep(NA_real_, length(active_cols)), active_cols)
     )
-    
+
+    var_infl <- stats::setNames(rep(NA_real_, length(col_names)), col_names)
+    var_infl[names(active_vif)] <- as.numeric(active_vif)
+
     list(r = corvals, vif = var_infl)
   })
 }

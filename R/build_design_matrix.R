@@ -402,9 +402,21 @@ build_design_matrix <- function(
   # ============================================================================
   
   # Expand signals (handle wi_factors, beta_series, etc.) and align with events
-  stage2_result <- expand_and_align_signals(signals, events, lg)
+  stage2_result <- expand_and_align_signals(signals, events, lg, center_values = center_values)
   signals_expanded <- stage2_result$signals_expanded
   signals_aligned <- stage2_result$signals_aligned
+  bdm_args$signals <- signals_expanded
+
+  # Collect per-run trial-level model matrices for formula-coded wi_factors signals
+  wi_run_trial_matrices <- list()
+  for (s_exp in signals_expanded) {
+    if (!is.null(s_exp$wi_run_trial_matrices) && !is.null(s_exp$parent_signal_name)) {
+      for (rk in names(s_exp$wi_run_trial_matrices)) {
+        if (is.null(wi_run_trial_matrices[[rk]])) wi_run_trial_matrices[[rk]] <- list()
+        wi_run_trial_matrices[[rk]][[s_exp$parent_signal_name]] <- s_exp$wi_run_trial_matrices[[rk]]
+      }
+    }
+  }
   
   # Extract signal configuration into bdm_args
   signal_config <- stage2_result$signal_config
@@ -447,6 +459,11 @@ build_design_matrix <- function(
       mm <- as.matrix(run)
       attr(mm, "event") <- attr(run, "event") # propagate event tag
       attr(mm, "physio_only") <- attr(run, "physio_only") # propagate physio indicator
+      attr(mm, "return_deriv") <- attr(run, "return_deriv")
+      attr(mm, "is_parametric") <- attr(run, "is_parametric")
+      attr(mm, "precentered_parametric") <- attr(run, "precentered_parametric")
+      attr(mm, "formula_weighted") <- attr(run, "formula_weighted")
+      attr(mm, "demean_convolved") <- attr(run, "demean_convolved")
       return(mm)
     })
   }))
@@ -523,6 +540,42 @@ build_design_matrix <- function(
   # if volumes are being dropped (and shift-timing is TRUE), subtract the dropped volumes from the onset times.
   dmat <- shift_dmat_timing(dmat, tr, drop_volumes, shift_timing)
   validate_shifted_dmat_onsets(dmat, tr = tr, drop_volumes = drop_volumes, lg = lg)
+
+  # Restrict formula-mode trial matrices to occurrences that actually fall within the modeled scan window
+  # and carry finite non-zero signal values (matching convolve_regressor's late-event / NA / zero pruning).
+  if (length(wi_run_trial_matrices) > 0L) {
+    dmat_reg_names <- dimnames(dmat)[[2L]] %||% character(0)
+    for (i in seq_len(dim(dmat)[1L])) {
+      rk <- dimnames(dmat)[[1L]][i]
+      if (is.null(wi_run_trial_matrices[[rk]])) next
+      n_v <- run_volumes[i]
+      for (psig in names(wi_run_trial_matrices[[rk]])) {
+        M_r <- wi_run_trial_matrices[[rk]][[psig]]
+        t_ids <- attr(M_r, "trial_ids")
+        sig_cols <- intersect(colnames(M_r), dmat_reg_names)
+        if (!is.null(t_ids) && length(t_ids) == nrow(M_r) && length(sig_cols) > 0L) {
+          active_trials <- unique(unlist(lapply(sig_cols, function(sc) {
+            reg_mat <- dmat[[i, sc]]
+            if (is.null(reg_mat) || nrow(reg_mat) == 0L || !all(c("trial", "onset", "value") %in% colnames(reg_mat))) {
+              return(numeric(0))
+            }
+            valid_occ <- !is.na(reg_mat[, "onset"]) &
+              (reg_mat[, "onset"] >= 0) &
+              ((reg_mat[, "onset"] / tr) < n_v) &
+              !is.na(reg_mat[, "value"]) &
+              (abs(reg_mat[, "value"]) > 0)
+            reg_mat[valid_occ, "trial"]
+          })))
+          keep_t <- t_ids %in% active_trials
+          if (!all(keep_t)) {
+            M_sub <- M_r[keep_t, , drop = FALSE]
+            attr(M_sub, "trial_ids") <- t_ids[keep_t]
+            wi_run_trial_matrices[[rk]][[psig]] <- M_sub
+          }
+        }
+      }
+    }
+  }
 
   # concatenate regressors across runs by adding timing from MR files.
   run_timing <- cumsum(run_volumes) * tr # timing in seconds of the start of successive runs
@@ -621,13 +674,21 @@ build_design_matrix <- function(
 
   timing_files <- list(convolved = tf_convolved, convolved_concat = tf_convolved_concat, fsl = tf_fsl, afni = tf_afni)
 
+  # Record empty convolved EVs per run for downstream FSL shape=10 and contrast-validity handling
+  runs_empty_evs <- stats::setNames(lapply(names(dmat_convolved), function(rk) {
+    rc <- dmat_convolved[[rk]]
+    names(rc)[vapply(rc, function(col) all(abs(col[is.finite(col)]) <= sqrt(.Machine$double.eps)), logical(1))]
+  }), names(dmat_convolved))
+
   to_return <- list(
     design = dmat, design_concat = design_concat, design_convolved = dmat_convolved,
     design_unconvolved = dmat_unconvolved, collin_events = collin_diag_events,
     collin_convolved = collin_diag_convolved, concat_onsets = concat_onsets, runs_to_output = runs_to_output,
     run_nifti = run_nifti, run_volumes = run_volumes, drop_volumes = drop_volumes, tr = tr,
     output_directory = output_directory, additional_regressors = additional_regressors,
-    timing_files = timing_files)
+    timing_files = timing_files, runs_empty_evs = runs_empty_evs,
+    wi_run_trial_matrices = wi_run_trial_matrices
+  )
 
   to_return$design_plot <- visualize_design_matrix(concat_design_runs(to_return))
 

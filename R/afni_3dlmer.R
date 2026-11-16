@@ -233,12 +233,18 @@ resolve_3dlmer_mask <- function(target_dir, harvested_inputs, explicit_mask = NU
   checkmate::assert_class(lg, "Logger", null.ok = TRUE)
 
   if (!is.null(explicit_mask)) return(explicit_mask)
-  if (!isTRUE(requires_l2) || !"feat_dir" %in% names(harvested_inputs)) return(NULL)
+  if (!"feat_dir" %in% names(harvested_inputs)) return(NULL)
 
-  mask_files <- unique(file.path(as.character(harvested_inputs$feat_dir), "mask.nii.gz"))
+  mask_files <- unique(vapply(as.character(harvested_inputs$feat_dir), function(fd) {
+    if (!isTRUE(requires_l2)) {
+      reg_std_mask <- file.path(fd, "reg_standard", "mask.nii.gz")
+      if (file.exists(reg_std_mask)) return(reg_std_mask)
+    }
+    file.path(fd, "mask.nii.gz")
+  }, character(1)))
   if (length(mask_files) == 0L || anyNA(mask_files) || any(!file.exists(mask_files))) {
     if (!is.null(lg)) {
-      lg$warn("Could not derive AFNI 3dLMEr intersection mask because one or more FSL L2 masks were missing.")
+      lg$warn("Could not derive AFNI 3dLMEr intersection mask because one or more FSL masks were missing.")
     }
     return(NULL)
   }
@@ -429,6 +435,7 @@ validate_3dlmer_glt_table <- function(glt_table, datatable, qVars = NULL, contex
       if (nzchar(parsed$error)) {
         row_errors <- c(row_errors, parsed$error)
       } else {
+        cat_weight_list <- list()
         for (block in parsed$blocks) {
           var <- block$var
           expr <- block$expr
@@ -437,23 +444,28 @@ validate_3dlmer_glt_table <- function(glt_table, datatable, qVars = NULL, contex
             next
           }
 
-          is_qvar <- var %in% qVars || is.numeric(datatable[[var]])
+          is_qvar <- var %in% qVars || (is.numeric(datatable[[var]]) && !is.factor(datatable[[var]]))
           tokens <- strsplit(expr, "\\s+")[[1L]]
           tokens <- tokens[nzchar(tokens)]
-          if (length(tokens) == 0L) {
-            row_errors <- c(row_errors, sprintf("Variable '%s' has no GLT weight expression.", var))
-            next
-          }
 
           if (is_qvar) {
-            bad <- !grepl(paste0("^", numeric_pattern, "$"), tokens, perl = TRUE)
-            if (any(bad) || length(tokens) != 1L) {
-              row_errors <- c(row_errors, sprintf(
-                "Quantitative variable '%s' must use one numeric weight, e.g. '%s : 1'.",
-                var, var
-              ))
+            # In AFNI 3dLMEr, an empty expression after ':' (e.g., 'Age :' or 'Group : 1*A -1*B Age :')
+            # is the required syntax to test the linear slope/effect of a quantitative variable, whereas
+            # 'Age : <val>' conditions categorical estimates at an explicit covariate offset.
+            if (length(tokens) > 0L) {
+              bad <- !grepl(paste0("^", numeric_pattern, "$"), tokens, perl = TRUE)
+              if (any(bad) || length(tokens) != 1L) {
+                row_errors <- c(row_errors, sprintf(
+                  "Quantitative variable '%s' must use '%s :' (slope) or one numeric value, e.g. '%s : 0'.",
+                  var, var, var
+                ))
+              }
             }
           } else {
+            if (length(tokens) == 0L) {
+              row_errors <- c(row_errors, sprintf("Variable '%s' has no GLT weight expression.", var))
+              next
+            }
             bad_syntax <- !grepl(paste0("^", numeric_pattern, "\\*.+$"), tokens, perl = TRUE)
             if (any(bad_syntax)) {
               row_errors <- c(row_errors, sprintf(
@@ -471,14 +483,31 @@ validate_3dlmer_glt_table <- function(glt_table, datatable, qVars = NULL, contex
                 var, paste(missing_levels, collapse = ", ")
               ))
             }
-            if (identical(glt_table$contrast_type[ii], "pairwise_diff")) {
-              weights <- as.numeric(sub("\\*.*$", "", tokens, perl = TRUE))
-              if (length(weights) < 2L || !isTRUE(all.equal(sum(weights), 0, tolerance = 1e-8))) {
-                row_errors <- c(row_errors, sprintf(
-                  "Pairwise AFNI 3dLMEr GLT '%s' must use explicit cell-level weights that sum to zero for '%s' (for example, '%s : 1*A -1*B'), not treatment-coded coefficient weights.",
-                  glt_table$label_raw[ii], var, var
-                ))
-              }
+            cat_weight_list[[var]] <- as.numeric(sub("\\*.*$", "", tokens, perl = TRUE))
+          }
+        }
+
+        if (identical(glt_table$contrast_type[ii], "pairwise_diff") && length(cat_weight_list) > 0L) {
+          is_zero_sum <- vapply(cat_weight_list, function(w) {
+            length(w) >= 2L && isTRUE(all.equal(sum(w), 0, tolerance = 1e-5))
+          }, logical(1))
+          is_cond_slice <- vapply(cat_weight_list, function(w) {
+            all(w >= -1e-8) && isTRUE(all.equal(sum(w), 1, tolerance = 1e-5))
+          }, logical(1))
+
+          if (!any(is_zero_sum)) {
+            bad_var <- names(cat_weight_list)[1L]
+            row_errors <- c(row_errors, sprintf(
+              "Pairwise AFNI 3dLMEr GLT '%s' must use explicit cell-level weights that sum to zero for '%s' (for example, '%s : 1*A -1*B'), not treatment-coded coefficient weights.",
+              glt_table$label_raw[ii], bad_var, bad_var
+            ))
+          } else if (any(!(is_zero_sum | is_cond_slice))) {
+            bad_vars <- names(cat_weight_list)[!(is_zero_sum | is_cond_slice)]
+            for (bv in bad_vars) {
+              row_errors <- c(row_errors, sprintf(
+                "Pairwise AFNI 3dLMEr GLT '%s' must use explicit cell-level weights that sum to zero for '%s' (for example, '%s : 1*A -1*B'), not treatment-coded coefficient weights.",
+                glt_table$label_raw[ii], bv, bv
+              ))
             }
           }
         }
@@ -510,6 +539,7 @@ validate_3dlmer_glt_table <- function(glt_table, datatable, qVars = NULL, contex
 #' @param prefix Output prefix for 3dLMEr.
 #' @param model_formula Fixed-effects formula string.
 #' @param qVars Character vector of quantitative variables.
+#' @param qVarCenters Optional numeric vector of centering values corresponding to \code{qVars}.
 #' @param glt_codes List, character vector, or data frame of named GLT code strings.
 #' @param data_table_file Path to the data-table text file.
 #' @param mask Optional path to the brain-mask file.
@@ -518,11 +548,15 @@ validate_3dlmer_glt_table <- function(glt_table, datatable, qVars = NULL, contex
 #'
 #' @return A character string containing the 3dLMEr command.
 #' @keywords internal
-build_3dlmer_command <- function(prefix, model_formula, qVars = NULL, glt_codes = NULL,
+build_3dlmer_command <- function(prefix, model_formula, qVars = NULL, qVarCenters = NULL, glt_codes = NULL,
                                  data_table_file, mask = NULL, njobs = 1, ss_type = 3) {
   checkmate::assert_string(prefix)
   checkmate::assert_string(model_formula)
   checkmate::assert_character(qVars, null.ok = TRUE)
+  checkmate::assert_numeric(qVarCenters, null.ok = TRUE, any.missing = FALSE)
+  if (!is.null(qVarCenters) && length(qVarCenters) > 0L && length(qVarCenters) != length(qVars)) {
+    stop("qVarCenters must have the same length as qVars.", call. = FALSE)
+  }
   if (!is.null(glt_codes) &&
       !checkmate::test_list(glt_codes) &&
       !checkmate::test_data_frame(glt_codes) &&
@@ -542,6 +576,10 @@ build_3dlmer_command <- function(prefix, model_formula, qVars = NULL, glt_codes 
 
   if (!is.null(qVars) && length(qVars) > 0) {
     cmd <- paste(cmd, glue::glue("-qVars {shQuote(paste(qVars, collapse=\",\"), type = 'sh')}"))
+    if (!is.null(qVarCenters) && length(qVarCenters) == length(qVars)) {
+      centers_str <- paste(format(as.numeric(qVarCenters), trim = TRUE, scientific = FALSE), collapse = ",")
+      cmd <- paste(cmd, glue::glue("-qVarCenters {shQuote(centers_str, type = 'sh')}"))
+    }
   }
 
   if (!is.null(mask)) {
@@ -581,9 +619,32 @@ build_3dlmer_command <- function(prefix, model_formula, qVars = NULL, glt_codes 
 write_3dlmer_files <- function(output_dir, dt, cmd, script_name = "run_3dlmer.sh") {
   if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
+  dt_out <- as.data.frame(dt, stringsAsFactors = FALSE)
+  for (cn in setdiff(names(dt_out), "InputFile")) {
+    if (is.factor(dt_out[[cn]]) || is.character(dt_out[[cn]])) {
+      vals <- as.character(dt_out[[cn]])
+      if (any(grepl("\\s", vals, perl = TRUE), na.rm = TRUE)) {
+        warning(
+          sprintf("Column '%s' in 3dLMEr dataTable contains whitespace; replacing whitespace with '_' for AFNI table parsing.", cn),
+          call. = FALSE
+        )
+        vals <- gsub("\\s+", "_", trimws(vals), perl = TRUE)
+      }
+      dt_out[[cn]] <- vals
+    }
+  }
+  if ("InputFile" %in% names(dt_out)) {
+    in_paths <- as.character(dt_out$InputFile)
+    has_ws <- grepl("\\s", in_paths, perl = TRUE)
+    if (any(has_ws, na.rm = TRUE)) {
+      in_paths[has_ws] <- paste0("\"", in_paths[has_ws], "\"")
+      dt_out$InputFile <- in_paths
+    }
+  }
+
   dt_file <- file.path(output_dir, "dataTable.txt")
-  # write.table with proper formatting for AFNI (space separated, header)
-  write.table(dt, file = dt_file, row.names = FALSE, quote = FALSE, sep = "\t")
+  # write.table with proper formatting for AFNI (tab separated, header)
+  write.table(dt_out, file = dt_file, row.names = FALSE, quote = FALSE, sep = "\t")
 
   script_file <- file.path(output_dir, script_name)
   # Basic script structure
@@ -763,11 +824,9 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
   checkmate::assert_string(context, null.ok = TRUE)
   lg <- lgr::get_logger("fmri.pipeline/afni_3dlmer/emmeans_to_3dlmer_glt")
 
+  generated <- empty_3dlmer_glt_table()
   if (is.null(mobj$lmfit)) {
     lg$warn("No lmfit in mobj. Cannot generate emmeans-to-3dlmer GLTs.")
-    generated <- empty_3dlmer_glt_table()
-  } else {
-    generated <- empty_3dlmer_glt_table()
   }
 
   spec <- mobj$contrast_spec
@@ -788,61 +847,505 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
       )
     }
 
-    reject_interaction <- function(vv, type) {
-      if (grepl(":", vv, fixed = TRUE)) {
-        stop(
+    eff_weights <- spec$weights %||% "cells"
+    vtypes <- extract_lm_var_types(mobj$lmfit)
+    cat_cols <- intersect(if (length(spec$cat_vars) > 0L) spec$cat_vars else vtypes$cat_vars, names(data))
+    cont_cols <- unique(intersect(c(qVars, vtypes$cont_vars), names(data)))
+
+    get_levels_ordered <- function(col_nm) {
+      if (!col_nm %in% names(data)) {
+        stop(sprintf("Cannot generate AFNI 3dLMEr GLTs for '%s' because it is not in the dataTable.", col_nm), call. = FALSE)
+      }
+      x <- data[[col_nm]]
+      obs <- unique(as.character(x[!is.na(x)]))
+      if (is.factor(x)) {
+        intersect(levels(x), obs)
+      } else if (!is.null(mobj$factor_levels[[col_nm]])) {
+        intersect(as.character(mobj$factor_levels[[col_nm]]), obs)
+      } else {
+        obs
+      }
+    }
+
+    # Check if marginalizing across other categorical factors under non-equal weights spans any 0-count cell
+    slice_touches_empty_cell <- function(fixed_vals_named, label_desc) {
+      if (identical(eff_weights, "equal") || length(cat_cols) <= 1L) return(FALSE)
+      marginalized <- setdiff(cat_cols, names(fixed_vals_named))
+      if (length(marginalized) == 0L) return(FALSE)
+
+      full_levs <- stats::setNames(lapply(cat_cols, get_levels_ordered), cat_cols)
+      full_grid <- expand.grid(full_levs, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+      if (length(fixed_vals_named) > 0L) {
+        keep <- rep(TRUE, nrow(full_grid))
+        for (fn in names(fixed_vals_named)) {
+          if (fn %in% names(full_grid)) {
+            keep <- keep & (full_grid[[fn]] == as.character(fixed_vals_named[[fn]]))
+          }
+        }
+        full_grid <- full_grid[keep, , drop = FALSE]
+      }
+      if (nrow(full_grid) == 0L) return(TRUE)
+
+      data_keys <- do.call(paste, c(lapply(data[, cat_cols, drop = FALSE], as.character), sep = "\r"))
+      grid_keys <- do.call(paste, c(lapply(full_grid[, cat_cols, drop = FALSE], as.character), sep = "\r"))
+      has_zero <- any(!grid_keys %in% data_keys)
+      if (isTRUE(has_zero)) {
+        warning(
           sprintf(
-            "Automatic AFNI 3dLMEr GLT generation supports only one-factor %s. Contrast '%s'%s is an interaction; provide it explicitly with lmer_glt_codes.",
-            type,
-            vv,
-            if (!is.null(context)) paste0(" for ", context) else ""
+            "Dropping marginal 3dLMEr GLT '%s' under weights='%s' because one or more marginalized cells (%s) have zero observations.",
+            label_desc, eff_weights, paste(marginalized, collapse = ", ")
           ),
           call. = FALSE
         )
       }
+      has_zero
     }
 
-    if (length(spec$cond_means) > 0L) {
-      for (vv in spec$cond_means) {
-        reject_interaction(vv, "condition means")
-        if (!vv %in% names(data)) {
-          stop(sprintf("Cannot generate AFNI 3dLMEr GLTs for '%s' because it is not in the dataTable.", vv), call. = FALSE)
+    build_cell_code <- function(var_vec, val_vec) {
+      paste(paste0(var_vec, " : 1*", val_vec), collapse = " ")
+    }
+
+    # Build explicit AFNI factor-weight blocks for marginalized categorical factors when weights != "equal"
+    # and reject joint cell weightings that cannot be represented as a rank-1 Kronecker product.
+    build_marginal_weight_blocks <- function(active_slices_df = NULL, label_desc = "overall_response", include_uniform = FALSE) {
+      fixed_vars <- if (is.null(active_slices_df) || ncol(active_slices_df) == 0L) character(0) else colnames(active_slices_df)
+      marginalized <- setdiff(cat_cols, fixed_vars)
+      if (length(marginalized) == 0L) return(character(0))
+
+      m_levs <- stats::setNames(lapply(marginalized, get_levels_ordered), marginalized)
+      m_grid <- expand.grid(m_levs, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+      m_keys <- do.call(paste, c(lapply(m_grid, as.character), sep = "\r"))
+
+      compute_m_weights <- function(sub_df) {
+        d_keys <- if (nrow(sub_df) > 0L) {
+          do.call(paste, c(lapply(sub_df[, marginalized, drop = FALSE], as.character), sep = "\r"))
+        } else {
+          character(0)
         }
-        levs <- unique(as.character(data[[vv]]))
-        levs <- levs[!is.na(levs)]
-        for (lev in levs) {
-          add_generated(
-            label = paste(vv, lev, sep = "."),
-            code = paste0(vv, " : 1*", lev),
-            contrast_type = "cond_mean"
-          )
+        counts <- tabulate(match(d_keys, m_keys), nbins = nrow(m_grid))
+        jw <- switch(eff_weights,
+          equal = rep(1, nrow(m_grid)),
+          flat = as.numeric(counts > 0L),
+          cells = as.numeric(counts),
+          proportional = as.numeric(counts),
+          stop("Unsupported AFNI weighting: ", eff_weights, call. = FALSE)
+        )
+        if (sum(jw) <= 0) {
+          stop(sprintf("Cannot translate AFNI %s with weights='%s': marginalized slice has zero observations.", label_desc, eff_weights), call. = FALSE)
+        }
+        jw / sum(jw)
+      }
+
+      if (identical(eff_weights, "equal")) {
+        target_w <- rep(1 / nrow(m_grid), nrow(m_grid))
+      } else if (identical(eff_weights, "proportional") || length(fixed_vars) == 0L) {
+        target_w <- compute_m_weights(data)
+      } else {
+        slice_weights <- lapply(seq_len(nrow(active_slices_df)), function(sr) {
+          keep <- rep(TRUE, nrow(data))
+          for (fv in fixed_vars) {
+            keep <- keep & (as.character(data[[fv]]) == as.character(active_slices_df[[fv]][sr]))
+          }
+          compute_m_weights(data[keep, , drop = FALSE])
+        })
+        target_w <- slice_weights[[1L]]
+        if (length(slice_weights) > 1L) {
+          same_across_slices <- all(vapply(slice_weights[-1L], function(sw) all(abs(sw - target_w) <= 1e-8), logical(1)))
+          if (!isTRUE(same_across_slices)) {
+            stop(
+              sprintf(
+                paste0(
+                  "Cannot translate AFNI %s with weights='%s': joint cell weights are not separable across factors. ",
+                  "Define a joint-cell factor to express this weighting, or explicitly choose weights='equal' for an equal-cell mean."
+                ),
+                label_desc, eff_weights
+              ),
+              call. = FALSE
+            )
+          }
+        }
+      }
+
+      margins <- lapply(marginalized, function(mf) {
+        vapply(m_levs[[mf]], function(lv) sum(target_w[m_grid[[mf]] == lv]), numeric(1))
+      })
+      product_weights <- rep(1, nrow(m_grid))
+      for (k in seq_along(marginalized)) {
+        product_weights <- product_weights * margins[[k]][match(m_grid[[marginalized[k]]], m_levs[[k]])]
+      }
+      if (any(abs(product_weights - target_w) > 1e-8)) {
+        stop(
+          sprintf(
+            paste0(
+              "Cannot translate AFNI %s with weights='%s': joint cell weights are not separable across factors. ",
+              "Define a joint-cell factor to express this weighting, or explicitly choose weights='equal' for an equal-cell mean."
+            ),
+            label_desc, eff_weights
+          ),
+          call. = FALSE
+        )
+      }
+
+      blocks <- character(0)
+      for (k in seq_along(marginalized)) {
+        mk <- margins[[k]]
+        is_unif <- all(abs(mk - (1 / length(mk))) <= 1e-8)
+        if (isTRUE(include_uniform) || !isTRUE(is_unif)) {
+          blocks <- c(blocks, paste0(marginalized[k], " : ", paste0(format(mk, digits = 16, trim = TRUE), "*", m_levs[[k]], collapse = " ")))
+        }
+      }
+      blocks
+    }
+
+    append_marginal_blocks <- function(base_code, extra_blocks) {
+      if (length(extra_blocks) == 0L) return(base_code)
+      paste(c(base_code, extra_blocks), collapse = " ")
+    }
+
+    # 1. Diagonal GLTs (quantitative slopes 'qVar :' and, if no other categorical GLTs requested, reference-vs-level diffs)
+    if (isTRUE(spec$diagonal)) {
+      for (qv in cont_cols) {
+        add_generated(label = paste0("EV_", qv), code = paste0(qv, " :"), contrast_type = "diagonal")
+      }
+      has_other_cat_glts <- length(spec$cond_means) > 0L || isTRUE(spec$cell_means) ||
+        length(spec$pairwise_diffs) > 0L || length(spec$interaction_diffs) > 0L
+      if (!isTRUE(has_other_cat_glts) && length(cat_cols) > 0L) {
+        for (cv in cat_cols) {
+          levs <- get_levels_ordered(cv)
+          if (length(levs) >= 2L) {
+            ref_lev <- levs[1L]
+            for (lv in levs[-1L]) {
+              lbl <- paste0("EV_", cv, lv)
+              if (slice_touches_empty_cell(stats::setNames(lv, cv), lbl) ||
+                  slice_touches_empty_cell(stats::setNames(ref_lev, cv), lbl)) {
+                next
+              }
+              m_blocks <- build_marginal_weight_blocks(
+                stats::setNames(data.frame(c(lv, ref_lev), stringsAsFactors = FALSE), cv),
+                label_desc = lbl
+              )
+              add_generated(
+                label = lbl,
+                code = append_marginal_blocks(paste0(cv, " : 1*", lv, " -1*", ref_lev), m_blocks),
+                contrast_type = "diagonal"
+              )
+            }
+          }
         }
       }
     }
 
+    # 2. Condition means (supports 'A', 'A:B', and 'A | B')
+    if (length(spec$cond_means) > 0L) {
+      for (vv in spec$cond_means) {
+        ps <- parse_emm_spec_string(vv)
+        all_v <- unique(c(ps$by_vars, ps$focal_vars))
+        missing_v <- setdiff(all_v, names(data))
+        if (length(missing_v) > 0L) {
+          stop(sprintf("Cannot generate AFNI 3dLMEr GLTs for '%s' because variable(s) are not in the dataTable: %s.", vv, paste(missing_v, collapse = ", ")), call. = FALSE)
+        }
+        lev_grid <- expand.grid(stats::setNames(lapply(all_v, get_levels_ordered), all_v), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+        # Keep only observed combinations when multiple factors are conditioned
+        if (length(all_v) > 1L) {
+          obs_keys <- unique(do.call(paste, c(lapply(data[, all_v, drop = FALSE], as.character), sep = "\r")))
+          grid_keys <- do.call(paste, c(lapply(lev_grid[, all_v, drop = FALSE], as.character), sep = "\r"))
+          lev_grid <- lev_grid[grid_keys %in% obs_keys, , drop = FALSE]
+        }
+        for (rr in seq_len(nrow(lev_grid))) {
+          row_vals <- as.character(unlist(lev_grid[rr, all_v, drop = TRUE]))
+          names(row_vals) <- all_v
+          if (length(all_v) == 1L) {
+            lbl <- paste(all_v, row_vals[1L], sep = ".")
+          } else if (!is.null(ps$by_vars) && length(ps$by_vars) > 0L) {
+            by_tag <- paste(ps$by_vars, row_vals[ps$by_vars], sep = ".", collapse = "_")
+            foc_tag <- paste(paste(ps$focal_vars, collapse = "_"), paste(row_vals[ps$focal_vars], collapse = "."), sep = ".")
+            lbl <- paste0(by_tag, "_", foc_tag)
+          } else {
+            lbl <- paste(paste(ps$focal_vars, collapse = "_"), paste(row_vals[ps$focal_vars], collapse = "."), sep = ".")
+          }
+          if (slice_touches_empty_cell(row_vals, lbl)) next
+          m_blocks <- build_marginal_weight_blocks(lev_grid[rr, all_v, drop = FALSE], label_desc = lbl)
+          add_generated(label = lbl, code = append_marginal_blocks(build_cell_code(all_v, row_vals), m_blocks), contrast_type = "cond_mean")
+        }
+      }
+    }
+
+    # 3. Cell means across all categorical factors
+    if (isTRUE(spec$cell_means) && length(cat_cols) > 0L) {
+      lev_grid <- expand.grid(stats::setNames(lapply(cat_cols, get_levels_ordered), cat_cols), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+      obs_keys <- unique(do.call(paste, c(lapply(data[, cat_cols, drop = FALSE], as.character), sep = "\r")))
+      grid_keys <- do.call(paste, c(lapply(lev_grid[, cat_cols, drop = FALSE], as.character), sep = "\r"))
+      lev_grid <- lev_grid[grid_keys %in% obs_keys, , drop = FALSE]
+      for (rr in seq_len(nrow(lev_grid))) {
+        row_vals <- as.character(unlist(lev_grid[rr, cat_cols, drop = TRUE]))
+        lbl <- paste(cat_cols, row_vals, sep = ".", collapse = "_")
+        add_generated(label = lbl, code = build_cell_code(cat_cols, row_vals), contrast_type = "cell_mean")
+      }
+    }
+
+    # 4. Overall average response across categorical factors
+    if (isTRUE(spec$overall_response) && length(cat_cols) > 0L) {
+      if (!slice_touches_empty_cell(character(0), "overall")) {
+        parts <- build_marginal_weight_blocks(active_slices_df = NULL, label_desc = "overall_response", include_uniform = TRUE)
+        add_generated(label = "overall", code = paste(parts, collapse = " "), contrast_type = "overall")
+      }
+    }
+
+    # 5. Pairwise differences (supports 'A' and conditioned simple effects 'A | B'; rejects all-cell 'A:B' with guidance)
     if (length(spec$pairwise_diffs) > 0L) {
       for (vv in spec$pairwise_diffs) {
-        reject_interaction(vv, "pairwise differences")
-        if (!vv %in% names(data)) {
-          stop(sprintf("Cannot generate AFNI 3dLMEr GLTs for '%s' because it is not in the dataTable.", vv), call. = FALSE)
+        ps <- parse_emm_spec_string(vv)
+        if (length(ps$focal_vars) > 1L) {
+          stop(
+            sprintf(
+              paste0(
+                "Automatic AFNI 3dLMEr GLT generation supports only one-factor pairwise differences (or conditioned simple effects like 'A | B'). ",
+                "Contrast '%s'%s is an all-pairs interaction containing non-separable cross-diagonal comparisons; ",
+                "use interaction_diffs = '%s' for factorial difference-of-differences, pairwise_diffs = 'A | B' for simple effects, or provide it explicitly with lmer_glt_codes."
+              ),
+              vv,
+              if (!is.null(context)) paste0(" for ", context) else "",
+              vv
+            ),
+            call. = FALSE
+          )
         }
-        levs <- unique(as.character(data[[vv]]))
-        levs <- levs[!is.na(levs)]
-        if (length(levs) >= 2L) {
-          pairs <- utils::combn(levs, 2L, simplify = FALSE)
-          for (pp in pairs) {
+        fv <- ps$focal_vars[1L]
+        all_v <- unique(c(ps$by_vars, fv))
+        missing_v <- setdiff(all_v, names(data))
+        if (length(missing_v) > 0L) {
+          stop(sprintf("Cannot generate AFNI 3dLMEr GLTs for '%s' because variable(s) are not in the dataTable: %s.", vv, paste(missing_v, collapse = ", ")), call. = FALSE)
+        }
+        levs <- get_levels_ordered(fv)
+        if (length(levs) < 2L) next
+        pair_list <- utils::combn(levs, 2L, simplify = FALSE)
+
+        if (is.null(ps$by_vars) || length(ps$by_vars) == 0L) {
+          for (pp in pair_list) {
+            lbl <- paste0(fv, ".pw.", pp[1L], ".vs.", pp[2L])
+            if (slice_touches_empty_cell(stats::setNames(pp[1L], fv), lbl) ||
+                slice_touches_empty_cell(stats::setNames(pp[2L], fv), lbl)) {
+              next
+            }
+            m_blocks <- build_marginal_weight_blocks(
+              stats::setNames(data.frame(c(pp[1L], pp[2L]), stringsAsFactors = FALSE), fv),
+              label_desc = lbl
+            )
             add_generated(
-              label = paste0(vv, ".pw.", pp[1L], ".vs.", pp[2L]),
-              code = paste0(vv, " : 1*", pp[1L], " -1*", pp[2L]),
+              label = lbl,
+              code = append_marginal_blocks(paste0(fv, " : 1*", pp[1L], " -1*", pp[2L]), m_blocks),
               contrast_type = "pairwise_diff"
+            )
+          }
+        } else {
+          by_grid <- expand.grid(stats::setNames(lapply(ps$by_vars, get_levels_ordered), ps$by_vars), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+          for (br in seq_len(nrow(by_grid))) {
+            by_vals <- as.character(unlist(by_grid[br, ps$by_vars, drop = TRUE]))
+            names(by_vals) <- ps$by_vars
+            by_code <- build_cell_code(ps$by_vars, by_vals)
+            by_tag <- paste(ps$by_vars, by_vals, sep = ".", collapse = "_")
+            for (pp in pair_list) {
+              # Check both cells exist in data for this `by` slice
+              sub_mask1 <- rep(TRUE, nrow(data))
+              sub_mask2 <- rep(TRUE, nrow(data))
+              for (bn in ps$by_vars) {
+                sub_mask1 <- sub_mask1 & (as.character(data[[bn]]) == by_vals[[bn]])
+                sub_mask2 <- sub_mask2 & (as.character(data[[bn]]) == by_vals[[bn]])
+              }
+              sub_mask1 <- sub_mask1 & (as.character(data[[fv]]) == pp[1L])
+              sub_mask2 <- sub_mask2 & (as.character(data[[fv]]) == pp[2L])
+              if (!any(sub_mask1, na.rm = TRUE) || !any(sub_mask2, na.rm = TRUE)) next
+
+              lbl <- paste0(by_tag, "_", fv, ".pw.", pp[1L], ".vs.", pp[2L])
+              if (slice_touches_empty_cell(c(by_vals, stats::setNames(pp[1L], fv)), lbl) ||
+                  slice_touches_empty_cell(c(by_vals, stats::setNames(pp[2L], fv)), lbl)) {
+                next
+              }
+              active_df <- expand.grid(c(as.list(by_vals), stats::setNames(list(c(pp[1L], pp[2L])), fv)), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+              m_blocks <- build_marginal_weight_blocks(active_df, label_desc = lbl)
+              add_generated(
+                label = lbl,
+                code = append_marginal_blocks(paste0(by_code, " ", fv, " : 1*", pp[1L], " -1*", pp[2L]), m_blocks),
+                contrast_type = "pairwise_diff"
+              )
+            }
+          }
+        }
+      }
+    }
+
+    # 6. Factorial interaction (difference-of-differences) contrasts: 'Group : 1*A -1*B Session : 1*pre -1*post'
+    if (length(spec$interaction_diffs) > 0L) {
+      for (vv in spec$interaction_diffs) {
+        ps <- parse_emm_spec_string(vv)
+        if (length(ps$focal_vars) < 2L) next
+        all_v <- unique(c(ps$by_vars, ps$focal_vars))
+        missing_v <- setdiff(all_v, names(data))
+        if (length(missing_v) > 0L) {
+          stop(sprintf("Cannot generate AFNI 3dLMEr interaction GLTs for '%s' because variable(s) are not in dataTable: %s.", vv, paste(missing_v, collapse = ", ")), call. = FALSE)
+        }
+        fac_pairs <- lapply(ps$focal_vars, function(fv) {
+          levs <- get_levels_ordered(fv)
+          if (length(levs) < 2L) return(list())
+          utils::combn(levs, 2L, simplify = FALSE)
+        })
+        if (any(lengths(fac_pairs) == 0L)) next
+
+        idx_grid <- expand.grid(lapply(fac_pairs, seq_along), KEEP.OUT.ATTRS = FALSE)
+        by_grid <- if (!is.null(ps$by_vars) && length(ps$by_vars) > 0L) {
+          expand.grid(stats::setNames(lapply(ps$by_vars, get_levels_ordered), ps$by_vars), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+        } else {
+          data.frame(.dummy = 1L)
+        }
+
+        for (br in seq_len(nrow(by_grid))) {
+          by_prefix_lbl <- ""
+          by_prefix_code <- ""
+          by_vals <- character(0)
+          if (!is.null(ps$by_vars) && length(ps$by_vars) > 0L) {
+            by_vals <- as.character(unlist(by_grid[br, ps$by_vars, drop = TRUE]))
+            names(by_vals) <- ps$by_vars
+            by_prefix_lbl <- paste0(paste(ps$by_vars, by_vals, sep = ".", collapse = "_"), "_")
+            by_prefix_code <- paste0(build_cell_code(ps$by_vars, by_vals), " ")
+          }
+
+          for (ir in seq_len(nrow(idx_grid))) {
+            chosen_pairs <- lapply(seq_along(ps$focal_vars), function(k) fac_pairs[[k]][[idx_grid[ir, k]]])
+            names(chosen_pairs) <- ps$focal_vars
+
+            # Verify all involved cells exist in data
+            cell_grid <- expand.grid(c(as.list(by_vals), chosen_pairs), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+            obs_keys <- unique(do.call(paste, c(lapply(data[, colnames(cell_grid), drop = FALSE], as.character), sep = "\r")))
+            c_keys <- do.call(paste, c(lapply(cell_grid, as.character), sep = "\r"))
+            if (!all(c_keys %in% obs_keys)) next
+
+            code_blocks <- vapply(seq_along(ps$focal_vars), function(k) {
+              fv <- ps$focal_vars[k]
+              pp <- chosen_pairs[[k]]
+              paste0(fv, " : 1*", pp[1L], " -1*", pp[2L])
+            }, character(1))
+            lbl_blocks <- vapply(chosen_pairs, function(pp) paste0(pp[1L], "_M_", pp[2L]), character(1))
+            lbl <- paste0(by_prefix_lbl, paste(ps$focal_vars, collapse = "_x_"), ".", paste(lbl_blocks, collapse = "_x_"))
+
+            any_empty_slice <- any(vapply(seq_len(nrow(cell_grid)), function(cr) {
+              rv <- as.character(unlist(cell_grid[cr, , drop = TRUE]))
+              names(rv) <- colnames(cell_grid)
+              slice_touches_empty_cell(rv, lbl)
+            }, logical(1)))
+            if (isTRUE(any_empty_slice)) next
+
+            m_blocks <- build_marginal_weight_blocks(cell_grid, label_desc = lbl)
+            add_generated(
+              label = lbl,
+              code = append_marginal_blocks(paste0(by_prefix_code, paste(code_blocks, collapse = " ")), m_blocks),
+              contrast_type = "interaction_diff"
             )
           }
         }
       }
     }
 
-    if (!is.null(mobj$contrast_list$custom)) {
-      cmat <- mobj$contrast_list$custom
+    # 7. Simple slopes ('Group : 1*A Age :') and slope differences ('Group : 1*A -1*B Age :')
+    if (length(spec$simple_slopes) > 0L) {
+      for (vv in seq_along(spec$simple_slopes)) {
+        trend_var <- names(spec$simple_slopes)[vv]
+        if (!trend_var %in% names(data)) {
+          stop(sprintf("Cannot generate AFNI 3dLMEr simple_slopes for '%s' because it is not in dataTable.", trend_var), call. = FALSE)
+        }
+        comb_list <- spec$simple_slopes[[vv]]
+        if (is.character(comb_list)) comb_list <- as.list(comb_list)
+        for (comb in comb_list) {
+          comb_vars <- trimws(unlist(strsplit(as.character(comb), "[:*+|]", perl = TRUE)))
+          comb_vars <- comb_vars[nzchar(comb_vars)]
+          lev_grid <- expand.grid(stats::setNames(lapply(comb_vars, get_levels_ordered), comb_vars), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+          obs_keys <- unique(do.call(paste, c(lapply(data[, comb_vars, drop = FALSE], as.character), sep = "\r")))
+          g_keys <- do.call(paste, c(lapply(lev_grid[, comb_vars, drop = FALSE], as.character), sep = "\r"))
+          lev_grid <- lev_grid[g_keys %in% obs_keys, , drop = FALSE]
+          for (rr in seq_len(nrow(lev_grid))) {
+            rv <- as.character(unlist(lev_grid[rr, comb_vars, drop = TRUE]))
+            names(rv) <- comb_vars
+            lbl <- paste(trend_var, paste(rv, collapse = "."), sep = ".")
+            if (slice_touches_empty_cell(rv, lbl)) next
+            m_blocks <- build_marginal_weight_blocks(lev_grid[rr, comb_vars, drop = FALSE], label_desc = lbl)
+            add_generated(
+              label = lbl,
+              code = paste(c(build_cell_code(comb_vars, rv), m_blocks, paste0(trend_var, " :")), collapse = " "),
+              contrast_type = "simple_slope"
+            )
+          }
+        }
+      }
+    }
+
+    if (length(spec$slope_diffs) > 0L) {
+      for (vv in seq_along(spec$slope_diffs)) {
+        trend_var <- names(spec$slope_diffs)[vv]
+        if (!trend_var %in% names(data)) {
+          stop(sprintf("Cannot generate AFNI 3dLMEr slope_diffs for '%s' because it is not in dataTable.", trend_var), call. = FALSE)
+        }
+        comb_list <- spec$slope_diffs[[vv]]
+        if (is.character(comb_list)) comb_list <- as.list(comb_list)
+        for (comb in comb_list) {
+          ps <- parse_emm_spec_string(paste(as.character(comb), collapse = ":"))
+          if (length(ps$focal_vars) > 1L && length(ps$by_vars) > 0L) {
+            stop(
+              "AFNI conditioned slope_diffs supports one focal factor (for example, 'A | B'); use an unconditioned interaction for multiple focal factors.",
+              call. = FALSE
+            )
+          }
+          all_v <- unique(c(ps$by_vars, ps$focal_vars))
+          checkmate::assert_subset(all_v, names(data))
+          fac_pairs <- lapply(ps$focal_vars, function(fv) {
+            levs <- get_levels_ordered(fv)
+            if (length(levs) < 2L) return(list())
+            utils::combn(levs, 2L, simplify = FALSE)
+          })
+          if (any(lengths(fac_pairs) == 0L)) next
+          idx_grid <- expand.grid(lapply(fac_pairs, seq_along), KEEP.OUT.ATTRS = FALSE)
+          by_grid <- if (length(ps$by_vars) > 0L) {
+            expand.grid(stats::setNames(lapply(ps$by_vars, get_levels_ordered), ps$by_vars), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+          } else {
+            data.frame(.dummy = 1L)
+          }
+          for (br in seq_len(nrow(by_grid))) {
+            by_vals <- if (length(ps$by_vars) > 0L) {
+              stats::setNames(as.character(unlist(by_grid[br, ps$by_vars, drop = FALSE])), ps$by_vars)
+            } else character(0)
+            for (ir in seq_len(nrow(idx_grid))) {
+              chosen <- stats::setNames(lapply(seq_along(ps$focal_vars), function(k) fac_pairs[[k]][[idx_grid[ir, k]]]), ps$focal_vars)
+              cell_grid <- expand.grid(c(as.list(by_vals), chosen), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+              obs_keys <- do.call(paste, c(lapply(data[, names(cell_grid), drop = FALSE], as.character), sep = "\r"))
+              cell_keys <- do.call(paste, c(lapply(cell_grid, as.character), sep = "\r"))
+              if (!all(cell_keys %in% obs_keys)) next
+
+              lbl_blocks <- vapply(chosen, function(pp) paste0(pp[1L], "_M_", pp[2L]), character(1))
+              lbl <- paste(trend_var, paste(ps$focal_vars, collapse = "_x_"), paste(lbl_blocks, collapse = "_x_"), sep = ".")
+              if (length(by_vals) > 0L) {
+                lbl <- paste0(paste(names(by_vals), by_vals, sep = ".", collapse = "_"), "_", lbl)
+              }
+              if (any(vapply(seq_len(nrow(cell_grid)), function(cr) {
+                vals <- stats::setNames(as.character(unlist(cell_grid[cr, , drop = FALSE])), names(cell_grid))
+                slice_touches_empty_cell(vals, lbl)
+              }, logical(1)))) next
+
+              m_blocks <- build_marginal_weight_blocks(cell_grid, label_desc = lbl)
+              code_blocks <- vapply(seq_along(ps$focal_vars), function(k) {
+                paste0(ps$focal_vars[k], " : 1*", chosen[[k]][1L], " -1*", chosen[[k]][2L])
+              }, character(1))
+              code_parts <- c(if (length(by_vals) > 0L) build_cell_code(names(by_vals), by_vals), code_blocks, m_blocks, paste0(trend_var, " :"))
+              add_generated(label = lbl, code = paste(code_parts, collapse = " "), contrast_type = "slope_diff")
+            }
+          }
+        }
+      }
+    }
+
+    # 8. Custom contrasts (preserved in contrast_spec$custom or contrast_list$custom)
+    cmat <- spec$custom %||% mobj$contrast_list$custom
+    if (!is.null(cmat)) {
+      cmat <- parse_custom_contrast_spec(cmat, reg_names = names(stats::coef(mobj$lmfit)))
+    }
+    if (!is.null(cmat) && is.matrix(cmat) && nrow(cmat) > 0L) {
       for (i in seq_len(nrow(cmat))) {
         con_name <- rownames(cmat)[i]
         weights <- cmat[i, ]
@@ -857,9 +1360,25 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
             call. = FALSE
           )
         }
-        code_parts <- paste0(vars, " : ", as.numeric(weights[non_zero]))
+        code_parts <- vapply(seq_along(vars), function(vi) {
+          vn <- vars[vi]
+          wv <- as.numeric(weights[non_zero[vi]])
+          if ((vn %in% cont_cols) && abs(wv - 1) <= 1e-8) {
+            paste0(vn, " :")
+          } else {
+            paste0(vn, " : ", wv)
+          }
+        }, character(1))
         add_generated(con_name, paste(code_parts, collapse = " "), "custom")
       }
+    }
+
+    # 9. Apply spec$delete to generated GLTs
+    if (!is.null(spec$delete) && is.character(spec$delete) && length(spec$delete) > 0L && nrow(generated) > 0L) {
+      del_sanitized <- sanitize_3dlmer_glt_names(spec$delete)
+      gen_sanitized <- sanitize_3dlmer_glt_names(generated$label_raw)
+      keep_gen <- !(generated$label_raw %in% spec$delete | gen_sanitized %in% del_sanitized)
+      generated <- generated[keep_gen, , drop = FALSE]
     }
   }
 

@@ -357,9 +357,14 @@ infer_empty_ev_reason <- function(run_number, ev_name, timing_file, shape_code) 
   if (identical(shape_code, 10L)) return("empty_ev_shape")
   if (!nzchar(timing_file) || !file.exists(timing_file)) return("missing_timing_file")
 
-  raw_3col <- file.path(dirname(timing_file), paste0("run", run_number, "_", ev_name, "_FSL3col.txt"))
-  if (file.exists(raw_3col)) {
-    raw_df <- tryCatch(utils::read.table(raw_3col, header = FALSE, stringsAsFactors = FALSE), error = function(e) NULL)
+  raw_fname <- paste0("run", run_number, "_", ev_name, "_FSL3col.txt")
+  cand_3col <- unique(c(
+    file.path(dirname(timing_file), raw_fname),
+    file.path(dirname(timing_file), fs::path_sanitize(raw_fname, replacement = ""))
+  ))
+  existing_3col <- cand_3col[file.exists(cand_3col)]
+  if (length(existing_3col) > 0L) {
+    raw_df <- tryCatch(utils::read.table(existing_3col[1L], header = FALSE, stringsAsFactors = FALSE), error = function(e) NULL)
     if (is.null(raw_df)) {
       return("unreadable_raw_fsl3col")
     }
@@ -383,7 +388,7 @@ infer_empty_ev_reason <- function(run_number, ev_name, timing_file, shape_code) 
 }
 
 empty_ev_reason_is_expected <- function(reason) {
-  reason %in% c("empty_ev_shape", "empty_raw_events")
+  reason %in% c("empty_ev_shape", "empty_raw_events", "aliased_wi_formula_run")
 }
 
 infer_l1_empty_ev_info_for_row <- function(l1_row, gpa, lg = NULL) {
@@ -462,6 +467,9 @@ build_l1_cope_validity <- function(l1_setup_fsl, gpa, lg = NULL) {
   checkmate::assert_subset(c("id", "session", "run_number", "l1_model", "feat_fsf", "feat_dir"), names(l1_setup_fsl))
   valid_states <- c("valid", "invalid_expected_empty", "invalid_unexpected_empty", "invalid_missing_file")
 
+  any_l1_executed <- ("feat_complete" %in% names(l1_setup_fsl) && any(vapply(l1_setup_fsl$feat_complete, isTRUE, logical(1)))) ||
+    ("feat_failed" %in% names(l1_setup_fsl) && any(vapply(l1_setup_fsl$feat_failed, isTRUE, logical(1))))
+
   validity_rows <- lapply(seq_len(nrow(l1_setup_fsl)), function(ii) {
     l1_row <- l1_setup_fsl[ii, , drop = FALSE]
     l1_model <- l1_row$l1_model[[1L]]
@@ -482,14 +490,28 @@ build_l1_cope_validity <- function(l1_setup_fsl, gpa, lg = NULL) {
     if (checkmate::test_data_frame(contrasts)) contrasts <- as.matrix(contrasts)
     empty_info <- infer_l1_empty_ev_info_for_row(l1_row, gpa, lg = lg)
 
-    do_check_files <- "feat_complete" %in% names(l1_row) && isTRUE(l1_row$feat_complete[[1L]])
+    sidecar_file <- sub("\\.fsf$", "_cope_validity.tsv", l1_row$feat_fsf[[1L]])
+    sidecar_df <- if (nzchar(sidecar_file) && file.exists(sidecar_file)) {
+      tryCatch(utils::read.delim(sidecar_file, stringsAsFactors = FALSE), error = function(e) NULL)
+    } else {
+      NULL
+    }
+
+    row_failed <- "feat_failed" %in% names(l1_row) && isTRUE(l1_row$feat_failed[[1L]])
+    row_complete <- "feat_complete" %in% names(l1_row) && isTRUE(l1_row$feat_complete[[1L]])
+    row_incomplete_after_exec <- isTRUE(any_l1_executed) && "feat_complete" %in% names(l1_row) && !isTRUE(row_complete)
+    do_check_files <- isTRUE(row_complete)
 
     dplyr::bind_rows(lapply(seq_along(cope_names), function(cc) {
       l1_cope_name <- cope_names[cc]
       cope_file <- file.path(l1_row$feat_dir[[1L]], "stats", paste0("cope", cc, ".nii.gz"))
       varcope_file <- file.path(l1_row$feat_dir[[1L]], "stats", paste0("varcope", cc, ".nii.gz"))
       missing_files <- character(0)
-      if (isTRUE(do_check_files)) {
+      if (isTRUE(row_failed)) {
+        missing_files <- c(missing_files, "feat_failed")
+      } else if (isTRUE(row_incomplete_after_exec)) {
+        missing_files <- c(missing_files, "feat_incomplete")
+      } else if (isTRUE(do_check_files)) {
         if (!file.exists(cope_file)) missing_files <- c(missing_files, "cope_file")
         if (!file.exists(varcope_file)) missing_files <- c(missing_files, "varcope_file")
       }
@@ -499,6 +521,28 @@ build_l1_cope_validity <- function(l1_setup_fsl, gpa, lg = NULL) {
         contrast_evs <- colnames(contrasts)[which(abs(contrasts[cc, ]) > 0)]
       }
       empty_for_cope <- intersect(contrast_evs, empty_info$empty_evs)
+      sidecar_nonest <- FALSE
+      sidecar_reason <- NA_character_
+      if (!is.null(sidecar_df) && "l1_cope_number" %in% names(sidecar_df) && "estimable" %in% names(sidecar_df)) {
+        sc_idx <- which(sidecar_df$l1_cope_number == cc)
+        if ("l1_cope_name" %in% names(sidecar_df)) {
+          sc_idx <- intersect(sc_idx, which(sidecar_df$l1_cope_name == l1_cope_name))
+        }
+        if (length(sc_idx) != 1L) {
+          sidecar_nonest <- TRUE
+          sidecar_reason <- "contrast_sidecar_mismatch"
+        } else if (!isTRUE(as.logical(sidecar_df$estimable[sc_idx]))) {
+          sidecar_nonest <- TRUE
+          sidecar_reason <- as.character(sidecar_df$reason[sc_idx])
+        } else if (length(sc_idx) == 1L && "aliased_evs" %in% names(sidecar_df)) {
+          # An estimable contrast was already expressed on the retained run basis.
+          # Its original weights may touch EVs emptied only for alias reduction.
+          aliases <- as.character(sidecar_df$aliased_evs[sc_idx])
+          if (!is.na(aliases)) {
+            empty_for_cope <- setdiff(empty_for_cope, strsplit(aliases, ";", fixed = TRUE)[[1L]])
+          }
+        }
+      }
       empty_reasons <- empty_info$empty_ev_reasons[empty_for_cope]
       empty_reasons <- empty_reasons[!is.na(empty_reasons)]
 
@@ -507,13 +551,14 @@ build_l1_cope_validity <- function(l1_setup_fsl, gpa, lg = NULL) {
       if (length(missing_files) > 0L) {
         validity_state <- "invalid_missing_file"
         validity_reason <- paste0("missing_", paste(missing_files, collapse = ";missing_"))
-      } else if (length(empty_for_cope) > 0L) {
-        if (length(empty_reasons) > 0L && all(empty_ev_reason_is_expected(unique(empty_reasons)))) {
+      } else if (length(empty_for_cope) > 0L || isTRUE(sidecar_nonest)) {
+        all_reasons <- unique(stats::na.omit(c(empty_reasons, sidecar_reason)))
+        if (length(all_reasons) > 0L && all(empty_ev_reason_is_expected(all_reasons))) {
           validity_state <- "invalid_expected_empty"
         } else {
           validity_state <- "invalid_unexpected_empty"
         }
-        validity_reason <- paste(unique(empty_reasons), collapse = ";")
+        validity_reason <- if (length(all_reasons) > 0L) paste(all_reasons, collapse = ";") else "nonestimable_contrast"
       }
 
       stopifnot(validity_state %in% valid_states)
@@ -580,7 +625,113 @@ is_strict_intercept_only_l2_model <- function(mobj) {
     isTRUE(all.equal(as.numeric(cmat[1L, 1L]), 1))
 }
 
-make_l2_passthrough_row <- function(l1_df, l2_model, gpa, lg = NULL) {
+synthesize_passthrough_tdof <- function(feat_dir, l1_cope_number, lg = NULL) {
+  if (is.null(feat_dir) || !nzchar(feat_dir) || !dir.exists(feat_dir)) return(invisible(NULL))
+  dof_file <- file.path(feat_dir, "stats", "dof")
+  if (!file.exists(dof_file)) return(invisible(NULL))
+
+  dof_lines <- readLines(dof_file, warn = FALSE)
+  if (length(dof_lines) == 0L) return(invisible(NULL))
+  dof_val <- suppressWarnings(as.numeric(trimws(dof_lines[1L])))
+  if (!is.finite(dof_val) || dof_val <= 0) return(invisible(NULL))
+
+  write_one_tdof <- function(stats_subdir, mask_candidates) {
+    if (!dir.exists(stats_subdir)) return(invisible(NULL))
+    tdof_path <- file.path(stats_subdir, paste0("tdof_t", l1_cope_number, ".nii.gz"))
+    if (file.exists(tdof_path)) return(invisible(tdof_path))
+
+    existing_ref <- mask_candidates[file.exists(mask_candidates)]
+    if (length(existing_ref) == 0L) return(invisible(NULL))
+
+    ref_file <- existing_ref[1L]
+    tryCatch(
+      {
+        ref_img <- RNifti::readNifti(ref_file)
+        # If ref_file is a mask, use non-zero support; if cope, use finite non-zero support
+        support <- is.finite(ref_img) & (ref_img != 0)
+        tdof_arr <- array(0, dim = dim(ref_img))
+        tdof_arr[support] <- dof_val
+        hdr <- RNifti::niftiHeader(ref_file)
+        RNifti::writeNifti(RNifti::asNifti(tdof_arr, hdr), file = tdof_path)
+        if (!is.null(lg)) {
+          lg$info("Synthesized masked passthrough tdof image (dof=%g): %s", dof_val, tdof_path)
+        }
+        tdof_path
+      },
+      error = function(e) {
+        if (!is.null(lg)) {
+          lg$debug("Skipping passthrough tdof synthesis for %s (%s)", tdof_path, conditionMessage(e))
+        }
+        NULL
+      }
+    )
+  }
+
+  write_one_tdof(
+    stats_subdir = file.path(feat_dir, "stats"),
+    mask_candidates = c(
+      file.path(feat_dir, "mask.nii.gz"),
+      file.path(feat_dir, "stats", paste0("cope", l1_cope_number, ".nii.gz"))
+    )
+  )
+  write_one_tdof(
+    stats_subdir = file.path(feat_dir, "reg_standard", "stats"),
+    mask_candidates = c(
+      file.path(feat_dir, "reg_standard", "mask.nii.gz"),
+      file.path(feat_dir, "reg_standard", "stats", paste0("cope", l1_cope_number, ".nii.gz")),
+      file.path(feat_dir, "mask.nii.gz")
+    )
+  )
+  invisible(NULL)
+}
+
+get_l2_passthrough_contrasts <- function(dmat, cmat, mobj_parent, tol = sqrt(.Machine$double.eps)) {
+  if (checkmate::test_data_frame(dmat)) dmat <- as.matrix(dmat)
+  if (checkmate::test_data_frame(cmat)) cmat <- as.matrix(cmat)
+  if (!is.null(dmat) && !is.matrix(dmat) && length(dmat) == 1L) {
+    dmat <- matrix(as.numeric(dmat), nrow = 1L, ncol = 1L, dimnames = list(NULL, "(Intercept)"))
+  }
+  if (!is.null(cmat) && !is.matrix(cmat)) {
+    cmat <- matrix(as.numeric(cmat), nrow = 1L)
+  }
+  if (!is.matrix(dmat) || nrow(dmat) != 1L) return(character(0))
+
+  # Strict intercept-only L2 model (~ 1 with single intercept contrast)
+  if (is_strict_intercept_only_l2_model(mobj_parent)) {
+    parent_names <- extract_contrast_names(mobj_parent$contrasts, model_name = mobj_parent$name %||% "L2", level_label = "L2", allow_empty = TRUE)
+    return(parent_names[1L])
+  }
+
+  if (!is.matrix(cmat) || nrow(cmat) == 0L || ncol(dmat) != 1L || ncol(cmat) != 1L) {
+    return(character(0))
+  }
+  if (!identical(colnames(dmat), "(Intercept)") || abs(as.numeric(dmat[1L, 1L]) - 1) > tol) {
+    return(character(0))
+  }
+
+  # Restrict 1-run passthrough strictly to intercept / grand-mean pooling contrasts (never difference or slope contrasts).
+  # Also disallow EV_Intercept passthrough when the parent L2 model has categorical factors (where EV_Intercept is a single
+  # reference cell rather than an across-run grand mean, unless no categorical factors exist in the L2 model).
+  parent_cats <- character(0)
+  if (!is.null(mobj_parent$lmfit)) {
+    parent_cats <- extract_lm_var_types(mobj_parent$lmfit)$cat_vars
+  }
+  allowed_pooling <- if (length(parent_cats) == 0L) c("EV_Intercept", "overall") else c("overall")
+
+  parent_names <- extract_contrast_names(
+    mobj_parent$contrasts,
+    model_name = mobj_parent$name %||% "L2",
+    level_label = "L2",
+    allow_empty = TRUE
+  )
+
+  rnames <- rownames(cmat) %||% character(0)
+  unit_rows <- vapply(seq_len(nrow(cmat)), function(i) abs(as.numeric(cmat[i, 1L]) - 1) <= tol, logical(1))
+  candidates <- rnames[unit_rows]
+  intersect(intersect(candidates, allowed_pooling), parent_names)
+}
+
+make_l2_passthrough_row <- function(l1_df, l2_model, gpa, passthrough_contrasts = NULL, lg = NULL) {
   if (is.null(lg)) {
     lg <- lgr::get_logger("glm_pipeline/l2_setup")
   }
@@ -599,18 +750,31 @@ make_l2_passthrough_row <- function(l1_df, l2_model, gpa, lg = NULL) {
   l1_cope_name <- l1_df$l1_cope_name[1L]
   passthrough_cope_file <- l1_df$cope_file[1L]
 
-  contrast_names <- extract_contrast_names(
-    gpa$l2_models$models[[l2_model]]$contrasts,
-    model_name = l2_model,
-    level_label = "L2",
-    allow_empty = FALSE
-  )
+  if (is.null(passthrough_contrasts) || length(passthrough_contrasts) == 0L) {
+    contrast_names <- extract_contrast_names(
+      gpa$l2_models$models[[l2_model]]$contrasts,
+      model_name = l2_model,
+      level_label = "L2",
+      allow_empty = FALSE
+    )
+    passthrough_contrasts <- contrast_names[1L]
+  }
+  passthrough_contrasts <- unique(as.character(passthrough_contrasts))
+
   cope_list <- data.frame(
-    id = id,
-    session = session,
-    l2_cope_number = 1L,
-    l2_cope_name = contrast_names[1L],
+    id = rep(id, length(passthrough_contrasts)),
+    session = rep(session, length(passthrough_contrasts)),
+    l2_cope_number = seq_along(passthrough_contrasts),
+    l2_cope_name = passthrough_contrasts,
     stringsAsFactors = FALSE
+  )
+
+  # Synthesize masked stats/tdof_t<k>.nii.gz from scalar stats/dof so mixed L2 .gfeat + 1-run L1 passthrough
+  # L3 FLAME models have matching per-subject lower-level degrees of freedom volumes.
+  synthesize_passthrough_tdof(
+    feat_dir = l1_df$feat_dir[1L],
+    l1_cope_number = l1_cope_number,
+    lg = lg
   )
 
   feat_l2_df <- data.frame(
@@ -622,7 +786,7 @@ make_l2_passthrough_row <- function(l1_df, l2_model, gpa, lg = NULL) {
     l2_scope = l2_scope,
     l2_input_mode = "l1_cope_file_passthrough",
     l2_passthrough = TRUE,
-    n_l2_copes = 1L,
+    n_l2_copes = length(passthrough_contrasts),
     n_input_files = 1L,
     passthrough_cope_file = passthrough_cope_file,
     stringsAsFactors = FALSE
@@ -643,9 +807,9 @@ make_l2_passthrough_row <- function(l1_df, l2_model, gpa, lg = NULL) {
   lg$warn(
     paste(
       "Only one valid run remains for subject %s session %s, L1 model %s, L1 cope %s, L2 model %s.",
-      "Using direct L1 cope pass-through instead of creating a one-input L2 FEAT."
+      "Using direct L1 cope pass-through for pooling contrast(s) [%s] instead of creating a one-input L2 FEAT."
     ),
-    id, session, l1_model, l1_cope_name, l2_model
+    id, session, l1_model, l1_cope_name, l2_model, paste(passthrough_contrasts, collapse = ", ")
   )
 
   feat_l2_df

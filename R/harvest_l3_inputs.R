@@ -98,6 +98,52 @@ harvest_l3_inputs_fsl <- function(gpa, l1_model_names = NULL, l2_model_names = N
     l3_model_names <- names(gpa$l3_models$models)
   }
 
+  subj_df <- gpa$subject_data %>%
+    dplyr::filter(.data$exclude_subject == FALSE) %>%
+    dplyr::select("id", "session")
+
+  # Support single-run multi-session longitudinal designs (multi_run == FALSE or no L2 models)
+  has_l2_models <- !is.null(gpa$l2_models) && length(gpa$l2_models$models) > 0L
+  if (isFALSE(gpa$multi_run) || !isTRUE(has_l2_models)) {
+    this_l1_models <- l1_model_names %||% names(gpa$l1_models$models)
+    if (length(this_l1_models) == 0L || length(l3_model_names) == 0L) {
+      lg$warn("No L1 or L3 models available for direct L1 -> L3 harvesting.")
+      return(NULL)
+    }
+
+    all_harvested <- list()
+    for (this_l3 in l3_model_names) {
+      model_df <- expand.grid(
+        l1_model = this_l1_models,
+        l3_model = this_l3,
+        stringsAsFactors = FALSE
+      )
+      l3_cope_config <- get_fsl_l3_model_df(gpa, model_df, subj_df)
+      if ("l3_cope_number" %in% names(l3_cope_config)) {
+        l3_cope_config <- l3_cope_config %>%
+          dplyr::filter(.data$l3_cope_number == 1L) %>%
+          dplyr::select(-dplyr::any_of(c("l3_cope_number", "l3_cope_name")))
+      }
+      feat_inputs <- get_feat_l3_inputs(gpa, l3_cope_config, lg = lg)
+      for (nm in names(feat_inputs)) {
+        df_in <- feat_inputs[[nm]]
+        if ("feat_dir" %in% names(df_in) && "cope_file" %in% names(df_in)) {
+          reg_std <- file.path(df_in$feat_dir, "reg_standard", "stats", basename(df_in$cope_file))
+          use_std <- file.exists(reg_std)
+          df_in$cope_file[use_std] <- reg_std[use_std]
+        }
+        feat_inputs[[nm]] <- df_in %>%
+          dplyr::rename(InputFile = "cope_file") %>%
+          dplyr::mutate(source_backend = "fsl")
+      }
+      all_harvested[[this_l3]] <- c(all_harvested[[this_l3]], feat_inputs)
+    }
+
+    all_harvested <- Filter(function(x) length(x) > 0L, all_harvested)
+    if (length(all_harvested) == 0L) return(NULL)
+    return(all_harvested)
+  }
+
   pairs <- resolve_l2_l3_compatible_pairs(
     gpa,
     l2_model_names = l2_model_names,

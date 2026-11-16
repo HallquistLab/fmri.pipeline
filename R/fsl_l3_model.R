@@ -74,19 +74,40 @@ fsl_l3_model <- function(l3_df=NULL, gpa) {
     feat_l3_df <- data.frame(l1_model, l1_cope_name, l3_model, session, l3_input_mode)
   }
 
-  # we need to regenerate the l3 model for the inputs provided
-  # l3_df should contain FEAT copes that have been vetted in setup_l3_models.R to exist and be complete
   # handle model respecification based on available data (e.g., if some subjects failed to run)
-  mobj <- respecify_l3_model(gpa$l3_models$models[[l3_model]], new_data=l3_df)
+  mobj <- respecify_l3_model(gpa$l3_models$models[[l3_model]], new_data = l3_df)
+
+  # align id/session types before inner_join so num2fac = "session" never causes factor/integer join errors
+  l3_df$id <- as.character(l3_df$id)
+  meta_for_join <- mobj$metadata
+  meta_for_join$id <- as.character(meta_for_join$id)
+  if (!identical(class(l3_df$session), class(meta_for_join$session))) {
+    l3_df$session <- as.character(l3_df$session)
+    meta_for_join$session <- as.character(meta_for_join$session)
+  }
 
   # now make sure that the l3_df aligns perfectly with the data being modeled (mostly dropping copes in l3_df that aren't in model)
-  l3_df <- l3_df %>% dplyr::inner_join(mobj$metadata, by=c("id", "session"))
+  l3_df <- l3_df %>% dplyr::inner_join(meta_for_join, by = c("id", "session"))
+
+  dmat_to_write <- if (!is.null(mobj$model_matrix_noalias)) mobj$model_matrix_noalias else mobj$model_matrix
+  cmat_to_write <- if (!is.null(mobj$model_matrix_noalias)) mobj$contrasts_noalias else mobj$contrasts
+  if (is.null(cmat_to_write) || nrow(cmat_to_write) == 0L) {
+    lg$warn("No estimable L3 contrasts remain for L3 model '%s' after respecification. Skipping.", l3_model)
+    return(NULL)
+  }
+  stopifnot(ncol(dmat_to_write) == ncol(cmat_to_write))
+
+  feat_l3_df$cope_list <- list(data.frame(
+    l3_cope_number = seq_len(nrow(cmat_to_write)),
+    l3_cope_name = rownames(cmat_to_write) %||% paste0("cope", seq_len(nrow(cmat_to_write))),
+    stringsAsFactors = FALSE
+  ))
 
   # generate FSL EV syntax for these regressors
-  ev_syntax <- fsl_generate_fsf_ev_syntax(inputs = l3_df$cope_file, dmat = mobj$model_matrix)
+  ev_syntax <- fsl_generate_fsf_ev_syntax(inputs = l3_df$cope_file, dmat = dmat_to_write)
 
   # generate FSF contrast syntax for this setup
-  contrast_syntax <- fsl_generate_fsf_contrast_syntax(mobj$contrasts)
+  contrast_syntax <- fsl_generate_fsf_contrast_syntax(cmat_to_write)
 
   l3_fsf_syntax <- readLines(system.file("feat_lvl3_copefiles_template.fsf", package = "fmri.pipeline"))
 

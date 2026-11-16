@@ -72,6 +72,7 @@ fsl_l1_model <- function(
   lg$info("Create l1 fsl_l1_output_dir: %s", fsl_l1_output_dir)
   dir.create(fsl_l1_output_dir, showWarnings=FALSE) #one directory up from a given run
 
+  dir.create(fsl_l1_output_dir, recursive = TRUE, showWarnings = FALSE)
   feat_l1_df <- data.frame(
     id = id, session = session, run_number = d_obj$runs_to_output, run_volumes = d_obj$run_volumes,
     run_nifti = run_nifti, l1_model = model_name, l1_confound_file = l1_confound_files, to_run = as.logical(NA)
@@ -137,14 +138,47 @@ fsl_l1_model <- function(
 
     if (isTRUE(gpa$use_preconvolve)) {
       lg$info("Using preconvolved regressors in Feat level 1 analysis")
-      # generate ev syntax
+      run_num <- feat_l1_df$run_number[rr]
+      run_key <- paste0("run_number", run_num)
 
-      #add common ingredients for preconvolved regressors
+      # Detect empty EVs and formula-mode aliased EVs for this specific run
+      empty_evs_run <- d_obj$runs_empty_evs[[run_key]] %||% character(0)
+      if (length(empty_evs_run) == 0L && !is.null(d_obj$design_convolved[[run_key]])) {
+        rc <- d_obj$design_convolved[[run_key]]
+        empty_evs_run <- names(rc)[vapply(rc, function(col) all(abs(col[is.finite(col)]) <= sqrt(.Machine$double.eps)), logical(1))]
+      }
+
+      aliased_evs_run <- character(0)
+      run_trial_mats <- d_obj$wi_run_trial_matrices[[run_key]]
+      if (!is.null(run_trial_mats) && length(run_trial_mats) > 0L) {
+        for (M_r in run_trial_mats) {
+          if (!is.matrix(M_r) || ncol(M_r) == 0L || nrow(M_r) == 0L) next
+          qr_r <- qr(M_r)
+          if (qr_r$rank < ncol(M_r)) {
+            piv_keep <- if (qr_r$rank > 0L) qr_r$pivot[seq_len(qr_r$rank)] else integer(0)
+            dropped_evs <- colnames(M_r)[setdiff(seq_len(ncol(M_r)), piv_keep)]
+            aliased_evs_run <- union(aliased_evs_run, dropped_evs)
+          }
+        }
+        if (length(aliased_evs_run) > 0L) {
+          aliased_evs_run <- union(aliased_evs_run, intersect(paste0("d_", aliased_evs_run), regressor_names))
+        }
+      }
+
+      inactive_evs_run <- union(empty_evs_run, aliased_evs_run)
+
       regressors <- lapply(regressor_names, function(rname) {
+        if (rname %in% inactive_evs_run) {
+          lg$info("Marking run %s regressor '%s' as FSL empty EV (shape=10).", run_num, rname)
+          return(list(
+            name = rname, waveform = "empty", convolution = "none", tempfilt = 1
+          ))
+        }
+
         t_file <- tryCatch(
-          d_obj$timing_files$convolved[glue("run_number{feat_l1_df$run_number[rr]}"), rname],
+          d_obj$timing_files$convolved[run_key, rname],
           error = function(e) {
-            lg$error(glue("Could not find timing file for run: {feat_l1_df$run_number[rr]}, regressor: {rname} in {fsl_l1_output_dir}"))
+            lg$error(glue("Could not find timing file for run: {run_num}, regressor: {rname} in {fsl_l1_output_dir}"))
             return(NULL)
           }
         )
@@ -164,10 +198,62 @@ fsl_l1_model <- function(
       lg$debug("fsl_generate_fsf_lvl1_ev_syntax")
       ev_syn <- fsl_generate_fsf_lvl1_ev_syntax(regressors)
 
-      #creation of l1 contrast matrices, including the diagonal contrasts, now abstracted to finalize_pipeline_configuration.R
-      #thus, l1_contrasts is already a contrast matrix ready to be passed to the fsl_generate_fsf_contrast_syntax function
+      # Zero any L1 contrast rows that depend on empty EVs or non-estimable formula combinations in this run
+      # so film_gls never writes biased single-arm difference COPEs (e.g., A1B1 - 0 = A1B1 vs baseline).
+      run_l1_contrasts <- l1_contrasts
+      if (checkmate::test_data_frame(run_l1_contrasts)) run_l1_contrasts <- as.matrix(run_l1_contrasts)
+      nonest_rows <- rep(FALSE, nrow(run_l1_contrasts))
+      nonest_reasons <- rep(NA_character_, nrow(run_l1_contrasts))
+
+      if (nrow(run_l1_contrasts) > 0L) {
+        empty_in_cmat <- intersect(empty_evs_run, colnames(run_l1_contrasts))
+        if (length(empty_in_cmat) > 0L) {
+          touches_empty <- apply(run_l1_contrasts[, empty_in_cmat, drop = FALSE], 1, function(r) any(abs(r) > 1e-8))
+          nonest_rows <- nonest_rows | touches_empty
+          nonest_reasons[touches_empty] <- "empty_ev_shape"
+        }
+
+        if (!is.null(run_trial_mats) && length(run_trial_mats) > 0L) {
+          for (M_r in run_trial_mats) {
+            sig_cols <- intersect(colnames(M_r), colnames(run_l1_contrasts))
+            if (length(sig_cols) == 0L) next
+            nb_r <- if (nrow(M_r) > 0L) estimability::nonest.basis(M_r) else diag(ncol(M_r))
+            for (cc in which(!nonest_rows)) {
+              c_sub <- rep(0, ncol(M_r))
+              names(c_sub) <- colnames(M_r)
+              c_sub[sig_cols] <- as.numeric(run_l1_contrasts[cc, sig_cols])
+              if (any(abs(c_sub) > 1e-8)) {
+                if (nrow(M_r) == 0L || !isTRUE(estimability::is.estble(c_sub, nb_r, tol = 1e-5))) {
+                  nonest_rows[cc] <- TRUE
+                  nonest_reasons[cc] <- "aliased_wi_formula_run"
+                } else if (length(aliased_evs_run) > 0L) {
+                  # Contrast is estimable on the reduced run basis; zero dropped/aliased columns
+                  drop_c <- intersect(aliased_evs_run, sig_cols)
+                  if (length(drop_c) > 0L) run_l1_contrasts[cc, drop_c] <- 0
+                }
+              }
+            }
+          }
+        }
+
+        if (any(nonest_rows)) {
+          run_l1_contrasts[nonest_rows, ] <- 0
+        }
+
+        validity_sidecar <- sub("\\.fsf$", "_cope_validity.tsv", l1_feat_fsf)
+        sidecar_df <- data.frame(
+          l1_cope_number = seq_len(nrow(run_l1_contrasts)),
+          l1_cope_name = rownames(run_l1_contrasts) %||% paste0("cope", seq_len(nrow(run_l1_contrasts))),
+          estimable = !nonest_rows,
+          reason = nonest_reasons,
+          aliased_evs = paste(aliased_evs_run, collapse = ";"),
+          stringsAsFactors = FALSE
+        )
+        utils::write.table(sidecar_df, file = validity_sidecar, sep = "\t", row.names = FALSE, quote = FALSE)
+      }
+
       lg$debug("fsl_generate_fsf_contrast_syntax")
-      cmat_syn <- fsl_generate_fsf_contrast_syntax(l1_contrasts)
+      cmat_syn <- fsl_generate_fsf_contrast_syntax(run_l1_contrasts)
 
       #combine all syntax
       this_template <- c(this_template, ev_syn, cmat_syn)

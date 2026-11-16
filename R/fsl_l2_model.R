@@ -108,9 +108,20 @@ fsl_l2_model <- function(l1_df=NULL, l2_model, gpa) {
   if (!is.null(cmat) && !is.matrix(cmat)) {
     cmat <- matrix(as.numeric(cmat), nrow = 1L)
   }
+
+  # Align l1_df to the exact non-missing covariate rows retained in dmat
+  model_runs <- attr(dmat, "model_runs")
+  if (!is.null(model_runs) && is.data.frame(model_runs)) {
+    join_keys <- intersect(c("id", "session", "run_number"), intersect(names(model_runs), names(l1_df)))
+    if (length(join_keys) > 0L) {
+      l1_df <- dplyr::inner_join(model_runs, as.data.frame(l1_df), by = join_keys)
+    }
+  }
+  l1_cope_files <- l1_df$cope_file
+
   cope_list <- ss_df$cope_list[[1L]]
   n_l2_copes <- if (is.null(cope_list)) 0L else nrow(cope_list)
-  if (is.null(cmat) || nrow(cmat) == 0L) {
+  if (nrow(l1_df) == 0L || is.null(cmat) || nrow(cmat) == 0L) {
     lg$warn(
       "No estimable L2 contrasts remain after refitting design for id %s, session %s, l1 model %s, l1 cope %s, l2 model %s",
       id, session, l1_model, l1_cope_name, l2_model
@@ -119,15 +130,21 @@ fsl_l2_model <- function(l1_df=NULL, l2_model, gpa) {
   }
 
   if (nrow(l1_df) == 1L) {
-    if (is_l2_passthrough_estimable(dmat, cmat) ||
-        is_strict_intercept_only_l2_model(gpa$l2_models$models[[l2_model]])) {
-      return(make_l2_passthrough_row(l1_df = l1_df, l2_model = l2_model, gpa = gpa, lg = lg))
+    pt_contrasts <- get_l2_passthrough_contrasts(dmat, cmat, gpa$l2_models$models[[l2_model]])
+    if (length(pt_contrasts) > 0L) {
+      return(make_l2_passthrough_row(
+        l1_df = l1_df,
+        l2_model = l2_model,
+        gpa = gpa,
+        passthrough_contrasts = pt_contrasts,
+        lg = lg
+      ))
     }
 
     lg$warn(
       paste(
         "Only one valid run remains for subject %s session %s, L1 model %s, L1 cope %s, L2 model %s,",
-        "but the refit L2 design is not pass-through-estimable. Skipping this L2 analysis."
+        "but the refit L2 design has no intercept/pooling contrast eligible for pass-through. Skipping this L2 analysis."
       ),
       id, session, l1_model, l1_cope_name, l2_model
     )
@@ -198,8 +215,12 @@ fsl_l2_model <- function(l1_df=NULL, l2_model, gpa) {
   # handle custom L1 FSF syntax
   l2_fsf_syntax <- add_custom_feat_syntax(l2_fsf_syntax, gpa$additional$feat_l2_args, lg)
 
-  # skip re-creation of FSF and do not run below unless force==TRUE
-  if (!file.exists(l2_feat_fsf) || isTRUE(gpa$glm_settings$fsl$force_l2_creation)) {
+  # Rewrite FSF whenever this model is queued to run or force_l2_creation is TRUE so updated contrasts are never masked by a stale file
+  write_l2_fsf <- !file.exists(l2_feat_fsf) ||
+    isTRUE(gpa$glm_settings$fsl$force_l2_creation) ||
+    isTRUE(feat_l2_df$to_run[1L])
+
+  if (isTRUE(write_l2_fsf)) {
     lg$info("Writing L2 FSF syntax to: %s", l2_feat_fsf)
     cat(l2_fsf_syntax, file = l2_feat_fsf, sep = "\n")
   } else {

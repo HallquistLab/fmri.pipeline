@@ -958,22 +958,212 @@ sched_args_to_header <- function(gpa) {
   return(directives)
 }
 
+parse_emm_spec_string <- function(vv) {
+  checkmate::assert_string(vv)
+  parts <- strsplit(vv, "\\|", perl = TRUE)[[1L]]
+  focal_raw <- trimws(parts[1L])
+  by_raw <- if (length(parts) > 1L) trimws(paste(parts[-1L], collapse = "+")) else ""
+
+  focal_vars <- trimws(unlist(strsplit(focal_raw, "[:*+]", perl = TRUE)))
+  focal_vars <- focal_vars[nzchar(focal_vars)]
+  by_vars <- if (nzchar(by_raw)) {
+    bv <- trimws(unlist(strsplit(by_raw, "[:*+,\\s]+", perl = TRUE)))
+    bv[nzchar(bv)]
+  } else {
+    character(0)
+  }
+
+  focal_formula_rhs <- paste(focal_vars, collapse = " * ")
+  list(
+    raw = vv,
+    focal_raw = focal_raw,
+    focal_vars = focal_vars,
+    focal_formula = stats::as.formula(paste("~", focal_formula_rhs)),
+    by_vars = if (length(by_vars) > 0L) by_vars else NULL
+  )
+}
+
+sanitize_contrast_token <- function(x) {
+  x <- as.character(x)
+  # Disambiguate valence signs like CS+ vs CS- before make.names turns both into 'CS.'
+  has_plus_or_trailing_minus <- grepl("\\+", x) | grepl("(?<=[A-Za-z0-9])-(?=\\s|$|\\))", x, perl = TRUE)
+  if (any(has_plus_or_trailing_minus)) {
+    x[has_plus_or_trailing_minus] <- gsub("\\+", "_pos", x[has_plus_or_trailing_minus])
+    x[has_plus_or_trailing_minus] <- gsub("(?<=[A-Za-z0-9])-(?=\\s|$|\\))", "_neg", x[has_plus_or_trailing_minus], perl = TRUE)
+  }
+  x
+}
+
+sanitize_contrast_diff_label <- function(contrast_chr) {
+  # Split on emmeans ' - ' separator first so minus signs inside factor levels can be preserved distinctly
+  pieces <- strsplit(as.character(contrast_chr), "\\s+-\\s+", perl = TRUE)
+  out <- vapply(pieces, function(p) {
+    p <- gsub("^\\((.*)\\)$", "\\1", trimws(p))
+    p <- sanitize_contrast_token(p)
+    paste(make.names(p, unique = FALSE), collapse = "_M_")
+  }, character(1))
+  out
+}
+
+format_by_prefix <- function(edata, by_vars) {
+  if (is.null(by_vars) || length(by_vars) == 0L) return(rep("", nrow(edata)))
+  present_by <- intersect(by_vars, names(edata))
+  if (length(present_by) == 0L) return(rep("", nrow(edata)))
+  apply(edata[, present_by, drop = FALSE], 1, function(row_vals) {
+    vals <- sanitize_contrast_token(row_vals)
+    paste0(paste(present_by, make.names(vals, unique = FALSE), sep = ".", collapse = "_"), "_")
+  })
+}
+
+quiet_emm <- function(expr) {
+  withCallingHandlers(
+    suppressMessages(expr),
+    warning = function(w) {
+      if (grepl("essentially perfect fit", conditionMessage(w), fixed = TRUE)) {
+        invokeRestart("muffleWarning")
+      }
+    }
+  )
+}
+
+mask_empty_cell_marginal_slices <- function(lmfit, ee, focal_vars, by_vars = NULL, weights = "cells", label = "", ignore_blocking_vars = character(0)) {
+  if (is.null(lmfit) || identical(weights, "equal")) return(ee)
+  rg <- tryCatch(quiet_emm(emmeans::ref_grid(lmfit, nesting = NULL)), error = function(e) NULL)
+  if (is.null(rg) || !".wgt." %in% names(rg@grid)) return(ee)
+
+  vtypes <- extract_lm_var_types(lmfit)
+  cat_in_rg <- setdiff(intersect(names(rg@levels), vtypes$cat_vars), ignore_blocking_vars)
+  if (length(cat_in_rg) == 0L) return(ee)
+
+  grid_check <- rg@grid
+  if (length(ignore_blocking_vars) > 0L && any(ignore_blocking_vars %in% names(grid_check))) {
+    grid_check <- stats::aggregate(
+      list(.wgt. = grid_check$.wgt.),
+      by = grid_check[, cat_in_rg, drop = FALSE],
+      FUN = function(x) sum(x, na.rm = TRUE)
+    )
+  }
+
+  if (!any(grid_check$.wgt. == 0, na.rm = TRUE)) return(ee)
+
+  conditioning_vars <- unique(c(focal_vars, by_vars))
+  marginalized_cats <- setdiff(cat_in_rg, conditioning_vars)
+  if (length(marginalized_cats) == 0L) return(ee)
+
+  cond_cols <- intersect(conditioning_vars, intersect(names(ee@grid), names(grid_check)))
+  bad_rows <- rep(FALSE, nrow(ee@grid))
+  if (length(cond_cols) == 0L) {
+    # Overall mean marginalizing across all categorical cells when at least one cell is empty
+    bad_rows[] <- TRUE
+  } else {
+    for (rr in seq_len(nrow(ee@grid))) {
+      match_idx <- rep(TRUE, nrow(grid_check))
+      for (cc in cond_cols) {
+        match_idx <- match_idx & (as.character(grid_check[[cc]]) == as.character(ee@grid[[cc]][rr]))
+      }
+      if (any(match_idx) && any(grid_check$.wgt.[match_idx] == 0, na.rm = TRUE)) {
+        bad_rows[rr] <- TRUE
+      }
+    }
+  }
+
+  if (any(bad_rows)) {
+    warning(
+      sprintf(
+        "Dropping marginal contrast(s) for '%s' under weights='%s' because one or more marginalized cells (%s) have zero observations.",
+        if (nzchar(label)) label else "overall",
+        weights,
+        paste(marginalized_cats, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+    ee@linfct[bad_rows, ] <- NA_real_
+  }
+  ee
+}
+
+align_custom_contrasts_to_colnames <- function(raw_custom, c_colnames) {
+  if (is.null(raw_custom) || length(raw_custom) == 0L) return(NULL)
+  cmat <- parse_custom_contrast_spec(raw_custom, reg_names = NULL)
+  if (is.null(cmat) || nrow(cmat) == 0L) return(NULL)
+
+  if (is.null(colnames(cmat))) {
+    if (ncol(cmat) != length(c_colnames)) {
+      warning(
+        sprintf(
+          "Dropping unnamed custom contrast matrix because ncol (%d) does not match model regressors (%d).",
+          ncol(cmat), length(c_colnames)
+        ),
+        call. = FALSE
+      )
+      return(NULL)
+    }
+    colnames(cmat) <- c_colnames
+    return(cmat)
+  }
+
+  missing_cols <- setdiff(colnames(cmat), c_colnames)
+  keep_rows <- rep(TRUE, nrow(cmat))
+  if (length(missing_cols) > 0L) {
+    uses_missing <- apply(cmat[, missing_cols, drop = FALSE], 1, function(r) any(abs(r) > 1e-8))
+    if (any(uses_missing)) {
+      warning(
+        sprintf(
+          "Dropping custom contrast(s) (%s) that reference omitted/aliased regressor(s): %s.",
+          paste(rownames(cmat)[uses_missing], collapse = ", "),
+          paste(missing_cols, collapse = ", ")
+        ),
+        call. = FALSE
+      )
+      keep_rows <- !uses_missing
+    }
+  }
+
+  cmat <- cmat[keep_rows, , drop = FALSE]
+  if (nrow(cmat) == 0L) return(NULL)
+
+  out <- matrix(
+    0,
+    nrow = nrow(cmat),
+    ncol = length(c_colnames),
+    dimnames = list(rownames(cmat), c_colnames)
+  )
+  shared_cols <- intersect(colnames(cmat), c_colnames)
+  if (length(shared_cols) > 0L) {
+    out[, shared_cols] <- cmat[, shared_cols, drop = FALSE]
+  }
+  out
+}
+
 #' helper function to generate a contrast matrix from an lm() object
 #'   and a set of user-specified contrasts using emmeans
 #'
 #' @param mobj a model object created by build_l<X>_models
 #' @param lmfit an optional lm() object used for emmeans calculations. If provided, this object
 #'   will be used instead of mobj$lmfit (the parent lm on the overall dataset).
+#' @param allow_interactive_dedupe Optional logical flag controlling whether duplicate contrasts
+#'   prompt interactively (defaults to \code{FALSE} on refits, otherwise \code{rlang::is_interactive()}).
 #'
 #' @return a modified copy of the model object \code{mobj} with $contrast_list and $contrasts
-#'   fully populated 
+#'   fully populated
 #' @keywords internal
 #' @importFrom emmeans emmeans emtrends
 #' @importFrom graphics pairs
 #' @importFrom stats coef na.omit
 #' @importFrom utils menu
-get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
+get_contrasts_from_spec <- function(mobj, lmfit = NULL, allow_interactive_dedupe = NULL) {
   checkmate::assert_multi_class(mobj, c("l1_model_spec", "l1_wi_spec", "hi_model_spec")) # verify that we have an object of known structure
+  is_refit <- !is.null(lmfit)
+  if (is.null(allow_interactive_dedupe)) {
+    allow_interactive_dedupe <- if (isTRUE(is_refit)) FALSE else rlang::is_interactive()
+  }
+
+  # Preserve custom contrasts before resetting cached contrast_list on refits
+  preserved_custom <- mobj$contrast_spec$custom %||% mobj$contrast_list$custom
+  if (!is.null(preserved_custom)) {
+    mobj$contrast_spec$custom <- preserved_custom
+  }
+
   if (is.null(lmfit)) {
     lmfit <- mobj$lmfit # use parent lmfit
   } else {
@@ -998,7 +1188,17 @@ get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
   }
 
   # for within-subject factors, always add the signal name as a prefix (cf. get_regressors_from_signal)
-  c_colnames <- paste0(prefix, c_colnames)
+  if (nzchar(prefix) && !all(startsWith(c_colnames, prefix))) {
+    c_colnames <- paste0(prefix, c_colnames)
+  }
+
+  c_custom <- align_custom_contrasts_to_colnames(preserved_custom, c_colnames)
+
+  # Refresh cat_vars dynamically if lmfit is present and cat_vars was empty (e.g., ~ 0 + A:B or refit)
+  if (!is.null(lmfit) && length(spec$cat_vars) == 0L) {
+    spec$cat_vars <- extract_lm_var_types(lmfit)$cat_vars
+    mobj$contrast_spec$cat_vars <- spec$cat_vars
+  }
 
   # If no contrasts were specified in spec or contrast_list for L2/L3 models,
   # default to diagonal contrasts and warn the user.
@@ -1007,15 +1207,17 @@ get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
       if (is.null(x)) return(FALSE)
       if (is.matrix(x)) return(nrow(x) > 0L)
       length(x) > 0L
-    }, logical(1)))
+    }, logical(1))) || (!is.null(c_custom) && nrow(c_custom) > 0L)
 
     has_spec_contrasts <- any(c(
       isTRUE(spec$diagonal),
       length(spec$cond_means) > 0L,
       length(spec$pairwise_diffs) > 0L,
+      length(spec$interaction_diffs) > 0L,
       isTRUE(spec$cell_means),
       isTRUE(spec$overall_response),
-      length(spec$simple_slopes) > 0L
+      length(spec$simple_slopes) > 0L,
+      length(spec$slope_diffs) > 0L
     ))
 
     if (!isTRUE(has_list_contrasts) && !isTRUE(has_spec_contrasts)) {
@@ -1031,113 +1233,191 @@ get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
   ### add diagonal contrasts
   c_diagonal <- contrast_list$diagonal
   if (isTRUE(spec$diagonal) && is.null(c_diagonal)) {
-
     diag_mat <- diag(length(c_colnames))
-    rownames(diag_mat) <- paste0("EV_", prefix, c_colnames) # simple contrast naming for each individual regressor
-    colnames(diag_mat) <- c_colnames # always have columns named by regressor
+    # c_colnames already carries `prefix` for l1_wi_spec; avoid double-prefixing EV_<sig>.<sig>.<coef>
+    rownames(diag_mat) <- paste0("EV_", c_colnames)
+    colnames(diag_mat) <- c_colnames
+
+    if (isTRUE(mobj$suppress_subject_ev_diagonals)) {
+      keep_diag <- !grepl("^EV_id", rownames(diag_mat))
+      diag_mat <- diag_mat[keep_diag, , drop = FALSE]
+    }
 
     c_diagonal <- diag_mat
   }
 
-  ### add condition means, if requested
+  ### guard emmeans contrasts if lmfit is missing
   c_cond_means <- contrast_list$cond_means
   if (is.null(lmfit) && (length(spec$cond_means) > 0L || length(spec$pairwise_diffs) > 0L ||
-    isTRUE(spec$cell_means) || isTRUE(spec$overall_response) || length(spec$simple_slopes) > 0L)) {
+    length(spec$interaction_diffs) > 0L || isTRUE(spec$cell_means) ||
+    isTRUE(spec$overall_response) || length(spec$simple_slopes) > 0L || length(spec$slope_diffs) > 0L)) {
     warning(
       "emmeans-based contrasts requested, but no model is available. Dropping emmeans contrasts.",
       call. = FALSE
     )
     spec$cond_means <- character(0)
     spec$pairwise_diffs <- character(0)
+    spec$interaction_diffs <- character(0)
     spec$cell_means <- FALSE
     spec$overall_response <- FALSE
     spec$simple_slopes <- list()
+    spec$slope_diffs <- list()
   }
 
+  eff_weights <- spec$weights %||% "cells"
+  blocking_vars <- if (isTRUE(mobj$suppress_subject_ev_diagonals)) "id" else character(0)
+
+  ### add condition means, if requested
   if (length(spec$cond_means) > 0L && is.null(c_cond_means)) {
     for (vv in spec$cond_means) {
-      ee <- emmeans(lmfit, as.formula(paste("~", vv)), weights = spec$weights)
-      edata <- summary(ee)
+      ps <- parse_emm_spec_string(vv)
+      ee <- quiet_emm(emmeans(lmfit, specs = ps$focal_formula, by = ps$by_vars, weights = eff_weights, nesting = NULL))
+      ee <- mask_empty_cell_marginal_slices(lmfit, ee, focal_vars = ps$focal_vars, by_vars = ps$by_vars, weights = eff_weights, label = vv, ignore_blocking_vars = blocking_vars)
+      edata <- suppressWarnings(summary(ee))
       econ <- ee@linfct
-      econ[abs(econ) < 1e-8] <- 0 # round tiny contrasts due to floating point
-      enames <- unname(apply(edata[strsplit(vv, ":")[[1]]], 1, paste, collapse=".")) # combine multi-factor contrasts, if relevant
+      econ[abs(econ) < 1e-8] <- 0
 
-      # if any emmeans are not estimable, then this is likely due to aliasing. For now, drop
-      which_na <- is.na(edata$emmean)
+      focal_vals <- apply(edata[, ps$focal_vars, drop = FALSE], 1, function(r) {
+        paste(make.names(sanitize_contrast_token(r), unique = FALSE), collapse = ".")
+      })
+      by_pref <- format_by_prefix(edata, ps$by_vars)
+      focal_label <- gsub("\\s+", "", ps$focal_raw)
+      enames <- paste0(by_pref, paste(focal_label, focal_vals, sep = "."))
+
+      which_na <- is.na(edata$emmean) | apply(econ, 1, anyNA)
       if (any(which_na)) {
         econ <- econ[!which_na, , drop = FALSE]
         enames <- enames[!which_na]
       }
 
-      # add contrast names to matrix
-      rownames(econ) <- paste0(prefix, paste(vv, enames, sep = "."))
-
-      # add contrasts to matrix
-      c_cond_means <- rbind(c_cond_means, econ)
+      if (nrow(econ) > 0L) {
+        rownames(econ) <- paste0(prefix, enames)
+        c_cond_means <- rbind(c_cond_means, econ)
+      }
     }
-    colnames(c_cond_means) <- c_colnames
+    if (!is.null(c_cond_means) && nrow(c_cond_means) > 0L) {
+      colnames(c_cond_means) <- c_colnames
+    }
   }
 
   ### add cell means for all factors, if requested
   c_cell_means <- contrast_list$cell_means
-  if (isTRUE(spec$cell_means) && is.null(c_cell_means)) {
-    # get model-predicted means for each factor
-    ee <- emmeans(lmfit, as.formula(paste("~", paste(spec$cat_vars, collapse = "*"))), weights = spec$weights)
-    # pp <- pairs(ee)
-    edata <- summary(ee)
+  if (isTRUE(spec$cell_means) && is.null(c_cell_means) && length(spec$cat_vars) > 0L) {
+    ee <- quiet_emm(emmeans(
+      lmfit,
+      as.formula(paste("~", paste(spec$cat_vars, collapse = "*"))),
+      weights = eff_weights,
+      nesting = NULL
+    ))
+    edata <- suppressWarnings(summary(ee))
 
     econ <- ee@linfct
-    econ[abs(econ) < 1e-8] <- 0 # round tiny contrasts due to floating point
-    enames <- apply(edata[, spec$cat_vars, drop = FALSE], 1, function(x) { paste(names(x), x, sep=".", collapse = "_") })
+    econ[abs(econ) < 1e-8] <- 0
+    enames <- apply(edata[, spec$cat_vars, drop = FALSE], 1, function(x) {
+      vals <- make.names(sanitize_contrast_token(x), unique = FALSE)
+      paste(names(x), vals, sep = ".", collapse = "_")
+    })
 
-    # if any emmeans are not estimable, then this is likely due to aliasing. For now, drop
-    which_na <- is.na(edata$emmean)
+    which_na <- is.na(edata$emmean) | apply(econ, 1, anyNA)
     if (any(which_na)) {
       econ <- econ[!which_na, , drop = FALSE]
       enames <- enames[!which_na]
     }
 
-    rownames(econ) <- paste0(prefix, enames)
-    c_cell_means <- rbind(c_cell_means, econ)
-    colnames(c_cell_means) <- c_colnames
+    if (nrow(econ) > 0L) {
+      rownames(econ) <- paste0(prefix, enames)
+      c_cell_means <- rbind(c_cell_means, econ)
+      colnames(c_cell_means) <- c_colnames
+    }
   }
 
   ### add overall response mean
   c_overall <- contrast_list$overall
   if (isTRUE(spec$overall_response) && is.null(c_overall)) {
-    ee <- emmeans(lmfit, ~1, weights = spec$weights)
+    ee <- quiet_emm(emmeans(lmfit, ~1, weights = eff_weights, nesting = NULL))
+    ee <- mask_empty_cell_marginal_slices(lmfit, ee, focal_vars = character(0), by_vars = NULL, weights = eff_weights, label = "overall_response", ignore_blocking_vars = blocking_vars)
+    edata <- suppressWarnings(summary(ee))
     econ <- ee@linfct
-    econ[abs(econ) < 1e-8] <- 0 # round tiny contrasts due to floating point
-    rownames(econ) <- paste0(prefix, "overall")
-    colnames(econ) <- c_colnames
-    c_overall <- econ
+    econ[abs(econ) < 1e-8] <- 0
+    which_na <- is.na(edata$emmean) | apply(econ, 1, anyNA)
+    if (!all(which_na)) {
+      econ <- econ[!which_na, , drop = FALSE]
+      rownames(econ) <- paste0(prefix, "overall")
+      colnames(econ) <- c_colnames
+      c_overall <- econ
+    }
   }
 
   ### add pairwise differences, if requested
   c_pairwise_diffs <- contrast_list$pairwise_diffs
   if (length(spec$pairwise_diffs) > 0L && is.null(c_pairwise_diffs)) {
     for (vv in spec$pairwise_diffs) {
-      ee <- emmeans(lmfit, as.formula(paste("~", vv)), weights = spec$weights)
+      ps <- parse_emm_spec_string(vv)
+      ee <- quiet_emm(emmeans(lmfit, specs = ps$focal_formula, by = ps$by_vars, weights = eff_weights, nesting = NULL))
+      ee <- mask_empty_cell_marginal_slices(lmfit, ee, focal_vars = ps$focal_vars, by_vars = ps$by_vars, weights = eff_weights, label = vv, ignore_blocking_vars = blocking_vars)
       pp <- pairs(ee)
-      edata <- summary(pp)
+      edata <- suppressWarnings(summary(pp))
       econ <- pp@linfct
-      econ[abs(econ) < 1e-8] <- 0 # round tiny contrasts due to floating point
-      enames <- paste(vv, make.names(sub("\\s+-\\s+", "_M_", edata$contrast, perl = TRUE)), sep=".") # names of contrasts
+      econ[abs(econ) < 1e-8] <- 0
+      by_pref <- format_by_prefix(edata, ps$by_vars)
+      focal_label <- gsub("\\s+", "", ps$focal_raw)
+      enames <- paste0(by_pref, paste(focal_label, sanitize_contrast_diff_label(edata$contrast), sep = "."))
 
-      # if any emmeans are not estimable, then this is likely due to aliasing. For now, drop
-      which_na <- is.na(edata$estimate)
+      which_na <- is.na(edata$estimate) | apply(econ, 1, anyNA)
       if (any(which_na)) {
         econ <- econ[!which_na, , drop = FALSE]
         enames <- enames[!which_na]
       }
 
-      # add contrast names to matrix
-      rownames(econ) <- paste0(prefix, enames)
-
-      # add pairwise differences for this factor to the pairwise matrix
-      c_pairwise_diffs <- rbind(c_pairwise_diffs, econ)
+      if (nrow(econ) > 0L) {
+        rownames(econ) <- paste0(prefix, enames)
+        c_pairwise_diffs <- rbind(c_pairwise_diffs, econ)
+      }
     }
-    colnames(c_pairwise_diffs) <- c_colnames
+    if (!is.null(c_pairwise_diffs) && nrow(c_pairwise_diffs) > 0L) {
+      colnames(c_pairwise_diffs) <- c_colnames
+    }
+  }
+
+  ### add factorial interaction (difference-of-differences) contrasts, if requested
+  c_interaction_diffs <- contrast_list$interaction_diffs
+  if (length(spec$interaction_diffs) > 0L && is.null(c_interaction_diffs)) {
+    for (vv in spec$interaction_diffs) {
+      ps <- parse_emm_spec_string(vv)
+      if (length(ps$focal_vars) < 2L) {
+        warning(sprintf("interaction_diffs entry '%s' has fewer than 2 interacting factors; skipping.", vv), call. = FALSE)
+        next
+      }
+      ee <- quiet_emm(emmeans(lmfit, specs = ps$focal_formula, by = ps$by_vars, weights = eff_weights, nesting = NULL))
+      ee <- mask_empty_cell_marginal_slices(lmfit, ee, focal_vars = ps$focal_vars, by_vars = ps$by_vars, weights = eff_weights, label = vv, ignore_blocking_vars = blocking_vars)
+      ic <- emmeans::contrast(ee, interaction = "pairwise")
+      edata <- suppressWarnings(summary(ic))
+      econ <- ic@linfct
+      econ[abs(econ) < 1e-8] <- 0
+
+      pw_cols <- grep("_pairwise$", names(edata), value = TRUE)
+      if (length(pw_cols) == 0L) pw_cols <- intersect(names(edata), paste0(ps$focal_vars, "_pairwise"))
+      int_labels <- apply(edata[, pw_cols, drop = FALSE], 1, function(r) {
+        paste(sanitize_contrast_diff_label(r), collapse = "_x_")
+      })
+      by_pref <- format_by_prefix(edata, ps$by_vars)
+      focal_tag <- paste(ps$focal_vars, collapse = "_x_")
+      enames <- paste0(by_pref, focal_tag, ".", int_labels)
+
+      which_na <- is.na(edata$estimate) | apply(econ, 1, anyNA)
+      if (any(which_na)) {
+        econ <- econ[!which_na, , drop = FALSE]
+        enames <- enames[!which_na]
+      }
+
+      if (nrow(econ) > 0L) {
+        rownames(econ) <- paste0(prefix, enames)
+        c_interaction_diffs <- rbind(c_interaction_diffs, econ)
+      }
+    }
+    if (!is.null(c_interaction_diffs) && nrow(c_interaction_diffs) > 0L) {
+      colnames(c_interaction_diffs) <- c_colnames
+    }
   }
 
   ### add per-cell model-predicted simple slopes
@@ -1145,43 +1425,108 @@ get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
   if (length(spec$simple_slopes) > 0L && is.null(c_simple_slopes)) {
     for (vv in seq_along(spec$simple_slopes)) {
       trend_var <- names(spec$simple_slopes)[vv]
-      for (comb in spec$simple_slopes[[vv]]) {
-        ee <- emtrends(lmfit,
-          specs = as.formula(paste("~", paste(comb, collapse = "*"))),
-          var = trend_var, weights = spec$weights
-        )
-        edata <- summary(ee)
+      comb_list <- spec$simple_slopes[[vv]]
+      if (is.character(comb_list)) comb_list <- as.list(comb_list)
+      for (comb in comb_list) {
+        comb_vars <- trimws(unlist(strsplit(as.character(comb), "[:*+|]", perl = TRUE)))
+        comb_vars <- comb_vars[nzchar(comb_vars)]
+        ee <- quiet_emm(emtrends(
+          lmfit,
+          specs = as.formula(paste("~", paste(comb_vars, collapse = "*"))),
+          var = trend_var,
+          weights = eff_weights,
+          nesting = NULL
+        ))
+        ee <- mask_empty_cell_marginal_slices(lmfit, ee, focal_vars = comb_vars, by_vars = NULL, weights = eff_weights, label = paste0(trend_var, ":", paste(comb_vars, collapse = "*")), ignore_blocking_vars = blocking_vars)
+        edata <- suppressWarnings(summary(ee))
         econ <- ee@linfct
-        econ[abs(econ) < 1e-8] <- 0 # round tiny contrasts due to floating point
-        enames <- paste(trend_var, apply(edata[, comb, drop = FALSE], 1, paste, collapse = "."), sep = ".")
+        econ[abs(econ) < 1e-8] <- 0
+        enames <- paste(
+          trend_var,
+          apply(edata[, comb_vars, drop = FALSE], 1, function(r) paste(make.names(sanitize_contrast_token(r), unique = FALSE), collapse = ".")),
+          sep = "."
+        )
 
-        # if any emmeans are not estimable, then this is likely due to aliasing. For now, drop
-        which_na <- is.na(edata[[paste(trend_var, "trend", sep=".")]])
+        trend_col <- paste(trend_var, "trend", sep = ".")
+        which_na <- is.na(edata[[trend_col]]) | apply(econ, 1, anyNA)
         if (any(which_na)) {
           econ <- econ[!which_na, , drop = FALSE]
           enames <- enames[!which_na]
         }
 
-        rownames(econ) <- paste0(prefix, enames)
-        c_simple_slopes <- rbind(c_simple_slopes, econ)
+        if (nrow(econ) > 0L) {
+          rownames(econ) <- paste0(prefix, enames)
+          c_simple_slopes <- rbind(c_simple_slopes, econ)
+        }
       }
     }
-    colnames(c_simple_slopes) <- c_colnames
+    if (!is.null(c_simple_slopes) && nrow(c_simple_slopes) > 0L) {
+      colnames(c_simple_slopes) <- c_colnames
+    }
   }
 
-  c_custom <- contrast_list$custom
+  ### add pairwise / interaction differences in simple slopes
+  c_slope_diffs <- contrast_list$slope_diffs
+  if (length(spec$slope_diffs) > 0L && is.null(c_slope_diffs)) {
+    for (vv in seq_along(spec$slope_diffs)) {
+      trend_var <- names(spec$slope_diffs)[vv]
+      comb_list <- spec$slope_diffs[[vv]]
+      if (is.character(comb_list)) comb_list <- as.list(comb_list)
+      for (comb in comb_list) {
+        comb_str <- paste(as.character(comb), collapse = ":")
+        ps <- parse_emm_spec_string(comb_str)
+        ee <- quiet_emm(emtrends(
+          lmfit,
+          specs = ps$focal_formula,
+          by = ps$by_vars,
+          var = trend_var,
+          weights = eff_weights,
+          nesting = NULL
+        ))
+        ee <- mask_empty_cell_marginal_slices(lmfit, ee, focal_vars = ps$focal_vars, by_vars = ps$by_vars, weights = eff_weights, label = paste0(trend_var, ":", comb_str), ignore_blocking_vars = blocking_vars)
+        if (length(ps$focal_vars) >= 2L && is.null(ps$by_vars)) {
+          pp <- emmeans::contrast(ee, interaction = "pairwise")
+          edata <- suppressWarnings(summary(pp))
+          pw_cols <- grep("_pairwise$", names(edata), value = TRUE)
+          diff_lbl <- apply(edata[, pw_cols, drop = FALSE], 1, function(r) paste(sanitize_contrast_diff_label(r), collapse = "_x_"))
+          enames <- paste(trend_var, paste(ps$focal_vars, collapse = "_x_"), diff_lbl, sep = ".")
+        } else {
+          pp <- pairs(ee)
+          edata <- suppressWarnings(summary(pp))
+          by_pref <- format_by_prefix(edata, ps$by_vars)
+          enames <- paste0(by_pref, paste(trend_var, paste(ps$focal_vars, collapse = "_"), sanitize_contrast_diff_label(edata$contrast), sep = "."))
+        }
+        econ <- pp@linfct
+        econ[abs(econ) < 1e-8] <- 0
+        which_na <- is.na(edata$estimate) | apply(econ, 1, anyNA)
+        if (any(which_na)) {
+          econ <- econ[!which_na, , drop = FALSE]
+          enames <- enames[!which_na]
+        }
+        if (nrow(econ) > 0L) {
+          rownames(econ) <- paste0(prefix, enames)
+          c_slope_diffs <- rbind(c_slope_diffs, econ)
+        }
+      }
+    }
+    if (!is.null(c_slope_diffs) && nrow(c_slope_diffs) > 0L) {
+      colnames(c_slope_diffs) <- c_colnames
+    }
+  }
 
   # walk through all within-subject factor contrasts and return as a single matrix
   c_within <- get_wi_contrast_matrix(mobj, c_colnames)
 
-  #combine each element
+  # combine each element
   cmat_full <- rbind(
     c_diagonal,
     c_cond_means,
     c_cell_means,
     c_overall,
     c_pairwise_diffs,
+    c_interaction_diffs,
     c_simple_slopes,
+    c_slope_diffs,
     c_within,
     c_custom
   )
@@ -1189,6 +1534,8 @@ get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
   if (is.null(cmat_full)) {
     # no contrasts specified! Not good, but for now, just create an empty matrix and let upstream handle bothering the user
     cmat_full <- matrix(numeric(0), nrow=0, ncol=length(c_colnames), dimnames=list(NULL, c_colnames))
+  } else if (!is.null(rownames(cmat_full)) && anyDuplicated(rownames(cmat_full))) {
+    rownames(cmat_full) <- make.unique(rownames(cmat_full), sep = "_")
   }
 
   # handle contrasts from the full matrix that should be deleted
@@ -1208,7 +1555,9 @@ get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
     if (!any(is.na(which_del))) {
       cmat <- cmat_full[-1*which_del, , drop=FALSE]
     } else {
-      warning("Some contrasts to be dropped were not found in the matrix: ", paste(spec$delete[is.na(which_del)], collapse = ", "))
+      if (!isTRUE(is_refit)) {
+        warning("Some contrasts to be dropped were not found in the matrix: ", paste(spec$delete[is.na(which_del)], collapse = ", "))
+      }
       which_del <- na.omit(which_del)
       cmat <- if (length(which_del) > 0L) cmat_full[-1 * na.omit(which_del), , drop = FALSE] else cmat_full
     }
@@ -1217,19 +1566,19 @@ get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
   }
 
   # check for duplicated contrast rows and resolve naming collisions.
-  # In non-interactive contexts (e.g., scripts/tests), retain the first row
-  # deterministically and drop the rest.
+  # In non-interactive contexts (or automated per-subject/L3 refits), retain the first row
+  # deterministically and drop the rest without modifying global spec$delete on refits.
   dupe_list <- get_dupe_rows(cmat)
   drop_rows <- c()
   if (length(dupe_list) > 0L) {
-    is_interactive <- rlang::is_interactive()
+    is_interactive <- isTRUE(allow_interactive_dedupe) && rlang::is_interactive()
     if (is.null(rownames(cmat))) {
       rownames(cmat) <- paste0("contrast_", seq_len(nrow(cmat)))
     }
     if (isTRUE(is_interactive)) {
       message("Duplicate contrasts found in your matrix. This can occur for many benign reasons, but we need you to say what you want
       to call these contrasts in the output so that it is clear to you.\n")
-    } else {
+    } else if (!isTRUE(is_refit)) {
       warning(
         "Duplicate contrasts found in non-interactive mode; keeping the first name from each duplicate set.",
         call. = FALSE
@@ -1237,7 +1586,9 @@ get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
     }
     
     for (dd in dupe_list) {
-      message("These contrasts are the same: ", paste(rownames(cmat)[dd], collapse=", "))
+      if (!isTRUE(is_refit)) {
+        message("These contrasts are the same: ", paste(rownames(cmat)[dd], collapse=", "))
+      }
       if (isTRUE(is_interactive)) {
         whichkeep <- menu(rownames(cmat)[dd], title = "Which name should we use?")
         if (!is.numeric(whichkeep) || length(whichkeep) != 1L || is.na(whichkeep) ||
@@ -1251,30 +1602,36 @@ get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
         }
       } else {
         whichkeep <- 1L
-        message(
-          "Non-interactive session detected while resolving duplicate contrasts; keeping '",
-          rownames(cmat)[dd][whichkeep],
-          "' and dropping: ",
-          paste(rownames(cmat)[dd][-whichkeep], collapse = ", ")
-        )
+        if (!isTRUE(is_refit)) {
+          message(
+            "Non-interactive session detected while resolving duplicate contrasts; keeping '",
+            rownames(cmat)[dd][whichkeep],
+            "' and dropping: ",
+            paste(rownames(cmat)[dd][-whichkeep], collapse = ", ")
+          )
+        }
       }
       drop_rows <- c(drop_rows, dd[-whichkeep])
     }
 
-    # add these back into model specification so that the same decisions are made if the spec is used to repopulate a new matrix
-    mobj$contrast_spec$delete <- unique(c(mobj$contrast_spec$delete, rownames(cmat)[drop_rows]))
+    if (!isTRUE(is_refit)) {
+      # add these back into model specification so that the same decisions are made if the spec is used to repopulate a new matrix
+      mobj$contrast_spec$delete <- unique(c(mobj$contrast_spec$delete, rownames(cmat)[drop_rows]))
+    }
   } 
 
-  # duplicated does not give user any control over which one to retain (in terms of contrast name) -- now superseded by duplicate resolution above
-  # dupes <- duplicated(cmat, MARGIN = 1)
   dupes <- rep(FALSE, nrow(cmat))
   dupes[drop_rows] <- TRUE
   
   cmat <- cmat[!dupes, , drop=FALSE] # drop duplicated contrasts
 
   # parentheses in contrast names generate problems in running through FEAT (chokes on submission)
-  # so far, this comes up only with intercept terms -- may need to do a more general substitution later
-  if (!is.null(cmat)) { rownames(cmat) <- gsub("(Intercept)", "Intercept", rownames(cmat), fixed = T) }
+  if (!is.null(cmat) && !is.null(rownames(cmat))) {
+    rownames(cmat) <- gsub("(Intercept)", "Intercept", rownames(cmat), fixed = TRUE)
+    if (anyDuplicated(rownames(cmat))) {
+      rownames(cmat) <- make.unique(rownames(cmat), sep = "_")
+    }
+  }
 
   # populate any updates to the contrast_list object based on new calculations
   contrast_list$diagonal <- c_diagonal
@@ -1282,7 +1639,9 @@ get_contrasts_from_spec <- function(mobj, lmfit=NULL) {
   contrast_list$cell_means <- c_cell_means
   contrast_list$overall <- c_overall
   contrast_list$pairwise_diffs <- c_pairwise_diffs
+  contrast_list$interaction_diffs <- c_interaction_diffs
   contrast_list$simple_slopes <- c_simple_slopes
+  contrast_list$slope_diffs <- c_slope_diffs
   contrast_list$custom <- c_custom
 
   # populate contrasts back into model object (spec should not be updated)
@@ -1328,13 +1687,21 @@ get_wi_contrast_matrix <- function(mobj, c_colnames) {
 
   # get contrast matrix for each wi_model
   clist <- lapply(mobj$wi_models, "[[", "contrasts")
+  clist <- Filter(function(cc) is.matrix(cc) && nrow(cc) > 0L, clist)
+  if (length(clist) == 0L) return(NULL)
 
-  cnames <- do.call(c, lapply(clist, rownames))
+  cnames <- make.unique(do.call(c, lapply(clist, rownames)), sep = "_")
   cmat <- matrix(0, nrow = length(cnames), ncol = length(c_colnames), dimnames = list(cnames, c_colnames))
 
-  # fill in relevant rows and columns in combined matrix for each wi model contrast matrix
+  # fill by row position (not rowname) so duplicate raw labels can never overwrite or leave all-zero rows
+  row_offset <- 0L
   for (cc in clist) {
-    cmat[rownames(cc), colnames(cc)] <- cc
+    idx <- row_offset + seq_len(nrow(cc))
+    shared_cols <- intersect(colnames(cc), c_colnames)
+    if (length(shared_cols) > 0L) {
+      cmat[idx, shared_cols] <- cc[, shared_cols, drop = FALSE]
+    }
+    row_offset <- row_offset + nrow(cc)
   }
 
   return(cmat)
@@ -1467,6 +1834,154 @@ compose_l2_model_data <- function(gpa, lg = NULL) {
   l2_data
 }
 
+deparse_formula_str <- function(f) {
+  form <- paste(deparse(f, width.cutoff = 500L), collapse = " ")
+  gsub("\\s+", " ", form, perl = FALSE)
+}
+
+apply_factor_coding_to_col <- function(fac, coding) {
+  if (!is.factor(fac) || nlevels(fac) < 2L || is.null(coding) || !nzchar(coding)) {
+    return(fac)
+  }
+  coding <- tolower(trimws(as.character(coding)[1L]))
+  cfun <- switch(coding,
+    treatment = stats::contr.treatment,
+    contr.treatment = stats::contr.treatment,
+    sum = stats::contr.sum,
+    contr.sum = stats::contr.sum,
+    helmert = stats::contr.helmert,
+    contr.helmert = stats::contr.helmert,
+    poly = stats::contr.poly,
+    contr.poly = stats::contr.poly,
+    stop("Unsupported factor_coding '", coding, "'. Allowed: treatment, sum, helmert, poly.", call. = FALSE)
+  )
+  stats::contrasts(fac) <- cfun(levels(fac))
+  fac
+}
+
+fit_lm_with_canonical_levels <- function(model_formula, model_data, canonical_levels = NULL, factor_coding = NULL) {
+  rhs_vars <- setdiff(all.vars(stats::delete.response(stats::terms(model_formula))), "dummy")
+  fac_vars <- rhs_vars[vapply(rhs_vars, function(v) v %in% names(model_data) && is.factor(model_data[[v]]), logical(1))]
+
+  needs_zero_weight_pad <- FALSE
+  if (length(fac_vars) > 0L) {
+    for (fv in fac_vars) {
+      obs_levs <- unique(as.character(stats::na.omit(model_data[[fv]])))
+      all_levs <- canonical_levels[[fv]] %||% levels(model_data[[fv]])
+      if (length(obs_levs) < 2L || !all(all_levs %in% obs_levs)) {
+        needs_zero_weight_pad <- TRUE
+        break
+      }
+    }
+  }
+
+  f_clean <- stats::as.formula(deparse_formula_str(model_formula), env = environment())
+  if (!isTRUE(needs_zero_weight_pad)) {
+    lmfit <- stats::lm(f_clean, data = model_data)
+    return(list(lmfit = lmfit, obs_idx = seq_len(nrow(model_data)), padded = FALSE))
+  }
+
+  # Build zero-weight grid over canonical factor levels so stats::model.matrix never drops
+  # unused levels or errors on 1-level factors, while keeping exact OLS estimates on observed rows.
+  lev_list <- stats::setNames(lapply(fac_vars, function(fv) {
+    canonical_levels[[fv]] %||% levels(model_data[[fv]])
+  }), fac_vars)
+  pad_grid <- expand.grid(lev_list, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+  obs_n <- nrow(model_data)
+  if (obs_n == 0L) {
+    stop("model_data must contain at least one observation.", call. = FALSE)
+  }
+  # emmeans needs rows representing every factor level, even when their weights
+  # are zero. Its continuous-covariate reductions are unweighted, so copy each
+  # observed covariate row equally often rather than inventing zeros or means.
+  # This preserves both the empirical distribution and discrete covariate values.
+  pad_n <- obs_n * ceiling(nrow(pad_grid) / obs_n)
+  pad_df <- model_data[rep(seq_len(obs_n), length.out = pad_n), , drop = FALSE]
+  grid_idx <- rep(seq_len(nrow(pad_grid)), length.out = pad_n)
+  for (fv in fac_vars) {
+    pad_df[[fv]] <- factor(pad_grid[[fv]][grid_idx], levels = lev_list[[fv]])
+  }
+  if ("dummy" %in% names(pad_df)) pad_df$dummy <- 0
+
+  df_aug <- rbind(model_data, pad_df)
+  for (fv in fac_vars) {
+    df_aug[[fv]] <- factor(as.character(df_aug[[fv]]), levels = lev_list[[fv]])
+    if (!is.null(factor_coding) && length(factor_coding) > 0L) {
+      code_this <- if (!is.null(names(factor_coding)) && fv %in% names(factor_coding)) {
+        factor_coding[[fv]]
+      } else if (is.null(names(factor_coding)) && length(factor_coding) == 1L) {
+        factor_coding[[1L]]
+      } else {
+        NULL
+      }
+      df_aug[[fv]] <- apply_factor_coding_to_col(df_aug[[fv]], code_this)
+    }
+  }
+  w_vec <- c(rep(1, obs_n), rep(0, nrow(pad_df)))
+
+  lmfit <- suppressWarnings(stats::lm(f_clean, data = df_aug, weights = w_vec))
+  list(lmfit = lmfit, obs_idx = seq_len(obs_n), padded = TRUE)
+}
+
+prune_rank_deficient_design_and_contrasts <- function(X_obs_full, coef_vec, cmat, lg = NULL, context = NULL) {
+  if (nrow(X_obs_full) == 0L) {
+    empty_dmat <- matrix(numeric(0), nrow = 0L, ncol = 0L)
+    empty_cmat <- matrix(numeric(0), nrow = 0L, ncol = 0L)
+    return(list(dmat = empty_dmat, cmat = empty_cmat, dropped_contrasts = rownames(cmat) %||% character(0)))
+  }
+
+  keep_cols <- !is.na(coef_vec)
+  if (any(keep_cols)) {
+    X_sub <- X_obs_full[, keep_cols, drop = FALSE]
+    qr_sub <- qr(X_sub)
+    if (qr_sub$rank < ncol(X_sub)) {
+      piv_keep <- qr_sub$pivot[seq_len(qr_sub$rank)]
+      sub_names <- colnames(X_sub)[sort(piv_keep)]
+      keep_cols <- colnames(X_obs_full) %in% sub_names
+    }
+  }
+
+  if (all(keep_cols) && qr(X_obs_full)$rank == ncol(X_obs_full)) {
+    return(list(dmat = X_obs_full, cmat = cmat, dropped_contrasts = character(0)))
+  }
+
+  X_reduced <- X_obs_full[, keep_cols, drop = FALSE]
+  attr(X_reduced, "model_runs") <- attr(X_obs_full, "model_runs")
+
+  if (is.null(cmat) || nrow(cmat) == 0L) {
+    empty_c <- matrix(numeric(0), nrow = 0L, ncol = ncol(X_reduced), dimnames = list(NULL, colnames(X_reduced)))
+    return(list(dmat = X_reduced, cmat = empty_c, dropped_contrasts = character(0)))
+  }
+
+  # Align contrast columns to X_obs_full if needed
+  if (!identical(colnames(cmat), colnames(X_obs_full))) {
+    cmat_aligned <- matrix(0, nrow = nrow(cmat), ncol = ncol(X_obs_full), dimnames = list(rownames(cmat), colnames(X_obs_full)))
+    shared <- intersect(colnames(cmat), colnames(X_obs_full))
+    if (length(shared) > 0L) cmat_aligned[, shared] <- cmat[, shared, drop = FALSE]
+    cmat <- cmat_aligned
+  }
+
+  nb <- estimability::nonest.basis(X_obs_full)
+  estble <- vapply(seq_len(nrow(cmat)), function(rr) {
+    row_vec <- as.numeric(cmat[rr, ])
+    if (anyNA(row_vec) || all(abs(row_vec) <= 1e-12)) return(FALSE)
+    isTRUE(estimability::is.estble(row_vec, nb, tol = 1e-5))
+  }, logical(1))
+
+  dropped <- if (!is.null(rownames(cmat))) rownames(cmat)[!estble] else paste0("contrast_", which(!estble))
+  if (length(dropped) > 0L && !is.null(lg)) {
+    lg$warn(
+      "Pruning %d non-estimable contrast(s)%s due to missing/aliased design columns: %s",
+      length(dropped),
+      if (!is.null(context) && nzchar(context)) paste0(" in ", context) else "",
+      paste(dropped, collapse = ", ")
+    )
+  }
+
+  cmat_reduced <- cmat[estble, keep_cols, drop = FALSE]
+  list(dmat = X_reduced, cmat = cmat_reduced, dropped_contrasts = dropped)
+}
+
 #' Recalculate an L2 model by grouping units derived from available run data
 #'
 #' @param mobj an \code{l1_model_spec} or \code{hi_model_spec} object containing the GLM model to run
@@ -1501,6 +2016,7 @@ respecify_l2_models_by_subject <- function(mobj, data, split_on = c("id", "sessi
   }
   checkmate::assert_integerish(aggregated_session, len = 1L)
   split_on <- unique(split_on)
+  lg <- lgr::get_logger("glm_pipeline/l2_setup")
 
   # create a nested data.table object for fitting each grouping unit
   data <- data.table(data, key = split_on)
@@ -1513,6 +2029,13 @@ respecify_l2_models_by_subject <- function(mobj, data, split_on = c("id", "sessi
 
   # use model formula from parent object
   model_formula <- terms(mobj$lmfit)
+  canonical_levels <- mobj$factor_levels
+  if (is.null(canonical_levels) && !is.null(mobj$model_data)) {
+    fac_cols <- names(mobj$model_data)[vapply(mobj$model_data, is.factor, logical(1))]
+    if (length(fac_cols) > 0L) {
+      canonical_levels <- stats::setNames(lapply(fac_cols, function(fc) levels(mobj$model_data[[fc]])), fac_cols)
+    }
+  }
 
   cope_list <- list()
   contrast_list <- list()
@@ -1520,16 +2043,54 @@ respecify_l2_models_by_subject <- function(mobj, data, split_on = c("id", "sessi
   n_l2_copes <- rep(NA_integer_, nrow(dsplit))
   for (vv in seq_len(nrow(dsplit))) {
     model_data <- as.data.frame(dsplit[[vv, "dt"]])
+    # Restore grouping columns removed from .SD by data.table `by = split_on`
+    for (sc in split_on) {
+      if (!sc %in% names(model_data)) model_data[[sc]] <- dsplit[[sc]][vv]
+    }
     # Match initial specification: remove incomplete observations before computing
     # transformations, then apply settings within the retained subject/session.
     complete <- stats::complete.cases(model_data[, all.vars(model_formula), drop = FALSE])
     model_data <- model_data[complete, , drop = FALSE]
-    model_data <- apply_model_covariate_settings(model_data, mobj, lgr::get_logger())
-    lmfit <- lm(model_formula, data = model_data)
 
-    mm <- get_contrasts_from_spec(mobj, lmfit)
-    n_contrasts <- if (is.null(mm$contrasts)) 0L else nrow(mm$contrasts)
-    contrast_names <- if (n_contrasts > 0L) rownames(mm$contrasts) else character(0)
+    if (nrow(model_data) == 0L) {
+      cope_list[[vv]] <- data.frame(
+        id = character(0), session = integer(0),
+        l2_cope_number = integer(0), l2_cope_name = character(0)
+      )
+      contrast_list[[vv]] <- matrix(numeric(0), nrow = 0L, ncol = 0L)
+      model_matrix_list[[vv]] <- matrix(numeric(0), nrow = 0L, ncol = 0L)
+      n_l2_copes[vv] <- 0L
+      next
+    }
+
+    run_meta_cols <- intersect(c("id", "session", "run_number"), names(model_data))
+    kept_run_meta <- if (length(run_meta_cols) > 0L) model_data[, run_meta_cols, drop = FALSE] else NULL
+
+    model_data <- apply_model_covariate_settings(model_data, mobj, lg)
+    fit_res <- fit_lm_with_canonical_levels(
+      model_formula = model_formula,
+      model_data = model_data,
+      canonical_levels = canonical_levels,
+      factor_coding = mobj$factor_coding %||% mobj$contrast_spec$factor_coding
+    )
+    lmfit <- fit_res$lmfit
+
+    mm <- get_contrasts_from_spec(mobj, lmfit, allow_interactive_dedupe = FALSE)
+    X_full <- model.matrix(lmfit)[fit_res$obs_idx, , drop = FALSE]
+    attr(X_full, "model_runs") <- kept_run_meta
+
+    pruned <- prune_rank_deficient_design_and_contrasts(
+      X_obs_full = X_full,
+      coef_vec = stats::coef(lmfit),
+      cmat = mm$contrasts,
+      lg = lg,
+      context = sprintf("L2 subject %s session %s", dsplit$id[vv], dsplit$session[vv])
+    )
+    dmat_unit <- pruned$dmat
+    cmat_unit <- pruned$cmat
+
+    n_contrasts <- if (is.null(cmat_unit)) 0L else nrow(cmat_unit)
+    contrast_names <- if (n_contrasts > 0L) rownames(cmat_unit) else character(0)
     if (is.null(contrast_names)) {
       contrast_names <- if (n_contrasts > 0L) paste0("contrast_", seq_len(n_contrasts)) else character(0)
     }
@@ -1541,14 +2102,14 @@ respecify_l2_models_by_subject <- function(mobj, data, split_on = c("id", "sessi
     )
 
     cope_list[[vv]] <- cope_df
-    contrast_list[[vv]] <- mm$contrasts
-    model_matrix_list[[vv]] <- model.matrix(lmfit)
-    n_l2_copes[vv] <- if (is.null(mm$contrasts)) 0L else nrow(mm$contrasts)
+    contrast_list[[vv]] <- cmat_unit
+    model_matrix_list[[vv]] <- dmat_unit
+    n_l2_copes[vv] <- n_contrasts
   }
 
-  dsplit[, cope_list := cope_list]
-  dsplit[, contrasts := contrast_list]
-  dsplit[, model_matrix := model_matrix_list]
+  dsplit[, cope_list := list(cope_list)]
+  dsplit[, contrasts := list(contrast_list)]
+  dsplit[, model_matrix := list(model_matrix_list)]
   dsplit[, n_l2_copes := n_l2_copes]
   dsplit[, grouping_scope := ifelse("session" %in% split_on, "id_session", "id")]
   dsplit[, dt := NULL] # no longer need original split data
@@ -1684,38 +2245,102 @@ format_hi_model_alias_message <- function(mobj, model_formula = NULL) {
   ), collapse = "\n")
 }
 
-# Apply the same predictor settings during initial specification and L2 refits.
+# Apply the same predictor settings during initial specification and L2/L3 refits.
 # Callers remove incomplete model rows before computing transformation parameters.
 apply_model_covariate_settings <- function(data, mobj, lg) {
-  if (!is.null(mobj$covariate_transform)) {
-    for (cc in seq_along(mobj$covariate_transform)) {
-      cname <- names(mobj$covariate_transform)[cc]
-      ctype <- mobj$covariate_transform[cc]
-      if (ctype == "mean") {
-        data[[cname]] <- data[[cname]] - mean(data[[cname]], na.rm = TRUE)
-      } else if (ctype == "zscore") {
-        data[[cname]] <- as.vector(scale(data[[cname]]))
-      } else if (ctype == "min") {
-        data[[cname]] <- data[[cname]] - min(data[[cname]], na.rm = TRUE)
-      } else if (ctype == "max") {
-        data[[cname]] <- data[[cname]] - max(data[[cname]], na.rm = TRUE)
+  if (is.null(lg)) lg <- lgr::get_logger()
+
+  # 1. Re-apply num2fac conversions first so numeric/integer columns flagged as factors stay categorical on refits
+  if (!is.null(mobj$num2fac) && length(mobj$num2fac) > 0L) {
+    for (vv in intersect(mobj$num2fac, names(data))) {
+      levs <- mobj$factor_levels[[vv]]
+      if (!is.null(levs) && length(levs) > 0L) {
+        data[[vv]] <- factor(as.character(data[[vv]]), levels = as.character(levs))
+      } else {
+        data[[vv]] <- factor(data[[vv]])
       }
     }
   }
 
+  # 2. Enforce canonical factor levels where recorded on mobj
+  if (!is.null(mobj$factor_levels) && length(mobj$factor_levels) > 0L) {
+    for (vv in intersect(names(mobj$factor_levels), names(data))) {
+      if (is.factor(data[[vv]]) || is.character(data[[vv]]) || vv %in% mobj$num2fac) {
+        levs <- as.character(mobj$factor_levels[[vv]])
+        obs_vals <- unique(as.character(stats::na.omit(data[[vv]])))
+        all_levs <- unique(c(levs, obs_vals))
+        data[[vv]] <- factor(as.character(data[[vv]]), levels = all_levs)
+      }
+    }
+  }
+
+  # 3. Continuous covariate transformations (guarding zero-SD / 1-row zscore against NaN)
+  if (!is.null(mobj$covariate_transform)) {
+    for (cc in seq_along(mobj$covariate_transform)) {
+      cname <- names(mobj$covariate_transform)[cc]
+      if (!cname %in% names(data) || is.factor(data[[cname]])) next
+      ctype <- mobj$covariate_transform[cc]
+      x <- as.numeric(data[[cname]])
+      if (all(is.na(x))) next
+      if (ctype == "mean") {
+        data[[cname]] <- x - mean(x, na.rm = TRUE)
+      } else if (ctype == "zscore") {
+        s <- stats::sd(x, na.rm = TRUE)
+        if (is.na(s) || s <= 1e-12) {
+          lg$warn("Covariate '%s' has zero or undefined SD during zscore transform; setting centered values to 0.", cname)
+          data[[cname]] <- rep(0, length(x))
+        } else {
+          data[[cname]] <- as.vector((x - mean(x, na.rm = TRUE)) / s)
+        }
+      } else if (ctype == "min") {
+        data[[cname]] <- x - min(x, na.rm = TRUE)
+      } else if (ctype == "max") {
+        data[[cname]] <- x - max(x, na.rm = TRUE)
+      }
+    }
+  }
+
+  # 4. Reference levels (applied before factor_coding so relevel() does not wipe custom contrasts())
   if (!is.null(mobj$reference_level)) {
     for (cc in seq_along(mobj$reference_level)) {
       cname <- names(mobj$reference_level)[cc]
-      if (!is.factor(data[[cname]])) data[[cname]] <- factor(data[[cname]])
+      if (!cname %in% names(data)) next
+      if (!is.factor(data[[cname]])) {
+        levs <- mobj$factor_levels[[cname]]
+        data[[cname]] <- if (!is.null(levs)) factor(as.character(data[[cname]]), levels = as.character(levs)) else factor(data[[cname]])
+      }
       ref <- mobj$reference_level[cc]
       if (!ref %in% levels(data[[cname]])) {
-        default_lev <- names(which.max(table(data[[cname]])))
+        tab <- table(data[[cname]])
+        default_lev <- if (length(tab) > 0L && any(tab > 0L)) names(which.max(tab)) else levels(data[[cname]])[1L]
         lg$warn("The requested reference level: %s is not available. Defaulting to %s", ref, default_lev)
         ref <- default_lev
       }
-      data[[cname]] <- relevel(data[[cname]], ref = ref)
+      if (!is.na(ref) && nzchar(ref) && ref %in% levels(data[[cname]])) {
+        data[[cname]] <- relevel(data[[cname]], ref = ref)
+      }
     }
   }
+
+  # 5. Optional factor contrast coding (treatment, sum, helmert, poly)
+  fcoding <- mobj$factor_coding %||% mobj$contrast_spec$factor_coding
+  if (!is.null(fcoding) && length(fcoding) > 0L) {
+    fac_cols <- names(data)[vapply(data, is.factor, logical(1))]
+    for (fc in fac_cols) {
+      if (identical(fc, "id")) next
+      code_this <- if (!is.null(names(fcoding)) && fc %in% names(fcoding)) {
+        fcoding[[fc]]
+      } else if (is.null(names(fcoding)) && length(fcoding) == 1L) {
+        fcoding[[1L]]
+      } else {
+        NULL
+      }
+      if (!is.null(code_this)) {
+        data[[fc]] <- apply_factor_coding_to_col(data[[fc]], code_this)
+      }
+    }
+  }
+
   data
 }
 
@@ -1761,18 +2386,16 @@ mobj_fit_lm <- function(mobj=NULL, model_formula=NULL, data, id_cols=NULL, lg=NU
 
   model_formula <- update.formula(as.formula(model_formula), "dummy ~ .") # add LHS
 
-  # use model formula from parent object
-  # model_formula <- terms(mobj$lmfit)
   model_vars <- all.vars(model_formula)
+  extra_vars <- intersect(mobj$random_effects_vars %||% character(0), names(data))
+  keep_vars <- unique(c(model_vars, extra_vars))
 
   checkmate::assert_subset(model_vars, names(data)) # verify that all predictors are present
 
-  # look for missingness on any predictor variable
-  # https://stackoverflow.com/questions/64287986/create-variable-that-captures-if-there-are-missing-fields-in-4-string-variables
+  # look for missingness on any predictor variable (including random-effects grouping vars)
   data <- data %>%
-    dplyr::select(dplyr::all_of(model_vars), dplyr::all_of(id_cols)) %>% # just keep model-relevant variables
-    dplyr::mutate(any_miss = rowSums(is.na(dplyr::pick(dplyr::any_of(model_vars)))) > 0)
-    #dplyr::mutate(across(all_of(model_vars), ~ +(is.na(.))))
+    dplyr::select(dplyr::all_of(keep_vars), dplyr::all_of(id_cols)) %>%
+    dplyr::mutate(any_miss = rowSums(is.na(dplyr::pick(dplyr::any_of(keep_vars)))) > 0)
 
   miss_data <- data %>%
     dplyr::filter(.data$any_miss == TRUE) %>%
@@ -1789,111 +2412,157 @@ mobj_fit_lm <- function(mobj=NULL, model_formula=NULL, data, id_cols=NULL, lg=NU
     lg$warn("%s", capture.output(print(miss_data %>% dplyr::select(-"dummy"))))
   }
 
-  # Add metadata, for merging model matrix against identifying columns
-  # This occurs before mean centering in case one of the id_cols is also in the model (e.g., run_number)
-  mobj$metadata <- data %>% dplyr::select(dplyr::all_of(id_cols))
+  # Add metadata for merging model matrix against identifying columns.
+  # Keep `id` as character (unless factor id was explicitly passed without session coercion issues)
+  # and keep integer-valued `session` as integer in metadata so downstream joins against
+  # integer session columns never fail when `num2fac` converts `session` to a factor in model_data.
+  meta_df <- data %>% dplyr::select(dplyr::all_of(id_cols))
+  if ("id" %in% names(meta_df) && is.factor(meta_df$id)) {
+    meta_df$id <- as.character(meta_df$id)
+  }
+  if ("session" %in% names(meta_df) && is.factor(meta_df$session)) {
+    sess_chr <- as.character(meta_df$session)
+    sess_int <- suppressWarnings(as.integer(sess_chr))
+    if (!anyNA(sess_int) && all(as.character(sess_int) == sess_chr)) {
+      meta_df$session <- sess_int
+    } else {
+      meta_df$session <- sess_chr
+    }
+  }
+  mobj$metadata <- meta_df
+
+  # Convert character predictors (excluding id unless id is in formula) to factor
+  for (vv in setdiff(keep_vars, "dummy")) {
+    if (is.character(data[[vv]])) {
+      data[[vv]] <- factor(data[[vv]])
+    }
+  }
 
   data <- apply_model_covariate_settings(data, mobj, lg)
 
+  # Record canonical factor levels on initial fit so refits preserve factor schema
+  if (is.null(mobj$factor_levels)) {
+    fac_preds <- setdiff(keep_vars, c("dummy", "id"))
+    fac_preds <- fac_preds[vapply(fac_preds, function(v) is.factor(data[[v]]), logical(1))]
+    if (length(fac_preds) > 0L) {
+      mobj$factor_levels <- stats::setNames(lapply(fac_preds, function(v) levels(data[[v]])), fac_preds)
+    }
+  } else {
+    # Ensure canonical levels reflect post-relevel ordering
+    for (vv in intersect(names(mobj$factor_levels), names(data))) {
+      if (is.factor(data[[vv]])) {
+        mobj$factor_levels[[vv]] <- levels(data[[vv]])
+      }
+    }
+  }
+
   # keep track of data used for fitting model for refitting in case of missing data
-  mobj$model_data <- data %>% dplyr::select(dplyr::all_of(model_vars))
+  mobj$model_data <- data %>% dplyr::select(dplyr::all_of(keep_vars))
 
   # fit model and populate model information
-  mobj$lmfit <- lm(model_formula, data)
-  mobj$model_formula <- as.character(update.formula(as.formula(model_formula), "NULL ~ .")) # remove LHS and convert to string
-  mobj$model_matrix <- model.matrix(mobj$lmfit)
+  fit_res <- fit_lm_with_canonical_levels(
+    model_formula = model_formula,
+    model_data = data,
+    canonical_levels = mobj$factor_levels,
+    factor_coding = mobj$factor_coding %||% mobj$contrast_spec$factor_coding
+  )
+  mobj$lmfit <- fit_res$lmfit
+  mobj$model_formula <- deparse_formula_str(update.formula(as.formula(model_formula), "NULL ~ ."))
+  mm_full <- model.matrix(mobj$lmfit)
+  if (isTRUE(fit_res$padded)) {
+    mm_sub <- mm_full[fit_res$obs_idx, , drop = FALSE]
+    attr(mm_sub, "assign") <- attr(mm_full, "assign")
+    attr(mm_sub, "contrasts") <- attr(mm_full, "contrasts")
+    mobj$model_matrix <- mm_sub
+  } else {
+    mobj$model_matrix <- mm_full
+  }
   mobj$regressors <- colnames(mobj$model_matrix) # actual regressors after expanding categorical variables
 
   # handle coefficient aliasing
-  al <- alias(mobj$lmfit)
-  if (!is.null(al$Complete)) {
-    bad_terms <- rownames(al$Complete)
+  al <- tryCatch(alias(mobj$lmfit), error = function(e) list(Complete = NULL))
+  coef_na <- names(stats::coef(mobj$lmfit))[is.na(stats::coef(mobj$lmfit))]
+  bad_terms <- unique(c(if (!is.null(al$Complete)) rownames(al$Complete) else character(0), coef_na))
+  if (length(bad_terms) > 0L) {
     if (isTRUE(report_alias)) {
       cat("Problems with aliased (redundant) terms in model.\n\n")
       cat(paste(bad_terms, collapse = ", "), "\n\n")
     }
     mobj$alias_complete <- al$Complete
 
-    # find unaliased (good) terms in the model
-    good_terms <- colnames(mobj$model_matrix)[!(colnames(mobj$model_matrix) %in% bad_terms)]
-    good_terms <- good_terms[!good_terms == "(Intercept)"]
-
-    if (length(good_terms) == 0L) {
+    # Retain ALL unaliased columns in model_matrix_noalias (including non-aliased interaction columns like A:B)
+    keep_col_names <- setdiff(colnames(mobj$model_matrix), bad_terms)
+    if (length(keep_col_names) == 0L) {
       warning(
         "No unaliased (good) terms in this model, suggesting that all covariates are constant or dependent. ",
         "Reverting to intercept-only model."
       )
-      good_terms <- "1"
+      mobj$model_matrix_noalias <- matrix(1, nrow = nrow(data), ncol = 1L, dimnames = list(rownames(mobj$model_matrix), "(Intercept)"))
+      modeldf <- data.frame(dummy = data$dummy)
+      mobj$lmfit_noalias <- stats::lm(dummy ~ 1, data = modeldf)
+    } else {
+      mobj$model_matrix_noalias <- mobj$model_matrix[, keep_col_names, drop = FALSE]
+      modeldf <- as.data.frame(mobj$model_matrix_noalias, check.names = FALSE)
+      modeldf$dummy <- data$dummy
+      quoted_cols <- paste0("`", gsub("`", "", keep_col_names, fixed = TRUE), "`")
+      newf <- stats::as.formula(paste("dummy ~ 0 +", paste(quoted_cols, collapse = " + ")))
+      mobj$lmfit_noalias <- stats::lm(newf, data = modeldf)
     }
-
-    # build new model formula with only good terms
-    newf <- as.formula(paste("dummy ~", paste(good_terms, collapse = " + ")))
-
-    # also generate a model data.frame that expands dummy codes for terms, retaining only good variables
-    mobj$model_matrix_noalias <- mobj$model_matrix[, grep(":", good_terms, fixed = TRUE, value = TRUE, invert = TRUE)]
-    modeldf <- as.data.frame(mobj$model_matrix_noalias)
-    modeldf$dummy <- data$dummy # copy across dummy DV for fitting
-    mobj$lmfit_noalias <- lm(newf, modeldf)
     mobj$aliased_terms <- bad_terms
-
-    # N.B. emmeans needs to calculate contrasts on the original design to see the factor structure
-    # So, we also need to drop out columns from the emmeans linfct
   } else {
     mobj$aliased_terms <- NULL
     mobj$alias_complete <- NULL
+    mobj$model_matrix_noalias <- NULL
+    mobj$lmfit_noalias <- NULL
   }
 
   return(mobj)
 
 }
 
-
-#OLD version
-# respecify_l3_model <- function(mobj, data) {
-#   checkmate::assert_multi_class(mobj, c("l1_model_spec", "hi_model_spec")) # verify that we have an object of known structure
-#   checkmate::assert_data_frame(data)
-#   checkmate::assert_subset(c("id", "session"), names(data))
-
-#   # use model formula from parent object
-#   model_formula <- terms(mobj$lmfit)
-
-#   mobj$lmfit <- lm(model_formula, data = data)
-#   mobj$regressors <- colnames(mobj$model_matrix)
-#   mobj$model_matrix <- model.matrix(mobj$lmfit)
-#   mobj$metadata <- data %>% dplyr::select("id", "session")
-#   mobj$model_data <- data
-
-#   mobj <- get_contrasts_from_spec(mobj, mobj$lmfit)
-
-#   return(mobj)
-# }
-
-
-# new version, but depends on mobj being specified under new approach
 respecify_l3_model <- function(mobj, new_data) {
   checkmate::assert_class(mobj, "hi_model_spec") # verify that we have an object of known structure
   checkmate::assert_data_frame(new_data)
   checkmate::assert_subset(c("id", "session"), names(new_data))
 
-  # use id and session in new_data to subset the full data from initial model specification
-  # ensure we combine metadata and model data without creating duplicate columns (e.g., session might be in both)
+  # Combine metadata and model_data without duplicate columns; coerce join keys cleanly
+  meta_join <- mobj$metadata
+  if ("id" %in% names(meta_join)) meta_join$id <- as.character(meta_join$id)
+  if ("session" %in% names(meta_join) && is.factor(meta_join$session)) {
+    meta_join$session <- as.character(meta_join$session)
+  }
+
   model_data_subset <- mobj$model_data
-  overlap_cols <- intersect(names(mobj$metadata), names(model_data_subset))
+  overlap_cols <- intersect(names(meta_join), names(model_data_subset))
   if (length(overlap_cols) > 0L) {
     model_data_subset <- model_data_subset %>% dplyr::select(-dplyr::all_of(overlap_cols))
   }
-  full_data <- cbind(mobj$metadata, model_data_subset)
+  full_data <- cbind(meta_join, model_data_subset)
 
-  new_data <- new_data %>% dplyr::select("id", "session") #just metadata of interest
-  new_data <- new_data %>%
-    dplyr::left_join(full_data, by=c("id", "session"))
+  new_keys <- new_data %>% dplyr::select("id", "session")
+  new_keys$id <- as.character(new_keys$id)
+  if (!identical(class(new_keys$session), class(full_data$session))) {
+    if (is.integer(new_keys$session) || is.numeric(new_keys$session)) {
+      sess_int <- suppressWarnings(as.integer(as.character(full_data$session)))
+      if (!anyNA(sess_int)) {
+        full_data$session <- sess_int
+        new_keys$session <- as.integer(new_keys$session)
+      } else {
+        full_data$session <- as.character(full_data$session)
+        new_keys$session <- as.character(new_keys$session)
+      }
+    } else {
+      full_data$session <- as.character(full_data$session)
+      new_keys$session <- as.character(new_keys$session)
+    }
+  }
+
+  joined_data <- new_keys %>%
+    dplyr::left_join(full_data, by = c("id", "session"))
 
   # Auto-inject per-subject indicator EVs for pooled_sessions_subject_ev mode.
-  # FSL's repeated-measures approach requires one EV per subject to model out
-  # the subject-specific intercept (mean). If the user's L3 formula does not
-  # include 'id', we automatically add it as a factor to ensure correct
-  # repeated-measures modeling.
   l3_input_mode <- mobj$l3_input_mode
+  auto_injected_id <- FALSE
   if (identical(l3_input_mode, "pooled_sessions_subject_ev")) {
     model_vars <- mobj$model_variables
     formula_str <- mobj$model_formula
@@ -1901,19 +2570,16 @@ respecify_l3_model <- function(mobj, new_data) {
       (!is.null(formula_str) && grepl("\\bid\\b", formula_str, perl = TRUE))
 
     if (!isTRUE(id_in_formula)) {
+      auto_injected_id <- TRUE
       lgr::get_logger("glm_pipeline/l3_setup")$info(
         "l3_input_mode='pooled_sessions_subject_ev': auto-injecting 'id' as a factor EV for subject-mean modeling."
       )
 
-      # ensure id is a factor in the data
-      new_data$id <- as.factor(new_data$id)
+      joined_data$id <- as.factor(joined_data$id)
 
-      # prepend id to the existing model formula
       if (!is.null(formula_str) && nzchar(formula_str)) {
-        # strip any leading "~ " or "~" prefix, then rebuild
         rhs <- sub("^~\\s*", "", formula_str)
         if (rhs == "1" || rhs == "") {
-          # intercept-only model: replace with id (id already provides intercept per subject)
           augmented_formula <- "~ 0 + id"
         } else {
           augmented_formula <- paste("~ 0 + id +", rhs)
@@ -1926,12 +2592,56 @@ respecify_l3_model <- function(mobj, new_data) {
       lg_l3$info("Augmented L3 formula: %s", augmented_formula)
       mobj$model_formula <- augmented_formula
       mobj$model_variables <- unique(c("id", model_vars))
+      mobj$suppress_subject_ev_diagonals <- TRUE
     }
   }
 
-  mobj <- mobj_fit_lm(mobj=mobj, data=new_data)
+  lg_l3 <- lgr::get_logger("glm_pipeline/l3_setup")
+  mobj <- mobj_fit_lm(mobj = mobj, data = joined_data, lg = lg_l3, report_alias = !isTRUE(auto_injected_id))
 
-  mobj <- get_contrasts_from_spec(mobj, mobj$lmfit)
+  mobj <- get_contrasts_from_spec(mobj, mobj$lmfit, allow_interactive_dedupe = FALSE)
+
+  # When subject indicator EVs alias pure between-subject main effects (or dropped subjects alias L3 columns),
+  # prune non-estimable contrasts and align the contrast matrix onto the full-rank non-aliased design matrix.
+  if (!is.null(mobj$aliased_terms) && length(mobj$aliased_terms) > 0L) {
+    pruned <- prune_rank_deficient_design_and_contrasts(
+      X_obs_full = mobj$model_matrix,
+      coef_vec = stats::coef(mobj$lmfit),
+      cmat = mobj$contrasts,
+      lg = lg_l3,
+      context = sprintf("L3 model '%s'", mobj$name %||% "unnamed")
+    )
+    mobj$model_matrix_noalias <- pruned$dmat
+    mobj$contrasts_noalias <- pruned$cmat
+    if (identical(l3_input_mode, "pooled_sessions_subject_ev")) {
+      cmat_valid <- pruned$cmat
+      dropped_all <- pruned$dropped_contrasts
+      id_ev_cols <- grep("^id", colnames(pruned$dmat), value = TRUE)
+      if (length(id_ev_cols) > 0L && !is.null(cmat_valid) && nrow(cmat_valid) > 0L) {
+        custom_names <- rownames(mobj$contrast_list$custom) %||% character(0)
+        touches_subj_ev <- apply(cmat_valid[, id_ev_cols, drop = FALSE], 1, function(r) any(abs(r) > 1e-8))
+        rnames_cur <- rownames(cmat_valid) %||% paste0("contrast_", seq_len(nrow(cmat_valid)))
+        invalid_bs <- touches_subj_ev & !(rnames_cur %in% custom_names)
+        if (any(invalid_bs)) {
+          dropped_all <- unique(c(dropped_all, rnames_cur[invalid_bs]))
+          cmat_valid <- cmat_valid[!invalid_bs, , drop = FALSE]
+        }
+      }
+      if (length(dropped_all) > 0L) {
+        warning(
+          sprintf(
+            "In L3 model '%s' (pooled_sessions_subject_ev), pure between-subject effects are aliased with subject intercepts and cannot be tested against within-subject error; dropped non-estimable/between-subject contrast(s): %s.",
+            mobj$name %||% "unnamed",
+            paste(dropped_all, collapse = ", ")
+          ),
+          call. = FALSE
+        )
+      }
+      mobj$contrasts_noalias <- cmat_valid
+      mobj$contrasts <- cmat_valid
+      mobj$regressors <- colnames(pruned$dmat)
+    }
+  }
 
   return(mobj)
 }
