@@ -999,7 +999,7 @@ test_that("afni_3dlmer_setup emits qVarCenters, numeric session qVars, random_ef
   expect_equal(nrow(dt_written), 6L)
   expect_true("site" %in% names(dt_written))
   expect_false(anyNA(dt_written$age))
-  expect_true(all(grepl("reg_standard/stats/cope1\\.nii\\.gz$", dt_written$InputFile)))
+  expect_true(all(grepl("reg_standard[/\\\\]stats[/\\\\]cope1\\.nii\\.gz$", dt_written$InputFile)))
 
   sh_lines <- paste(readLines(script_path), collapse = "\n")
   # Both numeric session and age in -qVars, NOT site! And -qVarCenters emitted!
