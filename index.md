@@ -341,32 +341,11 @@ The pkgdown site is the primary documentation entry point:
 - Reference index:
   <https://hallquistlab.github.io/fmri.pipeline/reference/index.html>
 
-MEDuSA documentation now follows a three-part learning sequence:
-
-1.  [Conceptual
-    foundations](https://hallquistlab.github.io/fmri.pipeline/vignettes/medusa-concepts.Rmd):
-    convolution, regularization, HRF learning, event mixing, units,
-    duration, and precision-weight propagation, with an annotated
-    reading guide.
-2.  [Worked
-    workflows](https://hallquistlab.github.io/fmri.pipeline/vignettes/medusa-workflows.Rmd):
-    executable simulation and recipes for NIfTI inputs, file alignment,
-    and downstream precision-weighted / ZCA-whitened multilevel models
-    (`mixed_by`).
-3.  [Technical companion (PRs
-    \#42–#55+)](https://hallquistlab.github.io/fmri.pipeline/medusa_deconvolution_review_prs_42_53.qmd):
-    equations, simulation demonstrations, implementation details, and
-    validation limits.
-
-The first two are standard package vignettes
-([`vignette("medusa-concepts")`](https://hallquistlab.github.io/fmri.pipeline/articles/medusa-concepts.md)
-and
-[`vignette("medusa-workflows")`](https://hallquistlab.github.io/fmri.pipeline/articles/medusa-workflows.md)
-after building vignettes). The technical companion is a standalone
-Quarto report at the repository root, excluded from package and pkgdown
-builds; its historical basename is retained. See [rendering
-instructions](https://hallquistlab.github.io/fmri.pipeline/vignettes/medusa-docs.md)
-for producing all three HTML documents from the same checkout.
+MEDuSA deconvolution, event-locked alignment, and multilevel trajectory
+modeling (`mixed_by`, `jlmer`, `meta_mixed_by`) now live in the
+standalone [`medusa`](https://github.com/HallquistLab/medusa) package.
+Legacy pre-0.4-1 MEDuSA entry points in `fmri.pipeline` emit deprecation
+warnings and forward to `medusa` when installed.
 
 ## Development status
 

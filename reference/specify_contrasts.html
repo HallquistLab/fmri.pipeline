@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">fmri.pipeline</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4-1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -23,8 +23,6 @@
     <li><a class="dropdown-item" href="../articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="../articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="../articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/medusa-concepts.html">MEDuSA: from blurred BOLD signals to trial-level questions</a></li>
-    <li><a class="dropdown-item" href="../articles/medusa-workflows.html">MEDuSA workflows: from BOLD runs to group inference</a></li>
     <li><a class="dropdown-item" href="../articles/quickstart.html">fmri.pipeline quick start guide</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
@@ -50,7 +48,12 @@
 
     <div class="section level2">
     <h2 id="ref-usage">Usage<a class="anchor" aria-label="anchor" href="#ref-usage"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">specify_contrasts</span><span class="op">(</span>mobj <span class="op">=</span> <span class="cn">NULL</span>, signals <span class="op">=</span> <span class="cn">NULL</span>, spec_list <span class="op">=</span> <span class="cn">NULL</span><span class="op">)</span></span></code></pre></div>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">specify_contrasts</span><span class="op">(</span></span>
+<span>  mobj <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  signals <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  spec_list <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  preselected_pairwise <span class="op">=</span> <span class="cn">NULL</span></span>
+<span><span class="op">)</span></span></code></pre></div>
     </div>
 
     <div class="section level2">
@@ -67,6 +70,11 @@
 
 <dt id="arg-spec-list">spec_list<a class="anchor" aria-label="anchor" href="#arg-spec-list"></a></dt>
 <dd><p>a list of settings for this model based on an external YAML/JSON specification file</p></dd>
+
+
+<dt id="arg-preselected-pairwise">preselected_pairwise<a class="anchor" aria-label="anchor" href="#arg-preselected-pairwise"></a></dt>
+<dd><p>Optional character vector of factor names preselected for pairwise differences
+in interactive higher-level model setup.</p></dd>
 
 </dl></div>
     <div class="section level2">

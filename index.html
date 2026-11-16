@@ -10,8 +10,8 @@
 <script src="deps/bootstrap-5.3.8/bootstrap.bundle.min.js"></script><link href="deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
 <script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="Analysis of fMRI Data on HPC clusters">
-<meta name="description" content="Setup of GLM and deconvolution analyses for large-scale fMRI analyses of fMRI data.">
-<meta property="og:description" content="Setup of GLM and deconvolution analyses for large-scale fMRI analyses of fMRI data.">
+<meta name="description" content="Setup, submission, and tracking of hierarchical fMRI GLM analyses on high-performance computing clusters.">
+<meta property="og:description" content="Setup, submission, and tracking of hierarchical fMRI GLM analyses on high-performance computing clusters.">
 </head>
 <body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
@@ -21,7 +21,7 @@
 
     <a class="navbar-brand me-2" href="index.html">fmri.pipeline</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4-1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -39,8 +39,6 @@
     <li><a class="dropdown-item" href="articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="articles/medusa-concepts.html">MEDuSA: from blurred BOLD signals to trial-level questions</a></li>
-    <li><a class="dropdown-item" href="articles/medusa-workflows.html">MEDuSA workflows: from BOLD runs to group inference</a></li>
     <li><a class="dropdown-item" href="articles/quickstart.html">fmri.pipeline quick start guide</a></li>
   </ul>
 </li>
@@ -341,16 +339,7 @@
 <li>Reference index: <a href="https://hallquistlab.github.io/fmri.pipeline/reference/index.html" class="uri">https://hallquistlab.github.io/fmri.pipeline/reference/index.html</a>
 </li>
 </ul>
-<p>MEDuSA documentation now follows a three-part learning sequence:</p>
-<ol style="list-style-type: decimal">
-<li>
-<a href="vignettes/medusa-concepts.Rmd">Conceptual foundations</a>: convolution, regularization, HRF learning, event mixing, units, duration, and precision-weight propagation, with an annotated reading guide.</li>
-<li>
-<a href="vignettes/medusa-workflows.Rmd">Worked workflows</a>: executable simulation and recipes for NIfTI inputs, file alignment, and downstream precision-weighted / ZCA-whitened multilevel models (<code>mixed_by</code>).</li>
-<li>
-<a href="medusa_deconvolution_review_prs_42_53.qmd">Technical companion (PRs #42–#55+)</a>: equations, simulation demonstrations, implementation details, and validation limits.</li>
-</ol>
-<p>The first two are standard package vignettes (<code><a href="articles/medusa-concepts.html">vignette("medusa-concepts")</a></code> and <code><a href="articles/medusa-workflows.html">vignette("medusa-workflows")</a></code> after building vignettes). The technical companion is a standalone Quarto report at the repository root, excluded from package and pkgdown builds; its historical basename is retained. See <a href="vignettes/medusa-docs.html">rendering instructions</a> for producing all three HTML documents from the same checkout.</p>
+<p>MEDuSA deconvolution, event-locked alignment, and multilevel trajectory modeling (<code>mixed_by</code>, <code>jlmer</code>, <code>meta_mixed_by</code>) now live in the standalone <a href="https://github.com/HallquistLab/medusa" class="external-link"><code>medusa</code></a> package. Legacy pre-0.4-1 MEDuSA entry points in <code>fmri.pipeline</code> emit deprecation warnings and forward to <code>medusa</code> when installed.</p>
 </div>
 <div class="section level2">
 <h2 id="development-status">Development status<a class="anchor" aria-label="anchor" href="#development-status"></a>

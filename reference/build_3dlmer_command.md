@@ -9,6 +9,7 @@ build_3dlmer_command(
   prefix,
   model_formula,
   qVars = NULL,
+  qVarCenters = NULL,
   glt_codes = NULL,
   data_table_file,
   mask = NULL,
@@ -30,6 +31,10 @@ build_3dlmer_command(
 - qVars:
 
   Character vector of quantitative variables.
+
+- qVarCenters:
+
+  Optional numeric vector of centering values corresponding to `qVars`.
 
 - glt_codes:
 

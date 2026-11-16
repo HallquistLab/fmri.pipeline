@@ -5,7 +5,12 @@ Internal function to add, edit, rename, delete contrasts
 ## Usage
 
 ``` r
-specify_contrasts(mobj = NULL, signals = NULL, spec_list = NULL)
+specify_contrasts(
+  mobj = NULL,
+  signals = NULL,
+  spec_list = NULL,
+  preselected_pairwise = NULL
+)
 ```
 
 ## Arguments
@@ -23,6 +28,11 @@ specify_contrasts(mobj = NULL, signals = NULL, spec_list = NULL)
 
   a list of settings for this model based on an external YAML/JSON
   specification file
+
+- preselected_pairwise:
+
+  Optional character vector of factor names preselected for pairwise
+  differences in interactive higher-level model setup.
 
 ## Author
 

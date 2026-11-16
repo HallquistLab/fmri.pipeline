@@ -9,7 +9,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">fmri.pipeline</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4-1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -25,8 +25,6 @@
     <li><a class="dropdown-item" href="../articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="../articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="../articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/medusa-concepts.html">MEDuSA: from blurred BOLD signals to trial-level questions</a></li>
-    <li><a class="dropdown-item" href="../articles/medusa-workflows.html">MEDuSA workflows: from BOLD runs to group inference</a></li>
     <li><a class="dropdown-item" href="../articles/quickstart.html">fmri.pipeline quick start guide</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
@@ -53,7 +51,7 @@
 
     <div class="section level2">
     <h2 id="ref-usage">Usage<a class="anchor" aria-label="anchor" href="#ref-usage"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">get_contrasts_from_spec</span><span class="op">(</span><span class="va">mobj</span>, lmfit <span class="op">=</span> <span class="cn">NULL</span><span class="op">)</span></span></code></pre></div>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">get_contrasts_from_spec</span><span class="op">(</span><span class="va">mobj</span>, lmfit <span class="op">=</span> <span class="cn">NULL</span>, allow_interactive_dedupe <span class="op">=</span> <span class="cn">NULL</span><span class="op">)</span></span></code></pre></div>
     </div>
 
     <div class="section level2">
@@ -67,6 +65,11 @@
 <dt id="arg-lmfit">lmfit<a class="anchor" aria-label="anchor" href="#arg-lmfit"></a></dt>
 <dd><p>an optional lm() object used for emmeans calculations. If provided, this object
 will be used instead of mobj$lmfit (the parent lm on the overall dataset).</p></dd>
+
+
+<dt id="arg-allow-interactive-dedupe">allow_interactive_dedupe<a class="anchor" aria-label="anchor" href="#arg-allow-interactive-dedupe"></a></dt>
+<dd><p>Optional logical flag controlling whether duplicate contrasts
+prompt interactively (defaults to <code>FALSE</code> on refits, otherwise <code><a href="https://rlang.r-lib.org/reference/is_interactive.html" class="external-link">rlang::is_interactive()</a></code>).</p></dd>
 
 </dl></div>
     <div class="section level2">

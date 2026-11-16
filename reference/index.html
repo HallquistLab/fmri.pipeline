@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">fmri.pipeline</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.4-1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.5</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -23,8 +23,6 @@
     <li><a class="dropdown-item" href="../articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="../articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
     <li><a class="dropdown-item" href="../articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/medusa-concepts.html">MEDuSA: from blurred BOLD signals to trial-level questions</a></li>
-    <li><a class="dropdown-item" href="../articles/medusa-workflows.html">MEDuSA workflows: from BOLD runs to group inference</a></li>
     <li><a class="dropdown-item" href="../articles/quickstart.html">fmri.pipeline quick start guide</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
@@ -201,13 +199,6 @@
 
         <dt>
 
-          <code><a href="compress_mts_pca.html">compress_mts_pca()</a></code>
-
-        </dt>
-        <dd>Core function for computing multivariate time series compression scores by principal components</dd>
-
-        <dt>
-
           <code><a href="concat_design_runs.html">concat_design_runs()</a></code>
 
         </dt>
@@ -236,66 +227,10 @@
 
         <dt>
 
-          <code><a href="decon_connectivity_repair.html">decon_connectivity_repair()</a></code>
-
-        </dt>
-        <dd>Measurement-error-corrected inter-region connectivity and PPI via REPAIR</dd>
-
-        <dt>
-
-          <code><a href="decon_epoch_regression.html">decon_epoch_regression()</a></code>
-
-        </dt>
-        <dd>Operator-based epoch de-mixing and gain-corrected trial regression across lags</dd>
-
-        <dt>
-
-          <code><a href="deconvolution_impulse_diagnostics.html">deconvolution_impulse_diagnostics()</a></code>
-
-        </dt>
-        <dd>Diagnose temporal spread of a fixed linear deconvolution operator</dd>
-
-        <dt>
-
-          <code><a href="deconvolve_crossrun_hrf.html">deconvolve_crossrun_hrf()</a></code>
-
-        </dt>
-        <dd>Deconvolve runs using frozen HRFs learned from other runs</dd>
-
-        <dt>
-
-          <code><a href="deconvolve_nlreg.html">deconvolve_nlreg</a></code>
-
-        </dt>
-        <dd>C++ port of Bush and Cisler 2013, Magnetic Resonance Imaging Adapted from the original provided by Keith Bush as well as C++ code from Jiang Bian</dd>
-
-        <dt>
-
-          <code><a href="deconvolve_nlreg_resample.html">deconvolve_nlreg_resample()</a></code>
-
-        </dt>
-        <dd>This function deconvolves the BOLD signal using Bush 2011 method, augmented by the resampling approach of Bush 2015.</dd>
-
-        <dt>
-
-          <code><a href="deconvolve_reglin.html">deconvolve_reglin()</a></code>
-
-        </dt>
-        <dd>Regularized linear deconvolution of BOLD time series</dd>
-
-        <dt>
-
           <code><a href="detrendts.html">detrendts()</a></code>
 
         </dt>
         <dd>Detrend a time series up to quadratic trend. Used by fir1Bandpass prior to filtering</dd>
-
-        <dt>
-
-          <code><a href="diagnose_crossrun_recovery.html">diagnose_crossrun_recovery()</a></code>
-
-        </dt>
-        <dd>Diagnose amplitude attenuation and event leakage for a frozen inverse</dd>
 
         <dt>
 
@@ -310,27 +245,6 @@
 
         </dt>
         <dd>Internal port of fsl do_convolve</dd>
-
-        <dt>
-
-          <code><a href="estimate_crossrun_hrf.html">estimate_crossrun_hrf()</a></code>
-
-        </dt>
-        <dd>Estimate HRF shapes from other runs, with optional spatial regularization</dd>
-
-        <dt>
-
-          <code><a href="event_lock_ts.html">event_lock_ts()</a></code>
-
-        </dt>
-        <dd>function to get interpolated event locked data</dd>
-
-        <dt>
-
-          <code><a href="evt_align_decon_files.html">evt_align_decon_files()</a></code>
-
-        </dt>
-        <dd>Align a set of deconvolved time series files to an event of interest function.</dd>
 
         <dt>
 
@@ -390,13 +304,6 @@
 
         <dt>
 
-          <code><a href="fmri_ts.html">fmri_ts</a></code>
-
-        </dt>
-        <dd>R6 class representing a multivariate time series object for fMRI analysis</dd>
-
-        <dt>
-
           <code><a href="fsl_generate_fsf_contrast_syntax.html">fsl_generate_fsf_contrast_syntax()</a></code>
 
         </dt>
@@ -436,20 +343,6 @@
 
         </dt>
         <dd>Create a familywise-error correction specification</dd>
-
-        <dt>
-
-          <code><a href="generate_feature.html">generate_feature</a></code>
-
-        </dt>
-        <dd>This function creates K shifts of a neural events vector according to the kernel length, K.</dd>
-
-        <dt>
-
-          <code><a href="generate_feature_armadillo.html">generate_feature_armadillo</a></code>
-
-        </dt>
-        <dd>This function creates K shifts of a neural events vector according to the kernel length, K.</dd>
 
         <dt>
 
@@ -502,20 +395,6 @@
 
         <dt>
 
-          <code><a href="get_medusa_compression_score.html">get_medusa_compression_score()</a></code>
-
-        </dt>
-        <dd>front-end function for taking a list of windowed time series by mask value, interpolating them onto a time grid, and (optionally) averaging across voxels/units within a value to derive the mean interpolated time series</dd>
-
-        <dt>
-
-          <code><a href="get_medusa_interpolated_ts.html">get_medusa_interpolated_ts()</a></code>
-
-        </dt>
-        <dd>front-end function for taking a list of windowed time series by mask value, interpolating them onto a time grid, and (optionally) averaging across voxels/units within a value to derive the mean interpolated time series</dd>
-
-        <dt>
-
           <code><a href="get_output_directory.html">get_output_directory()</a></code>
 
         </dt>
@@ -537,13 +416,6 @@
 
         <dt>
 
-          <code><a href="hrf_library.html">hrf_library()</a></code>
-
-        </dt>
-        <dd>Build a small, constrained library of causal HRFs</dd>
-
-        <dt>
-
           <code><a href="insert_df_sqlite.html">insert_df_sqlite()</a></code>
 
         </dt>
@@ -551,52 +423,10 @@
 
         <dt>
 
-          <code><a href="jlmer.html">jlmer()</a></code>
-
-        </dt>
-        <dd>Fit a linear mixed model with Julia MixedModels</dd>
-
-        <dt>
-
           <code><a href="lookup_feat_outputs.html">lookup_feat_outputs()</a></code> <code><a href="lookup_feat_outputs.html">as.data.frame(<i>&lt;feat_output_lookup&gt;</i>)</a></code> <code><a href="lookup_feat_outputs.html">print(<i>&lt;feat_output_lookup&gt;</i>)</a></code>
 
         </dt>
         <dd>Lookup FSL FEAT output images by model and contrast</dd>
-
-        <dt>
-
-          <code><a href="medusa_between_subject_repair.html">medusa_between_subject_repair()</a></code>
-
-        </dt>
-        <dd>Between-subject REPAIR structural regression on MEDuSA mixed models</dd>
-
-        <dt>
-
-          <code><a href="medusa_fit_mmom.html">medusa_fit_mmom()</a></code>
-
-        </dt>
-        <dd>Fit a REPAIR modified method-of-moments (M-MOM / M-MOMS) measurement-error model</dd>
-
-        <dt>
-
-          <code><a href="medusa_multilag_infer.html">medusa_multilag_infer()</a></code>
-
-        </dt>
-        <dd>Joint Multi-Lag Trajectory Modeling and Operator-Informed Inference for MEDuSA</dd>
-
-        <dt>
-
-          <code><a href="meta_mixed_by.html">meta_mixed_by()</a></code>
-
-        </dt>
-        <dd>Function to run Bayesian random-effects meta-regression on coefficients from mixed_by</dd>
-
-        <dt>
-
-          <code><a href="mixed_by.html">mixed_by()</a></code>
-
-        </dt>
-        <dd>Mixed by runs a set of mixed-effects models for each combination of a set of factors. Its primary use is to run the same model on different splits of the data.</dd>
 
         <dt>
 
@@ -709,13 +539,6 @@
 
         </dt>
         <dd>Wrapper for running an AFNI command safely within R</dd>
-
-        <dt>
-
-          <code><a href="run_decon_alignment.html">run_decon_alignment()</a></code>
-
-        </dt>
-        <dd>Align a set of deconvolved time series files from <code>voxelwise_deconvolution</code> to a set of events in a task-related design</dd>
 
         <dt>
 
@@ -905,13 +728,6 @@
 
         </dt>
         <dd>Visualize design matrix, including event onset times and run boundaries</dd>
-
-        <dt>
-
-          <code><a href="voxelwise_deconvolution.html">voxelwise_deconvolution()</a></code>
-
-        </dt>
-        <dd>Function to perform voxelwise deconvolution on an fMRI dataset using the fMRI model arguments object</dd>
 
         <dt>
 
