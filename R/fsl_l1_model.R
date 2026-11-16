@@ -152,16 +152,12 @@ fsl_l1_model <- function(
       run_trial_mats <- d_obj$wi_run_trial_matrices[[run_key]]
       if (!is.null(run_trial_mats) && length(run_trial_mats) > 0L) {
         for (M_r in run_trial_mats) {
-          if (!is.matrix(M_r) || ncol(M_r) == 0L) next
-          if (nrow(M_r) == 0L) {
-            aliased_evs_run <- union(aliased_evs_run, colnames(M_r))
-          } else {
-            qr_r <- qr(M_r)
-            if (qr_r$rank < ncol(M_r)) {
-              piv_keep <- if (qr_r$rank > 0L) qr_r$pivot[seq_len(qr_r$rank)] else integer(0)
-              dropped_evs <- colnames(M_r)[setdiff(seq_len(ncol(M_r)), piv_keep)]
-              aliased_evs_run <- union(aliased_evs_run, dropped_evs)
-            }
+          if (!is.matrix(M_r) || ncol(M_r) == 0L || nrow(M_r) == 0L) next
+          qr_r <- qr(M_r)
+          if (qr_r$rank < ncol(M_r)) {
+            piv_keep <- if (qr_r$rank > 0L) qr_r$pivot[seq_len(qr_r$rank)] else integer(0)
+            dropped_evs <- colnames(M_r)[setdiff(seq_len(ncol(M_r)), piv_keep)]
+            aliased_evs_run <- union(aliased_evs_run, dropped_evs)
           }
         }
         if (length(aliased_evs_run) > 0L) {

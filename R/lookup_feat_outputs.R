@@ -866,20 +866,29 @@ lookup_feat_l3_metadata <- function(gpa, setup) {
   if (!is.null(gpa$l3_model_setup$metadata) &&
       is.data.frame(gpa$l3_model_setup$metadata) &&
       nrow(gpa$l3_model_setup$metadata) > 0L) {
+    meta_df <- gpa$l3_model_setup$metadata
+    if ("session" %in% names(meta_df) && "session" %in% names(setup)) {
+      pooled_models <- unique(as.character(setup$l3_model[!is.na(setup$session) & setup$session == 0L]))
+      is_pooled_row <- if ("l3_input_mode" %in% names(meta_df)) {
+        !is.na(meta_df$l3_input_mode) & meta_df$l3_input_mode != "per_session"
+      } else {
+        rep(FALSE, nrow(meta_df))
+      }
+      if ("l3_model" %in% names(meta_df) && length(pooled_models) > 0L) {
+        is_pooled_row <- is_pooled_row | (as.character(meta_df$l3_model) %in% pooled_models)
+      }
+      meta_df$session[is_pooled_row] <- 0L
+    }
     meta_cols <- intersect(
       c(
-        "session",
+        if ("session" %in% names(setup)) "session" else character(0),
         "l1_model", "l1_cope_number", "l1_cope_name",
         "l2_model", "l2_cope_number", "l2_cope_name",
         "l3_model", "l3_cope_number", "l3_cope_name"
       ),
-      names(gpa$l3_model_setup$metadata)
+      names(meta_df)
     )
-    # Only retain `session` from subject-level metadata when setup is partitioned per session (not pooled session = 0)
-    if ("session" %in% meta_cols && "session" %in% names(setup) && any(setup$session == 0L, na.rm = TRUE)) {
-      meta_cols <- setdiff(meta_cols, "session")
-    }
-    return(gpa$l3_model_setup$metadata %>%
+    return(meta_df %>%
       dplyr::select(dplyr::all_of(meta_cols)) %>%
       dplyr::distinct() %>%
       dedupe_group_l2_cope_number())

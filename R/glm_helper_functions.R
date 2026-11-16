@@ -1428,7 +1428,7 @@ get_contrasts_from_spec <- function(mobj, lmfit = NULL, allow_interactive_dedupe
       comb_list <- spec$simple_slopes[[vv]]
       if (is.character(comb_list)) comb_list <- as.list(comb_list)
       for (comb in comb_list) {
-        comb_vars <- trimws(unlist(strsplit(as.character(comb), "[:*+]", perl = TRUE)))
+        comb_vars <- trimws(unlist(strsplit(as.character(comb), "[:*+|]", perl = TRUE)))
         comb_vars <- comb_vars[nzchar(comb_vars)]
         ee <- quiet_emm(emtrends(
           lmfit,
@@ -1888,6 +1888,9 @@ fit_lm_with_canonical_levels <- function(model_formula, model_data, canonical_le
   }), fac_vars)
   pad_grid <- expand.grid(lev_list, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
   obs_n <- nrow(model_data)
+  if (obs_n == 0L) {
+    stop("model_data must contain at least one observation.", call. = FALSE)
+  }
   # emmeans needs rows representing every factor level, even when their weights
   # are zero. Its continuous-covariate reductions are unweighted, so copy each
   # observed covariate row equally often rather than inventing zeros or means.
@@ -1914,9 +1917,9 @@ fit_lm_with_canonical_levels <- function(model_formula, model_data, canonical_le
       df_aug[[fv]] <- apply_factor_coding_to_col(df_aug[[fv]], code_this)
     }
   }
-  df_aug$.obs_weight_internal <- c(rep(1, obs_n), rep(0, nrow(pad_df)))
+  w_vec <- c(rep(1, obs_n), rep(0, nrow(pad_df)))
 
-  lmfit <- suppressWarnings(stats::lm(f_clean, data = df_aug, weights = .obs_weight_internal))
+  lmfit <- suppressWarnings(stats::lm(f_clean, data = df_aug, weights = w_vec))
   list(lmfit = lmfit, obs_idx = seq_len(obs_n), padded = TRUE)
 }
 

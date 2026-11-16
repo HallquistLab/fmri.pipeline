@@ -541,6 +541,42 @@ build_design_matrix <- function(
   dmat <- shift_dmat_timing(dmat, tr, drop_volumes, shift_timing)
   validate_shifted_dmat_onsets(dmat, tr = tr, drop_volumes = drop_volumes, lg = lg)
 
+  # Restrict formula-mode trial matrices to occurrences that actually fall within the modeled scan window
+  # and carry finite non-zero signal values (matching convolve_regressor's late-event / NA / zero pruning).
+  if (length(wi_run_trial_matrices) > 0L) {
+    dmat_reg_names <- dimnames(dmat)[[2L]] %||% character(0)
+    for (i in seq_len(dim(dmat)[1L])) {
+      rk <- dimnames(dmat)[[1L]][i]
+      if (is.null(wi_run_trial_matrices[[rk]])) next
+      n_v <- run_volumes[i]
+      for (psig in names(wi_run_trial_matrices[[rk]])) {
+        M_r <- wi_run_trial_matrices[[rk]][[psig]]
+        t_ids <- attr(M_r, "trial_ids")
+        sig_cols <- intersect(colnames(M_r), dmat_reg_names)
+        if (!is.null(t_ids) && length(t_ids) == nrow(M_r) && length(sig_cols) > 0L) {
+          active_trials <- unique(unlist(lapply(sig_cols, function(sc) {
+            reg_mat <- dmat[[i, sc]]
+            if (is.null(reg_mat) || nrow(reg_mat) == 0L || !all(c("trial", "onset", "value") %in% colnames(reg_mat))) {
+              return(numeric(0))
+            }
+            valid_occ <- !is.na(reg_mat[, "onset"]) &
+              (reg_mat[, "onset"] >= 0) &
+              ((reg_mat[, "onset"] / tr) < n_v) &
+              !is.na(reg_mat[, "value"]) &
+              (abs(reg_mat[, "value"]) > 0)
+            reg_mat[valid_occ, "trial"]
+          })))
+          keep_t <- t_ids %in% active_trials
+          if (!all(keep_t)) {
+            M_sub <- M_r[keep_t, , drop = FALSE]
+            attr(M_sub, "trial_ids") <- t_ids[keep_t]
+            wi_run_trial_matrices[[rk]][[psig]] <- M_sub
+          }
+        }
+      }
+    }
+  }
+
   # concatenate regressors across runs by adding timing from MR files.
   run_timing <- cumsum(run_volumes) * tr # timing in seconds of the start of successive runs
 

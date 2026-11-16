@@ -280,3 +280,216 @@ test_that("alias-reduced observed L1 means survive validity checks without hidin
   validity <- fmri.pipeline:::build_l1_cope_validity(setup, gpa)
   expect_false(any(subset(validity, run_number == 2L)$valid_for_higher_level))
 })
+
+test_that("lookup_feat_outputs isolates per-session and pooled L3 COPE mappings when both coexist", {
+  tmp_dir <- tempfile("l3_mixed_session_lookup_")
+  dir.create(tmp_dir)
+  gpa <- create_mock_gpa(n_subjects = 2, n_runs = 2, output_directory = tmp_dir)
+  gpa$multi_run <- TRUE
+
+  fsl_setup <- data.frame(
+    session = c(1L, 2L, 0L),
+    l1_model = "m1",
+    l1_cope_name = "c1",
+    l2_model = c("l2_ses", "l2_ses", "l2_ses"),
+    l2_cope_name = "overall",
+    l3_model = c("m_sess", "m_sess", "m_pool"),
+    feat_dir = file.path(tmp_dir, c("ses1.gfeat", "ses2.gfeat", "pool.gfeat")),
+    feat_fsf = file.path(tmp_dir, c("ses1.fsf", "ses2.fsf", "pool.fsf")),
+    feat_complete = FALSE,
+    stringsAsFactors = FALSE
+  )
+  meta_df <- data.frame(
+    id = c("sub1", "sub1", "sub1", "sub1", "sub1"),
+    session = c(1L, 2L, 2L, 1L, 2L),
+    l1_model = "m1",
+    l1_cope_number = 1L,
+    l1_cope_name = "c1",
+    l2_model = "l2_ses",
+    l2_cope_number = 1L,
+    l2_cope_name = "overall",
+    l3_model = c("m_sess", "m_sess", "m_sess", "m_pool", "m_pool"),
+    l3_input_mode = c("per_session", "per_session", "per_session", "pooled_sessions_subject_ev", "pooled_sessions_subject_ev"),
+    l3_cope_number = c(1L, 1L, 2L, 1L, 1L),
+    l3_cope_name = c("Intercept", "Intercept", "grp_b_vs_a", "ses_diff", "ses_diff"),
+    stringsAsFactors = FALSE
+  )
+  l3_setup_obj <- list(metadata = meta_df, fsl = fsl_setup)
+  class(l3_setup_obj) <- c("l3_setup", "list")
+  gpa$l3_model_setup <- l3_setup_obj
+
+  out <- as.data.frame(lookup_feat_outputs(gpa, level = 3L, what = "cope"))
+  s1 <- subset(out, l3_model == "m_sess" & session == 1L)
+  s2 <- subset(out, l3_model == "m_sess" & session == 2L)
+  sp <- subset(out, l3_model == "m_pool" & is.na(session))
+
+  expect_equal(s1$l3_cope_name, "Intercept")
+  expect_equal(s1$l3_cope_number, 1L)
+  expect_equal(s2$l3_cope_name, c("Intercept", "grp_b_vs_a"))
+  expect_equal(s2$l3_cope_number, c(1L, 2L))
+  expect_equal(sp$l3_cope_name, "ses_diff")
+  expect_equal(sp$l3_cope_number, 1L)
+})
+
+test_that("late post-scan trials are excluded from sum-coded L1 formula rank and estimability", {
+  tmp_dir <- tempfile("l1_late_sum_alias_")
+  dir.create(tmp_dir)
+  td <- data.frame(
+    id = "sub1", session = 1L, run_number = c(rep(1L, 4L), rep(2L, 3L)),
+    trial = c(1:4, 1:3),
+    onset = c(4, 12, 20, 28, 4, 12, 75),
+    duration = 1,
+    A = c("a", "b", "a", "b", "b", "b", "a")
+  )
+  niftis <- file.path(tmp_dir, paste0("run", 1:2, ".nii.gz"))
+  for (nf in niftis) RNifti::writeNifti(array(0, c(2, 2, 2, 60)), file = nf)
+  gpa <- create_mock_gpa(n_subjects = 1, n_runs = 2, output_directory = tmp_dir)
+  gpa$trial_data <- td
+  gpa$subject_data$mr_dir <- tmp_dir
+  gpa$run_data <- data.frame(
+    id = "sub1", session = 1L, run_number = 1:2, mr_dir = tmp_dir, run_nifti = niftis,
+    run_nifti_present = TRUE, run_volumes = 60L, drop_volumes = 0L, tr = 1,
+    nvoxels = 1000L, exclude_run = FALSE, exclude_subject = FALSE
+  )
+  gpa$use_preconvolve <- TRUE
+  gpa$lgr_threshold <- "warn"
+  gpa$log_json <- gpa$log_txt <- FALSE
+  gpa$output_locations$feat_l1_directory <- file.path(tmp_dir, "sub-{id}", "ses-{session}", "{l1_model}")
+  gpa$glm_settings <- list(fsl = list(force_l1_creation = TRUE, smooth_fwhm = 5, hp_filter = 100,
+                                    prewhiten = TRUE, z_thresh = 2.3, p_thresh = 0.05))
+  gpa$confound_settings <- list(l1_confound_regressors = NULL)
+  spec <- list(
+    onsets = list("onset"), durations = list("duration"),
+    events = list(stim = list(onset = "onset", duration = "duration")),
+    signals = list(task = list(
+      event = "stim", normalization = "none", value_fixed = 1,
+      wi_factors = list("A"), wi_formula = "~ A", wi_expansion = "formula",
+      factor_coding = list(A = "sum")
+    )),
+    l1_models = list(m1 = list(signals = list("task"), contrasts = list(
+      diagonal = FALSE, wi_contrasts = list(task = list(diagonal = FALSE, cond_means = "A"))
+    )))
+  )
+  spec_file <- file.path(tmp_dir, "spec.yaml")
+  yaml::write_yaml(spec, spec_file)
+  gpa <- build_l1_models(gpa, from_spec_file = spec_file)
+  bdm <- build_design_matrix(
+    events = gpa$l1_models$events$stim$data, signals = list(gpa$l1_models$signals$task),
+    tr = 1, run_data = gpa$run_data, write_timing_files = "convolved",
+    output_directory = file.path(tmp_dir, "timing"), plot = FALSE
+  )
+  expect_equal(nrow(bdm$wi_run_trial_matrices$run_number2$task), 2L)
+  expect_equal(qr(bdm$wi_run_trial_matrices$run_number2$task)$rank, 1L)
+
+  bdm$run_nifti <- niftis
+  setup <- fsl_l1_model(id = "sub1", session = 1L, d_obj = bdm, gpa = gpa,
+                        model_name = "m1", run_nifti = niftis, nvoxels = c(1000L, 1000L))
+  fsf_r2 <- readLines(setup$feat_fsf[2L])
+  expect_true(any(grepl("^set fmri\\(shape2\\) 10$", fsf_r2)))
+
+  validity <- fmri.pipeline:::build_l1_cope_validity(setup, gpa)
+  r2 <- subset(validity, run_number == 2L)
+  expect_true(r2$valid_for_higher_level[r2$l1_cope_name == "task.A.b"])
+  expect_false(r2$valid_for_higher_level[r2$l1_cope_name == "task.A.a"])
+})
+
+test_that("AFNI marginal GLTs preserve unbalanced emmeans weights when separable and reject non-separable slices", {
+  # Separable unbalanced marginal counts: P(B = b1 | A) = 0.75, P(B = b2 | A) = 0.25 for both levels of A
+  df <- data.frame(
+    Subj = paste0("s", 1:8),
+    A = factor(c(rep("a1", 4), rep("a2", 4)), levels = c("a1", "a2")),
+    B = factor(c("b1", "b1", "b1", "b2", "b1", "b1", "b1", "b2"), levels = c("b1", "b2")),
+    age = c(-3, -1, 1, 3, -2, 0, 1, 3),
+    y = c(1.2, 1.8, 2.5, 4.1, 2.0, 2.7, 3.3, 5.2)
+  )
+  fit <- stats::lm(y ~ A * B * age, data = df)
+
+  eval_glt_mean <- function(code, grid, linfct) {
+    blocks <- fmri.pipeline:::parse_3dlmer_glt_blocks(code, c("A", "B", "age"))$blocks
+    row_w <- rep(1, nrow(grid))
+    for (block in blocks) {
+      if (block$var == "age") next
+      tokens <- strsplit(block$expr, "\\s+")[[1L]]
+      ws <- stats::setNames(as.numeric(sub("\\*.*", "", tokens)), sub("^[^*]*\\*", "", tokens))
+      w <- ws[as.character(grid[[block$var]])]
+      w[is.na(w)] <- 0
+      row_w <- row_w * w
+    }
+    omitted_facs <- setdiff(c("A", "B"), vapply(blocks, `[[`, character(1), "var"))
+    for (of in omitted_facs) {
+      row_w <- row_w / length(unique(as.character(grid[[of]])))
+    }
+    as.numeric(row_w %*% linfct)
+  }
+
+  cell_emm <- suppressMessages(emmeans::emmeans(fit, ~ A * B, at = list(age = mean(df$age))))
+  trend_emm <- suppressMessages(emmeans::emtrends(fit, ~ A * B, var = "age"))
+
+  for (wt in c("equal", "flat", "cells", "proportional")) {
+    m <- structure(
+      list(
+        lmfit = fit,
+        contrast_spec = list(
+          diagonal = FALSE,
+          cond_means = "A",
+          pairwise_diffs = "A",
+          simple_slopes = list(age = "A"),
+          weights = wt
+        )
+      ),
+      class = c("hi_model_spec", "list")
+    )
+    glts <- fmri.pipeline:::emmeans_to_3dlmer_glt(m, df, qVars = "age")
+
+    ref_means <- suppressMessages(emmeans::emmeans(fit, ~ A, weights = wt))
+    for (lv in c("a1", "a2")) {
+      code <- glts$code[glts$contrast_type == "cond_mean" & grepl(lv, glts$label_raw, fixed = TRUE)]
+      got <- eval_glt_mean(code, cell_emm@grid, cell_emm@linfct)
+      exp_lf <- ref_means@linfct[ref_means@grid$A == lv, , drop = FALSE]
+      expect_equal(got, as.numeric(exp_lf), tolerance = 1e-7)
+    }
+
+    ref_pair <- suppressMessages(emmeans::contrast(ref_means, "pairwise"))
+    pair_code <- glts$code[glts$contrast_type == "pairwise_diff"]
+    expect_equal(
+      eval_glt_mean(pair_code, cell_emm@grid, cell_emm@linfct),
+      as.numeric(ref_pair@linfct[1L, ]),
+      tolerance = 1e-7
+    )
+
+    ref_slopes <- suppressMessages(emmeans::emtrends(fit, ~ A, var = "age", weights = wt))
+    for (lv in c("a1", "a2")) {
+      s_code <- glts$code[glts$contrast_type == "simple_slope" & grepl(lv, glts$label_raw, fixed = TRUE)]
+      got_s <- eval_glt_mean(s_code, trend_emm@grid, trend_emm@linfct)
+      exp_s <- ref_slopes@linfct[ref_slopes@grid$A == lv, , drop = FALSE]
+      expect_equal(got_s, as.numeric(exp_s), tolerance = 1e-7)
+    }
+  }
+
+  # Opposite conditional B distributions across A slices: single-slice cond_means stay separable,
+  # whereas pairwise_diffs with weights='cells' cannot factor across A and B.
+  df_nonsep <- df
+  df_nonsep$B <- factor(c("b1", "b1", "b1", "b2", "b1", "b2", "b2", "b2"), levels = c("b1", "b2"))
+  fit_nonsep <- stats::lm(y ~ A * B, data = df_nonsep)
+  m_cm <- structure(
+    list(
+      lmfit = fit_nonsep,
+      contrast_spec = list(diagonal = FALSE, cond_means = "A", weights = "cells")
+    ),
+    class = c("hi_model_spec", "list")
+  )
+  glt_cm <- fmri.pipeline:::emmeans_to_3dlmer_glt(m_cm, df_nonsep)
+  expect_equal(nrow(glt_cm), 2L)
+
+  m_pw <- structure(
+    list(
+      lmfit = fit_nonsep,
+      contrast_spec = list(diagonal = FALSE, pairwise_diffs = "A", weights = "cells")
+    ),
+    class = c("hi_model_spec", "list")
+  )
+  expect_error(fmri.pipeline:::emmeans_to_3dlmer_glt(m_pw, df_nonsep), "not separable")
+
+  m_pw$contrast_spec$weights <- "equal"
+  expect_equal(nrow(fmri.pipeline:::emmeans_to_3dlmer_glt(m_pw, df_nonsep)), 1L)
+})

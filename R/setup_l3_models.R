@@ -312,7 +312,9 @@ setup_l3_models <- function(gpa, l3_model_names = NULL, l2_model_names = NULL, l
       requires_l2 = uses_level2_inputs
     )
     backend_results[[backend_name]] <- res
-    if (is.null(metadata) && !is.null(res$metadata)) metadata <- res$metadata
+    if (!is.null(res$metadata)) {
+      metadata <- if (is.null(metadata)) res$metadata else dplyr::bind_rows(metadata, res$metadata)
+    }
   }
 
   all_subj_l3_combined <- c(
@@ -330,6 +332,15 @@ setup_l3_models <- function(gpa, l3_model_names = NULL, l2_model_names = NULL, l
   if (!is.null(existing_l3)) {
     if (is.null(all_subj_l3_combined$metadata) && !is.null(existing_l3$metadata)) {
       all_subj_l3_combined$metadata <- existing_l3$metadata
+    } else if (!is.null(all_subj_l3_combined$metadata) && !is.null(existing_l3$metadata)) {
+      meta_keys <- intersect(
+        c("session", "l1_model", "l1_cope_name", "l2_model", "l2_cope_name", "l3_model"),
+        intersect(names(existing_l3$metadata), names(all_subj_l3_combined$metadata))
+      )
+      if (length(meta_keys) > 0L) {
+        kept_old <- dplyr::anti_join(existing_l3$metadata, all_subj_l3_combined$metadata, by = meta_keys)
+        all_subj_l3_combined$metadata <- dplyr::bind_rows(kept_old, all_subj_l3_combined$metadata)
+      }
     }
 
     backend_union <- union(setdiff(names(existing_l3), "metadata"), names(backend_results))

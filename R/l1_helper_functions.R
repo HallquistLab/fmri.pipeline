@@ -198,8 +198,12 @@ expand_signal <- function(sig) {
     if (identical(sig$wi_expansion_resolved, "formula") && "run_number" %in% names(val_clean)) {
       run_nums <- sort(unique(val_clean$run_number))
       run_trial_mats <- stats::setNames(lapply(run_nums, function(rn) {
-        M_r <- model_mat[val_clean$run_number == rn, , drop = FALSE]
+        r_mask <- val_clean$run_number == rn
+        M_r <- model_mat[r_mask, , drop = FALSE]
         colnames(M_r) <- exp_names
+        if ("trial" %in% names(val_clean)) {
+          attr(M_r, "trial_ids") <- val_clean$trial[r_mask]
+        }
         M_r
       }), paste0("run_number", run_nums))
     }

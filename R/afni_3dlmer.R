@@ -905,6 +905,103 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
       paste(paste0(var_vec, " : 1*", val_vec), collapse = " ")
     }
 
+    # Build explicit AFNI factor-weight blocks for marginalized categorical factors when weights != "equal"
+    # and reject joint cell weightings that cannot be represented as a rank-1 Kronecker product.
+    build_marginal_weight_blocks <- function(active_slices_df = NULL, label_desc = "overall_response", include_uniform = FALSE) {
+      fixed_vars <- if (is.null(active_slices_df) || ncol(active_slices_df) == 0L) character(0) else colnames(active_slices_df)
+      marginalized <- setdiff(cat_cols, fixed_vars)
+      if (length(marginalized) == 0L) return(character(0))
+
+      m_levs <- stats::setNames(lapply(marginalized, get_levels_ordered), marginalized)
+      m_grid <- expand.grid(m_levs, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+      m_keys <- do.call(paste, c(lapply(m_grid, as.character), sep = "\r"))
+
+      compute_m_weights <- function(sub_df) {
+        d_keys <- if (nrow(sub_df) > 0L) {
+          do.call(paste, c(lapply(sub_df[, marginalized, drop = FALSE], as.character), sep = "\r"))
+        } else {
+          character(0)
+        }
+        counts <- tabulate(match(d_keys, m_keys), nbins = nrow(m_grid))
+        jw <- switch(eff_weights,
+          equal = rep(1, nrow(m_grid)),
+          flat = as.numeric(counts > 0L),
+          cells = as.numeric(counts),
+          proportional = as.numeric(counts),
+          stop("Unsupported AFNI weighting: ", eff_weights, call. = FALSE)
+        )
+        if (sum(jw) <= 0) {
+          stop(sprintf("Cannot translate AFNI %s with weights='%s': marginalized slice has zero observations.", label_desc, eff_weights), call. = FALSE)
+        }
+        jw / sum(jw)
+      }
+
+      if (identical(eff_weights, "equal")) {
+        target_w <- rep(1 / nrow(m_grid), nrow(m_grid))
+      } else if (identical(eff_weights, "proportional") || length(fixed_vars) == 0L) {
+        target_w <- compute_m_weights(data)
+      } else {
+        slice_weights <- lapply(seq_len(nrow(active_slices_df)), function(sr) {
+          keep <- rep(TRUE, nrow(data))
+          for (fv in fixed_vars) {
+            keep <- keep & (as.character(data[[fv]]) == as.character(active_slices_df[[fv]][sr]))
+          }
+          compute_m_weights(data[keep, , drop = FALSE])
+        })
+        target_w <- slice_weights[[1L]]
+        if (length(slice_weights) > 1L) {
+          same_across_slices <- all(vapply(slice_weights[-1L], function(sw) all(abs(sw - target_w) <= 1e-8), logical(1)))
+          if (!isTRUE(same_across_slices)) {
+            stop(
+              sprintf(
+                paste0(
+                  "Cannot translate AFNI %s with weights='%s': joint cell weights are not separable across factors. ",
+                  "Define a joint-cell factor to express this weighting, or explicitly choose weights='equal' for an equal-cell mean."
+                ),
+                label_desc, eff_weights
+              ),
+              call. = FALSE
+            )
+          }
+        }
+      }
+
+      margins <- lapply(marginalized, function(mf) {
+        vapply(m_levs[[mf]], function(lv) sum(target_w[m_grid[[mf]] == lv]), numeric(1))
+      })
+      product_weights <- rep(1, nrow(m_grid))
+      for (k in seq_along(marginalized)) {
+        product_weights <- product_weights * margins[[k]][match(m_grid[[marginalized[k]]], m_levs[[k]])]
+      }
+      if (any(abs(product_weights - target_w) > 1e-8)) {
+        stop(
+          sprintf(
+            paste0(
+              "Cannot translate AFNI %s with weights='%s': joint cell weights are not separable across factors. ",
+              "Define a joint-cell factor to express this weighting, or explicitly choose weights='equal' for an equal-cell mean."
+            ),
+            label_desc, eff_weights
+          ),
+          call. = FALSE
+        )
+      }
+
+      blocks <- character(0)
+      for (k in seq_along(marginalized)) {
+        mk <- margins[[k]]
+        is_unif <- all(abs(mk - (1 / length(mk))) <= 1e-8)
+        if (isTRUE(include_uniform) || !isTRUE(is_unif)) {
+          blocks <- c(blocks, paste0(marginalized[k], " : ", paste0(format(mk, digits = 16, trim = TRUE), "*", m_levs[[k]], collapse = " ")))
+        }
+      }
+      blocks
+    }
+
+    append_marginal_blocks <- function(base_code, extra_blocks) {
+      if (length(extra_blocks) == 0L) return(base_code)
+      paste(c(base_code, extra_blocks), collapse = " ")
+    }
+
     # 1. Diagonal GLTs (quantitative slopes 'qVar :' and, if no other categorical GLTs requested, reference-vs-level diffs)
     if (isTRUE(spec$diagonal)) {
       for (qv in cont_cols) {
@@ -923,9 +1020,13 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
                   slice_touches_empty_cell(stats::setNames(ref_lev, cv), lbl)) {
                 next
               }
+              m_blocks <- build_marginal_weight_blocks(
+                stats::setNames(data.frame(c(lv, ref_lev), stringsAsFactors = FALSE), cv),
+                label_desc = lbl
+              )
               add_generated(
                 label = lbl,
-                code = paste0(cv, " : 1*", lv, " -1*", ref_lev),
+                code = append_marginal_blocks(paste0(cv, " : 1*", lv, " -1*", ref_lev), m_blocks),
                 contrast_type = "diagonal"
               )
             }
@@ -963,7 +1064,8 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
             lbl <- paste(paste(ps$focal_vars, collapse = "_"), paste(row_vals[ps$focal_vars], collapse = "."), sep = ".")
           }
           if (slice_touches_empty_cell(row_vals, lbl)) next
-          add_generated(label = lbl, code = build_cell_code(all_v, row_vals), contrast_type = "cond_mean")
+          m_blocks <- build_marginal_weight_blocks(lev_grid[rr, all_v, drop = FALSE], label_desc = lbl)
+          add_generated(label = lbl, code = append_marginal_blocks(build_cell_code(all_v, row_vals), m_blocks), contrast_type = "cond_mean")
         }
       }
     }
@@ -984,43 +1086,7 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
     # 4. Overall average response across categorical factors
     if (isTRUE(spec$overall_response) && length(cat_cols) > 0L) {
       if (!slice_touches_empty_cell(character(0), "overall")) {
-        levs <- stats::setNames(lapply(cat_cols, get_levels_ordered), cat_cols)
-        grid <- expand.grid(levs, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
-        grid_keys <- do.call(paste, c(lapply(grid, as.character), sep = "\r"))
-        data_keys <- do.call(paste, c(lapply(data[, cat_cols, drop = FALSE], as.character), sep = "\r"))
-        counts <- tabulate(match(data_keys, grid_keys), nbins = nrow(grid))
-        joint_weights <- switch(eff_weights,
-          equal = rep(1, nrow(grid)),
-          flat = as.numeric(counts > 0L),
-          cells = as.numeric(counts),
-          proportional = as.numeric(counts),
-          stop("Unsupported AFNI overall-response weighting: ", eff_weights, call. = FALSE)
-        )
-        joint_weights <- joint_weights / sum(joint_weights)
-        margins <- lapply(cat_cols, function(cv) {
-          vapply(levs[[cv]], function(lv) sum(joint_weights[grid[[cv]] == lv]), numeric(1))
-        })
-        product_weights <- rep(1, nrow(grid))
-        for (k in seq_along(cat_cols)) {
-          product_weights <- product_weights * margins[[k]][match(grid[[cat_cols[k]]], levs[[k]])]
-        }
-        # An AFNI GLT with one weight block per factor represents an outer product.
-        # General joint-cell frequencies cannot be expressed by those blocks.
-        if (any(abs(product_weights - joint_weights) > 1e-8)) {
-          stop(
-            sprintf(
-              paste0(
-                "Cannot translate AFNI overall_response with weights='%s': joint cell weights are not separable across factors. ",
-                "Define a joint-cell factor to express this weighting, or explicitly choose weights='equal' for an equal-cell mean."
-              ),
-              eff_weights
-            ),
-            call. = FALSE
-          )
-        }
-        parts <- vapply(seq_along(cat_cols), function(k) {
-          paste0(cat_cols[k], " : ", paste0(format(margins[[k]], digits = 16, trim = TRUE), "*", levs[[k]], collapse = " "))
-        }, character(1))
+        parts <- build_marginal_weight_blocks(active_slices_df = NULL, label_desc = "overall_response", include_uniform = TRUE)
         add_generated(label = "overall", code = paste(parts, collapse = " "), contrast_type = "overall")
       }
     }
@@ -1061,9 +1127,13 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
                 slice_touches_empty_cell(stats::setNames(pp[2L], fv), lbl)) {
               next
             }
+            m_blocks <- build_marginal_weight_blocks(
+              stats::setNames(data.frame(c(pp[1L], pp[2L]), stringsAsFactors = FALSE), fv),
+              label_desc = lbl
+            )
             add_generated(
               label = lbl,
-              code = paste0(fv, " : 1*", pp[1L], " -1*", pp[2L]),
+              code = append_marginal_blocks(paste0(fv, " : 1*", pp[1L], " -1*", pp[2L]), m_blocks),
               contrast_type = "pairwise_diff"
             )
           }
@@ -1091,9 +1161,11 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
                   slice_touches_empty_cell(c(by_vals, stats::setNames(pp[2L], fv)), lbl)) {
                 next
               }
+              active_df <- expand.grid(c(as.list(by_vals), stats::setNames(list(c(pp[1L], pp[2L])), fv)), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+              m_blocks <- build_marginal_weight_blocks(active_df, label_desc = lbl)
               add_generated(
                 label = lbl,
-                code = paste0(by_code, " ", fv, " : 1*", pp[1L], " -1*", pp[2L]),
+                code = append_marginal_blocks(paste0(by_code, " ", fv, " : 1*", pp[1L], " -1*", pp[2L]), m_blocks),
                 contrast_type = "pairwise_diff"
               )
             }
@@ -1162,9 +1234,10 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
             }, logical(1)))
             if (isTRUE(any_empty_slice)) next
 
+            m_blocks <- build_marginal_weight_blocks(cell_grid, label_desc = lbl)
             add_generated(
               label = lbl,
-              code = paste0(by_prefix_code, paste(code_blocks, collapse = " ")),
+              code = append_marginal_blocks(paste0(by_prefix_code, paste(code_blocks, collapse = " ")), m_blocks),
               contrast_type = "interaction_diff"
             )
           }
@@ -1182,7 +1255,7 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
         comb_list <- spec$simple_slopes[[vv]]
         if (is.character(comb_list)) comb_list <- as.list(comb_list)
         for (comb in comb_list) {
-          comb_vars <- trimws(unlist(strsplit(as.character(comb), "[:*+]", perl = TRUE)))
+          comb_vars <- trimws(unlist(strsplit(as.character(comb), "[:*+|]", perl = TRUE)))
           comb_vars <- comb_vars[nzchar(comb_vars)]
           lev_grid <- expand.grid(stats::setNames(lapply(comb_vars, get_levels_ordered), comb_vars), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
           obs_keys <- unique(do.call(paste, c(lapply(data[, comb_vars, drop = FALSE], as.character), sep = "\r")))
@@ -1193,9 +1266,10 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
             names(rv) <- comb_vars
             lbl <- paste(trend_var, paste(rv, collapse = "."), sep = ".")
             if (slice_touches_empty_cell(rv, lbl)) next
+            m_blocks <- build_marginal_weight_blocks(lev_grid[rr, comb_vars, drop = FALSE], label_desc = lbl)
             add_generated(
               label = lbl,
-              code = paste0(build_cell_code(comb_vars, rv), " ", trend_var, " :"),
+              code = paste(c(build_cell_code(comb_vars, rv), m_blocks, paste0(trend_var, " :")), collapse = " "),
               contrast_type = "simple_slope"
             )
           }
@@ -1254,10 +1328,11 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
                 slice_touches_empty_cell(vals, lbl)
               }, logical(1)))) next
 
+              m_blocks <- build_marginal_weight_blocks(cell_grid, label_desc = lbl)
               code_blocks <- vapply(seq_along(ps$focal_vars), function(k) {
                 paste0(ps$focal_vars[k], " : 1*", chosen[[k]][1L], " -1*", chosen[[k]][2L])
               }, character(1))
-              code_parts <- c(if (length(by_vals) > 0L) build_cell_code(names(by_vals), by_vals), code_blocks, paste0(trend_var, " :"))
+              code_parts <- c(if (length(by_vals) > 0L) build_cell_code(names(by_vals), by_vals), code_blocks, m_blocks, paste0(trend_var, " :"))
               add_generated(label = lbl, code = paste(code_parts, collapse = " "), contrast_type = "slope_diff")
             }
           }
