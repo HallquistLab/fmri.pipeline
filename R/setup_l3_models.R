@@ -424,9 +424,15 @@ setup_l3_backend_fsl <- function(gpa, backend, lg, l1_model_names, l2_model_name
     model_set <- expand.grid(l1_model = l1_model_names, l3_model = l3_model_names, stringsAsFactors = FALSE)
   }
 
+  default_fsl_id_cols <- if (isTRUE(gpa$multi_run)) {
+    c("session", "l1_model", "l1_cope_name", "l2_model", "l2_cope_name", "l3_model")
+  } else {
+    c("session", "l1_model", "l1_cope_name", "l3_model")
+  }
+
   if (nrow(model_set) == 0L) {
     lg$warn("No model combinations were generated for FSL L3 setup.")
-    return(list(metadata = NULL, data = NULL, id_cols = c("l1_model", "l1_cope_name", "l2_model", "l2_cope_name", "l3_model")))
+    return(list(metadata = NULL, data = NULL, id_cols = default_fsl_id_cols))
   }
 
   l3_cope_config <- get_fsl_l3_model_df(gpa, model_set, subj_df)
@@ -440,7 +446,7 @@ setup_l3_backend_fsl <- function(gpa, backend, lg, l1_model_names, l2_model_name
   if (length(to_run) == 0L) {
     lg$warn("No feat l3 inputs returned from get_feat_l3_inputs. Is it possible no lower-level analyses are complete?")
     return(list(metadata = l3_cope_config, data = NULL,
-                id_cols = c("l1_model", "l1_cope_name", "l2_model", "l2_cope_name", "l3_model")))
+                id_cols = default_fsl_id_cols))
   }
 
   all_l3_list <- foreach(
@@ -454,16 +460,21 @@ setup_l3_backend_fsl <- function(gpa, backend, lg, l1_model_names, l2_model_name
     if (nrow(model_info) <= 3) {
       lg$warn(
         "Fewer than 4 complete feat input directories for l1 model %s, l2 model %s, l3 model %s",
-        model_info$l1_model[1L], model_info$l2_model[1L], model_info$l3_model[1L]
+        model_info$l1_model[1L],
+        if ("l2_model" %in% names(model_info)) model_info$l2_model[1L] else "none",
+        model_info$l3_model[1L]
       )
       l3_file_setup$fsl <- NULL
+      return(l3_file_setup)
     }
 
     l3_file_setup$fsl <- tryCatch(backend$l3_setup(model_info, gpa = gpa),
       error = function(e) {
         lg$error(
           "Problem with fsl_l3_model. L1 Model: %s, L2 Model: %s, L3 model %s",
-          model_info$l1_model[1L], model_info$l2_model[1L], model_info$l3_model[1L]
+          model_info$l1_model[1L],
+          if ("l2_model" %in% names(model_info)) model_info$l2_model[1L] else "none",
+          model_info$l3_model[1L]
         )
         lg$error("Error message: %s", as.character(e))
         return(NULL)
@@ -474,10 +485,35 @@ setup_l3_backend_fsl <- function(gpa, backend, lg, l1_model_names, l2_model_name
   }
 
   fsl_df <- dplyr::bind_rows(lapply(all_l3_list, "[[", "fsl"))
+
+  # Synchronize l3_cope_config metadata with actual post-refit contrasts (e.g., when pooled_sessions_subject_ev
+  # suppresses EV_id* diagonals or prunes aliased between-subject contrasts)
+  if (nrow(fsl_df) > 0L && "cope_list" %in% names(fsl_df)) {
+    refit_cope_maps <- lapply(seq_len(nrow(fsl_df)), function(ii) {
+      cl <- fsl_df$cope_list[[ii]]
+      if (is.null(cl) || nrow(cl) == 0L) return(NULL)
+      cl$l3_model <- fsl_df$l3_model[ii]
+      cl
+    })
+    refit_cope_df <- dplyr::bind_rows(refit_cope_maps) %>% dplyr::distinct()
+    if (nrow(refit_cope_df) > 0L) {
+      updated_models <- unique(refit_cope_df$l3_model)
+      keep_cfg <- l3_cope_config %>% dplyr::filter(!.data$l3_model %in% updated_models)
+      upd_base <- l3_cope_config %>%
+        dplyr::filter(.data$l3_model %in% updated_models) %>%
+        dplyr::select(-c("l3_cope_number", "l3_cope_name")) %>%
+        dplyr::distinct() %>%
+        dplyr::left_join(refit_cope_df, by = "l3_model", relationship = "many-to-many")
+      l3_cope_config <- dplyr::bind_rows(keep_cfg, upd_base)
+    }
+    fsl_df$cope_list <- NULL
+  }
+
+  resolved_id_cols <- if (nrow(fsl_df) > 0L) intersect(default_fsl_id_cols, names(fsl_df)) else default_fsl_id_cols
   list(
     metadata = l3_cope_config,
     data = fsl_df,
-    id_cols = c("l1_model", "l1_cope_name", "l2_model", "l2_cope_name", "l3_model")
+    id_cols = resolved_id_cols
   )
 }
 
@@ -623,8 +659,32 @@ afni_3dlmer_setup <- function(gpa, backend, lg, l1_model_names, l2_model_names, 
         dplyr::distinct()
       l3_fit <- respecify_l3_model(l3_obj, analysis_ids)
 
-      model_vars <- setdiff(l3_fit$model_variables, c("id", "session"))
+      # Drop harvested rows whose id/session were excluded due to missing L3 covariates in respecify_l3_model
+      meta_keys <- l3_fit$metadata
+      meta_keys$id <- as.character(meta_keys$id)
+      dt$id <- as.character(dt$id)
+      if (!identical(class(dt$session), class(meta_keys$session))) {
+        dt$session <- as.integer(as.character(dt$session))
+        meta_keys$session <- as.integer(as.character(meta_keys$session))
+      }
+      dt <- dplyr::semi_join(dt, meta_keys, by = c("id", "session"))
+      if (nrow(dt) == 0L) {
+        lg$warn("No complete covariate rows remain for AFNI 3dLMEr model '%s', contrast '%s'. Skipping.", l3_name, con_name)
+        next
+      }
+
+      lmer_vars <- tryCatch(
+        setdiff(all.vars(stats::as.formula(paste("~", sub("^~\\s*", "", l3_obj$lmer_formula)))), c("Subj", "id")),
+        error = function(e) character(0)
+      )
+      model_vars <- unique(c(
+        setdiff(l3_fit$model_variables, c("id", "session")),
+        setdiff(lmer_vars, "session"),
+        setdiff(l3_obj$random_effects_vars %||% character(0), c("id", "session", "Subj"))
+      ))
+
       fit_model_data <- l3_fit$model_data
+      transformed_session <- if ("session" %in% names(fit_model_data)) fit_model_data$session else NULL
       overlap_cols <- intersect(names(l3_fit$metadata), names(fit_model_data))
       if (length(overlap_cols) > 0L) {
         fit_model_data <- fit_model_data %>%
@@ -632,22 +692,41 @@ afni_3dlmer_setup <- function(gpa, backend, lg, l1_model_names, l2_model_names, 
       }
       fit_model_data <- fit_model_data %>%
         dplyr::select(-dplyr::any_of("dummy"))
-      subject_data <- cbind(l3_fit$metadata, fit_model_data)
+      subject_data <- cbind(meta_keys, fit_model_data)
+      if (!is.null(transformed_session)) {
+        subject_data$.transformed_session_internal <- transformed_session
+      }
 
       datatable <- build_3dlmer_datatable(
         subject_data = subject_data,
         input_files = dt %>% dplyr::select("id", "session", "InputFile"),
-        model_variables = model_vars
+        model_variables = if (".transformed_session_internal" %in% names(subject_data)) c(model_vars, ".transformed_session_internal") else model_vars
       )
+      if (".transformed_session_internal" %in% names(datatable)) {
+        if ("session" %in% lmer_vars) {
+          datatable$session <- datatable$.transformed_session_internal
+        }
+        datatable$.transformed_session_internal <- NULL
+      }
       validate_3dlmer_formula_datatable(
         model_formula = l3_obj$lmer_formula,
         datatable = datatable,
         context = sprintf("L3 model '%s', contrast '%s'", l3_name, con_name)
       )
 
-      # Auto-detect qVars from the refit model data used to generate the AFNI table.
+      # Auto-detect qVars from the refit model data used to generate the AFNI table (including numeric session if used in lmer_formula).
       datatable_df <- as.data.frame(datatable, stringsAsFactors = FALSE)
-      qVars <- model_vars[vapply(datatable_df[, model_vars, drop = FALSE], is.numeric, logical(1))]
+      cand_qvars <- if ("session" %in% lmer_vars) unique(c("session", model_vars)) else model_vars
+      qVars <- cand_qvars[vapply(datatable_df[, cand_qvars, drop = FALSE], function(col) is.numeric(col) && !is.factor(col), logical(1))]
+
+      # Preserve user covariate_transform centering ("min", "max", "mean", "zscore") instead of letting 3dLMEr re-mean-center around sample mean
+      qVarCenters <- NULL
+      if (length(qVars) > 0L && !is.null(l3_obj$covariate_transform) && any(qVars %in% names(l3_obj$covariate_transform))) {
+        qVarCenters <- vapply(qVars, function(qv) {
+          if (qv %in% names(l3_obj$covariate_transform)) 0 else mean(as.numeric(datatable_df[[qv]]), na.rm = TRUE)
+        }, numeric(1))
+      }
+
       glt_codes <- emmeans_to_3dlmer_glt(
         l3_fit,
         datatable,
@@ -657,10 +736,10 @@ afni_3dlmer_setup <- function(gpa, backend, lg, l1_model_names, l2_model_names, 
       )
 
       l1_model <- dt$l1_model[1]
-      l2_model <- dt$l2_model[1]
+      l2_model <- if ("l2_model" %in% names(dt) && !is.null(dt$l2_model[1]) && !is.na(dt$l2_model[1])) dt$l2_model[1] else "none"
       l3_model <- l3_name
       l1_cope_name <- dt$l1_cope_name[1]
-      l2_cope_name <- dt$l2_cope_name[1]
+      l2_cope_name <- if ("l2_cope_name" %in% names(dt) && !is.null(dt$l2_cope_name[1]) && !is.na(dt$l2_cope_name[1])) dt$l2_cope_name[1] else "none"
 
       target_dir <- as.character(glue::glue(gpa$output_locations$afni_3dlmer_directory))
       
@@ -677,6 +756,7 @@ afni_3dlmer_setup <- function(gpa, backend, lg, l1_model_names, l2_model_names, 
         prefix = prefix,
         model_formula = l3_obj$lmer_formula,
         qVars = qVars,
+        qVarCenters = qVarCenters,
         glt_codes = glt_codes,
         data_table_file = "dataTable.txt", # Relative to script
         mask = mask_file,
@@ -693,7 +773,7 @@ afni_3dlmer_setup <- function(gpa, backend, lg, l1_model_names, l2_model_names, 
         l1_cope_name = l1_cope_name,
         l2_cope_name = l2_cope_name,
         afni_script = files$script,
-        mask_file = mask_file,
+        mask_file = mask_file %||% NA_character_,
         output_file = prefix,
         afni_complete = FALSE,
         afni_failed = NA,
@@ -833,12 +913,17 @@ get_l3_cope_df <- function(gpa, model_set, subj_df=NULL) {
   checkmate::assert_data_frame(model_set)
   dt <- dplyr::bind_rows(
     lapply(unique(model_set$l3_model), function(mm) {
+      m3 <- gpa$l3_models$models[[mm]]
       cope_names <- extract_contrast_names(
-        gpa$l3_models$models[[mm]]$contrasts,
+        m3$contrasts,
         model_name = mm,
         level_label = "L3",
         allow_empty = TRUE
       )
+      if (length(cope_names) == 0L && identical(m3$l3_input_mode, "3dlmer")) {
+        glt_nms <- names(m3$lmer_glt_codes)
+        cope_names <- if (!is.null(glt_nms) && length(glt_nms) > 0L) glt_nms else "omnibus"
+      }
       if (length(cope_names) == 0L) {
         stop(
           "No L3 contrasts available for model '", mm,
@@ -1018,6 +1103,18 @@ get_feat_l3_inputs <- function(gpa, l3_cope_config, lg=NULL) {
         )
     }
 
+    # Ensure any 1-run passthrough inputs have synthesized tdof_t<k>.nii.gz before L3 FLAME runs
+    pt_rows <- which(feat_inputs$l2_input_mode == "l1_cope_file_passthrough")
+    if (length(pt_rows) > 0L && "l1_cope_number" %in% names(feat_inputs)) {
+      for (pri in pt_rows) {
+        synthesize_passthrough_tdof(
+          feat_dir = feat_inputs$feat_dir[pri],
+          l1_cope_number = feat_inputs$l1_cope_number[pri],
+          lg = lg
+        )
+      }
+    }
+
     # sort out expected cope files for each model combination
     feat_inputs <- feat_inputs %>%
       dplyr::mutate(
@@ -1041,12 +1138,41 @@ get_feat_l3_inputs <- function(gpa, l3_cope_config, lg=NULL) {
 
     split_on <- c("l1_cope_name", "l2_cope_name", "l1_model", "l2_model", "l3_model")
   } else {
-    # feat directories in $l1_model_setup
-    feat_inputs <- gpa$l1_model_setup$fsl %>%
+    # feat directories in $l1_model_setup (single-run study: filter out empty/non-estimable L1 COPEs before L3!)
+    l1_complete <- gpa$l1_model_setup$fsl %>%
       dplyr::filter(.data$feat_complete == TRUE)
 
-    feat_inputs <- feat_inputs %>%
-      dplyr::inner_join(l3_cope_config, by = c("id", "session", "l1_model"))
+    if (nrow(l1_complete) > 0L && all(c("feat_fsf", "feat_dir") %in% names(l1_complete))) {
+      l1_for_val <- l1_complete
+      if (!"run_number" %in% names(l1_for_val)) l1_for_val$run_number <- 1L
+      l1_val <- build_l1_cope_validity(l1_for_val, gpa, lg = lg)
+      if (nrow(l1_val) > 0L) {
+        dropped_l1 <- l1_val %>% dplyr::filter(.data$valid_for_higher_level == FALSE)
+        if (nrow(dropped_l1) > 0L) {
+          for (di in seq_len(nrow(dropped_l1))) {
+            lg$warn(
+              "Dropping single-run L1 input for subject %s session %s, L1 model %s, L1 cope %s before L3 setup because cope is %s (%s).",
+              dropped_l1$id[di], dropped_l1$session[di], dropped_l1$l1_model[di],
+              dropped_l1$l1_cope_name[di], dropped_l1$validity_state[di],
+              ifelse(is.na(dropped_l1$validity_reason[di]), "unknown", dropped_l1$validity_reason[di])
+            )
+          }
+        }
+        valid_l1_keys <- l1_val %>%
+          dplyr::filter(.data$valid_for_higher_level == TRUE) %>%
+          dplyr::select("id", "session", "l1_model", "l1_cope_number", "l1_cope_name") %>%
+          dplyr::distinct()
+        feat_inputs <- l1_complete %>%
+          dplyr::inner_join(l3_cope_config, by = c("id", "session", "l1_model")) %>%
+          dplyr::inner_join(valid_l1_keys, by = c("id", "session", "l1_model", "l1_cope_number", "l1_cope_name"))
+      } else {
+        feat_inputs <- l1_complete %>%
+          dplyr::inner_join(l3_cope_config, by = c("id", "session", "l1_model"))
+      }
+    } else {
+      feat_inputs <- l1_complete %>%
+        dplyr::inner_join(l3_cope_config, by = c("id", "session", "l1_model"))
+    }
 
     feat_inputs <- feat_inputs %>%
       dplyr::mutate(cope_file = file.path(

@@ -78,7 +78,7 @@ create_fwe_spec <- function(gpa, level = level, lg = NULL) {
     fwe_obj <- NULL
   } else if (which_fwe == "3dtest++ -randomsign + 3dClustSim") {
     fwe_obj <- build_3dclustsim_permutation(to_fwe)
-  } else if (which == "PALM") {
+  } else if (which_fwe == "PALM") {
     warning("PALM is not quite in here yet!")
     fwe_obj <- NULL
   }

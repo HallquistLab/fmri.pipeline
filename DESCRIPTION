@@ -33,6 +33,7 @@ Imports:
     doParallel,
     doFuture,
     emmeans,
+    estimability,
     foreach,
     fmri,
     formula.tools,

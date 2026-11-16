@@ -80,6 +80,62 @@ export_glm_config <- function(gpa, file="glm_config.yaml") {
 }
 
 
+format_custom_contrasts_for_yaml <- function(custom_mat) {
+  if (is.null(custom_mat) || length(custom_mat) == 0L) return(NULL)
+  if (is.list(custom_mat) && !is.data.frame(custom_mat)) return(custom_mat)
+  if (is.data.frame(custom_mat)) custom_mat <- as.matrix(custom_mat)
+  if (!is.matrix(custom_mat) || nrow(custom_mat) == 0L) return(NULL)
+
+  rnames <- rownames(custom_mat)
+  if (is.null(rnames)) rnames <- paste0("custom_", seq_len(nrow(custom_mat)))
+  cnames <- colnames(custom_mat)
+
+  out <- stats::setNames(vector("list", nrow(custom_mat)), rnames)
+  for (ii in seq_len(nrow(custom_mat))) {
+    row_vec <- as.numeric(custom_mat[ii, ])
+    if (!is.null(cnames) && length(cnames) == length(row_vec)) {
+      nz <- which(abs(row_vec) > 1e-12)
+      if (length(nz) > 0L) {
+        out[[ii]] <- as.list(stats::setNames(row_vec[nz], cnames[nz]))
+      } else {
+        out[[ii]] <- as.list(stats::setNames(row_vec, cnames))
+      }
+    } else {
+      out[[ii]] <- row_vec
+    }
+  }
+  out
+}
+
+format_contrast_spec_for_yaml <- function(cspec, fallback_custom = NULL, is_l1_top = FALSE) {
+  if (is.null(cspec)) return(list())
+  out <- list()
+  if (!is.null(cspec$diagonal)) out$diagonal <- cspec$diagonal
+
+  if (!isTRUE(is_l1_top)) {
+    if (!is.null(cspec$cell_means)) out$cell_means <- cspec$cell_means
+    if (!is.null(cspec$cond_means) && length(cspec$cond_means) > 0L) out$cond_means <- cspec$cond_means
+    if (!is.null(cspec$pairwise_diffs) && length(cspec$pairwise_diffs) > 0L) out$pairwise_diffs <- cspec$pairwise_diffs
+    if (!is.null(cspec$interaction_diffs) && length(cspec$interaction_diffs) > 0L) out$interaction_diffs <- cspec$interaction_diffs
+    if (!is.null(cspec$overall_response)) out$overall_response <- cspec$overall_response
+    if (!is.null(cspec$simple_slopes) && length(cspec$simple_slopes) > 0L) out$simple_slopes <- cspec$simple_slopes
+    if (!is.null(cspec$slope_diffs) && length(cspec$slope_diffs) > 0L) out$slope_diffs <- cspec$slope_diffs
+    if (!is.null(cspec$weights)) out$weights <- cspec$weights
+    if (!is.null(cspec$factor_coding) && length(cspec$factor_coding) > 0L) out$factor_coding <- as.list(cspec$factor_coding)
+  }
+
+  if (!is.null(cspec$delete) && length(cspec$delete) > 0L) {
+    out$delete <- cspec$delete
+  }
+
+  custom_out <- format_custom_contrasts_for_yaml(cspec$custom %||% fallback_custom)
+  if (!is.null(custom_out) && length(custom_out) > 0L) {
+    out$custom <- custom_out
+  }
+
+  out
+}
+
 #' Function to output l1_models into '.yaml' object
 #' @param gpa the \code{gpa} object
 #' @return a yaml document of l1_models for an object
@@ -185,6 +241,18 @@ get_l1_config <- function(gpa) {
       sobj$wi_factors <- ss$wi_factors
     }
 
+    if (!is.null(ss$wi_expansion)) {
+      sobj$wi_expansion <- ss$wi_expansion
+    }
+
+    if (!is.null(ss$reference_level) && length(ss$reference_level) > 0L) {
+      sobj$reference_level <- as.list(ss$reference_level)
+    }
+
+    if (!is.null(ss$factor_coding) && length(ss$factor_coding) > 0L) {
+      sobj$factor_coding <- as.list(ss$factor_coding)
+    }
+
     # other signal flags
     if (!is.null(ss$demean_convolved)) {
       checkmate::assert_flag(ss$demean_convolved)
@@ -224,35 +292,20 @@ get_l1_config <- function(gpa) {
     mobj <- list()
     mobj$signals <- mm$signals
     if (!is.null(mm$execution_backend)) mobj$execution_backend <- mm$execution_backend
-    mobj$contrasts <- list(
-      diagonal = mm$contrast_spec$diagonal,
-      cell_means = mm$contrast_spec$cell_means,
-      cond_means = mm$contrast_spec$cond_means,
-      pairwise_diffs = mm$contrast_spec$pairwise_diffs,
-      overall_response = mm$contrast_spec$overall_response,
-      weights = mm$contrast_spec$weights,
-      delete = mm$contrast_spec$delete
+    mobj$contrasts <- format_contrast_spec_for_yaml(
+      mm$contrast_spec,
+      fallback_custom = mm$contrast_list$custom,
+      is_l1_top = TRUE
     )
-    if (!is.null(mm$contrast_spec$simple_slopes) && length(mm$contrast_spec$simple_slopes) > 0L) {
-      mobj$contrasts$simple_slopes <- mm$contrast_spec$simple_slopes
-    }
 
     if (!is.null(mm$wi_models)) {
       mobj$contrasts$wi_contrasts <- list()
       for (cc in names(mm$wi_models)) {
-        mcopy <- mm$wi_models[[cc]]$contrast_spec
-        mcopy$cat_vars <- NULL
-        if (!is.null(mcopy$simple_slopes) && length(mm$contrast_spec$simple_slopes) == 0L) mcopy$simple_slopes <- NULL # remove empty
-        # mcopy$contrasts <- NULL # do not export constructed matrix
-        # mcopy$contrast_list <- NULL
-        # mcopy$lmfit <- NULL # should be refit upon import
-        # mcopy$wi_formula <- as.character.formula(mcopy$wi_formula)
-
-        # mobj$wi_models[[cc]] <- list(
-        #   wi_factors = mm$wi_models[[cc]]$wi_factors
-        #   wi_formula = mm$wi_models[[cc]]$wi_factors
-        # )
-        mobj$contrasts$wi_contrasts[[cc]] <- mcopy
+        mobj$contrasts$wi_contrasts[[cc]] <- format_contrast_spec_for_yaml(
+          mm$wi_models[[cc]]$contrast_spec,
+          fallback_custom = mm$wi_models[[cc]]$contrast_list$custom,
+          is_l1_top = FALSE
+        )
       }
     }
 
@@ -272,7 +325,7 @@ get_l2_config <- function(gpa) {
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
 
   # capture whether we are building level 2 (subject) or level 3 (sample) models
-  fname <- match.call()[[1]]
+  fname <- utils::tail(as.character(match.call()[[1]]), 1L)
   if (fname == "get_l2_config") {
     model_set <- gpa$l2_models
     level <- 2L #model level inside model object
@@ -307,22 +360,16 @@ get_l2_config <- function(gpa) {
     # convert named vectors for covariate transformation and reference levels to lists for YAML to capture the key:value pairs
     if (!is.null(mm$covariate_transform)) mobj$covariate_transform <- as.list(mm$covariate_transform) # settings for covariate transformation
     if (!is.null(mm$reference_level)) mobj$reference_level <- as.list(mm$reference_level) # settings for covariate transformation
+    if (!is.null(mm$factor_coding)) mobj$factor_coding <- as.list(mm$factor_coding)
     if (level == 2L && !is.null(mm$l2_scope)) mobj$l2_scope <- mm$l2_scope
     if (level == 3L && !is.null(mm$l3_input_mode)) mobj$l3_input_mode <- mm$l3_input_mode
     if (level == 3L && !is.null(mm$producer_backend)) mobj$producer_backend <- mm$producer_backend
 
-    mobj$contrasts <- list(
-      diagonal = mm$contrast_spec$diagonal,
-      cell_means = mm$contrast_spec$cell_means,
-      cond_means = mm$contrast_spec$cond_means,
-      pairwise_diffs = mm$contrast_spec$pairwise_diffs,
-      overall_response = mm$contrast_spec$overall_response,
-      weights = mm$contrast_spec$weights,
-      delete = mm$contrast_spec$delete
+    mobj$contrasts <- format_contrast_spec_for_yaml(
+      mm$contrast_spec,
+      fallback_custom = mm$contrast_list$custom,
+      is_l1_top = FALSE
     )
-    if (!is.null(mm$contrast_spec$simple_slopes) && length(mm$contrast_spec$simple_slopes) > 0L) {
-      mobj$contrasts$simple_slopes <- mm$contrast_spec$simple_slopes
-    }
 
     if (level == 3L) {
       mobj$fsl_outlier_deweighting <- mm$fsl_outlier_deweighting

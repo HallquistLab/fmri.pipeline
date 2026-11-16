@@ -533,7 +533,7 @@ lookup_feat_outputs_l3 <- function(gpa, what, lg, warn_missing = TRUE) {
 
   meta <- lookup_feat_l3_metadata(gpa, setup)
   join_cols <- intersect(
-    c("l1_model", "l1_cope_name", "l2_model", "l2_cope_name", "l3_model"),
+    c("session", "l1_model", "l1_cope_name", "l2_model", "l2_cope_name", "l3_model"),
     intersect(names(setup), names(meta))
   )
 
@@ -852,20 +852,37 @@ lookup_feat_rows_from_cope_df <- function(cope_df, level, what, feat_dir, feat_f
 }
 
 lookup_feat_l3_metadata <- function(gpa, setup) {
+  dedupe_group_l2_cope_number <- function(df) {
+    if (!"l2_cope_number" %in% names(df)) return(df)
+    grp_cols <- intersect(c("session", "l1_model", "l1_cope_name", "l2_model", "l2_cope_name", "l3_model", "l3_cope_number", "l3_cope_name"), names(df))
+    if (length(grp_cols) == 0L) return(df)
+    # When subject-specific refits shift l2_cope_number across subjects for the same l2_cope_name,
+    # collapse to one deterministic group-level row per (l1_model, l1_cope_name, l2_model, l2_cope_name, l3_model, l3_cope_number)
+    df %>%
+      dplyr::arrange(.data$l2_cope_number) %>%
+      dplyr::distinct(dplyr::across(dplyr::all_of(grp_cols)), .keep_all = TRUE)
+  }
+
   if (!is.null(gpa$l3_model_setup$metadata) &&
       is.data.frame(gpa$l3_model_setup$metadata) &&
       nrow(gpa$l3_model_setup$metadata) > 0L) {
     meta_cols <- intersect(
       c(
+        "session",
         "l1_model", "l1_cope_number", "l1_cope_name",
         "l2_model", "l2_cope_number", "l2_cope_name",
         "l3_model", "l3_cope_number", "l3_cope_name"
       ),
       names(gpa$l3_model_setup$metadata)
     )
+    # Only retain `session` from subject-level metadata when setup is partitioned per session (not pooled session = 0)
+    if ("session" %in% meta_cols && "session" %in% names(setup) && any(setup$session == 0L, na.rm = TRUE)) {
+      meta_cols <- setdiff(meta_cols, "session")
+    }
     return(gpa$l3_model_setup$metadata %>%
       dplyr::select(dplyr::all_of(meta_cols)) %>%
-      dplyr::distinct())
+      dplyr::distinct() %>%
+      dedupe_group_l2_cope_number())
   }
 
   model_set <- setup %>%
@@ -894,7 +911,9 @@ lookup_feat_l3_metadata <- function(gpa, setup) {
           "l2_model", "l2_cope_number", "l2_cope_name"
         ))
       ) %>%
-      dplyr::distinct()
+      dplyr::distinct() %>%
+      dplyr::arrange(.data$l2_cope_number) %>%
+      dplyr::distinct(dplyr::across(dplyr::any_of(c("l1_model", "l1_cope_number", "l1_cope_name", "l2_model", "l2_cope_name"))), .keep_all = TRUE)
   }
 
   meta <- setup %>%

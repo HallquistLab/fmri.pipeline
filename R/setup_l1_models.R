@@ -53,7 +53,18 @@ setup_l1_models <- function(gpa, l1_model_names=NULL) {
     )
   ) %dopar% {
     subj_df <- subj_df # avoid complaints about visible global binding in R CMD check
-    setup_l1_subject(subj_df = subj_df, gpa = gpa, ctx = ctx)
+    tryCatch(
+      setup_l1_subject(subj_df = subj_df, gpa = gpa, ctx = ctx),
+      error = function(e) {
+        ctx$lg$error(
+          "Error in setup_l1_subject for id=%s, session=%s: %s",
+          as.character(subj_df$id[1L]),
+          if ("session" %in% names(subj_df)) as.character(subj_df$session[1L]) else "NA",
+          conditionMessage(e)
+        )
+        NULL
+      }
+    )
   }
 
   gpa$l1_model_setup <- combine_l1_subject_results(all_subj_l1_list)
@@ -488,7 +499,7 @@ prepare_l1_model_inputs <- function(gpa, model_name, subj_id, subj_session = NUL
       warning(msg)
     }
 
-    if (!is.null(this_signal$wi_model) && nrow(this_signal$value) > 0L) {
+    if (!is.null(this_signal$wi_factors)) {
       this_signal <- fit_wi_model(this_signal)
     }
     this_signal
@@ -637,9 +648,17 @@ build_and_cache_l1_bdm <- function(subject_ctx, model_ctx, gpa, model_name, l1_o
 
 # Internal helper: prefer a cached BDM if it exists, otherwise rebuild and save it.
 load_or_build_l1_bdm <- function(subject_ctx, model_ctx, gpa, model_name, l1_output_dir, bdm_out_file, lg) {
-  cache <- load_cached_l1_bdm(bdm_out_file = bdm_out_file, lg = lg)
-  if (!isTRUE(cache$run_bdm)) {
-    return(cache$d_obj)
+  force_rebuild <- isTRUE(gpa$glm_settings$fsl$force_l1_creation) ||
+    isTRUE(gpa$glm_settings$spm$force_l1_creation) ||
+    isTRUE(gpa$glm_settings$afni$force_l1_creation)
+
+  if (!isTRUE(force_rebuild)) {
+    cache <- load_cached_l1_bdm(bdm_out_file = bdm_out_file, lg = lg)
+    if (!isTRUE(cache$run_bdm)) {
+      return(cache$d_obj)
+    }
+  } else if (file.exists(bdm_out_file)) {
+    lg$info("force_l1_creation is TRUE; rebuilding BDM design instead of loading cached %s", bdm_out_file)
   }
 
   build_and_cache_l1_bdm(

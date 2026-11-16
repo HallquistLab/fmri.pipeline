@@ -698,9 +698,9 @@ bl1_build_signals <- function(l1_model_set, trial_data, block_data = NULL, ppi_d
 
       ### ---- value of regressor ----
       if (isTRUE(modify)) {
-        # repopulate value data.frame in case subset has changed
+        # repopulate value data.frame in case subset has changed, preserving any existing wi_factors
         ss$value <- get_value_df(
-          ss, trial_data, event_data = l1_model_set$events[[ss$event]]$data
+          ss, trial_data, wi_factors = ss$wi_factors, event_data = l1_model_set$events[[ss$event]]$data
         )
 
         cat(
@@ -755,9 +755,9 @@ bl1_build_signals <- function(l1_model_set, trial_data, block_data = NULL, ppi_d
           }
         }
 
-        # populate value data frame for this signal
+        # populate value data frame for this signal, preserving any existing wi_factors
         ss$value <- get_value_df(
-          ss, trial_data, event_data = l1_model_set$events[[ss$event]]$data
+          ss, trial_data, wi_factors = ss$wi_factors, event_data = l1_model_set$events[[ss$event]]$data
         )
       }
 
@@ -1072,7 +1072,7 @@ bl1_specify_wi_factors <- function(ss, l1_model_set, trial_data, modify) {
 
   res <- menu(c("No", "Yes"), title = "Is this signal modulated by one or more within-subject factors?")
   if (res == 1L) {
-    ss$wi_formula <- ss$wi_factors <- ss$wi_model <- NULL # clear out within-subject specifications
+    ss$wi_formula <- ss$wi_ev_formula <- ss$wi_factors <- ss$wi_factor_levels <- ss$wi_model <- NULL # clear out within-subject specifications
     return(ss)
   }
 

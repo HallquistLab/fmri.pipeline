@@ -5,13 +5,16 @@
 \title{helper function to generate a contrast matrix from an lm() object
   and a set of user-specified contrasts using emmeans}
 \usage{
-get_contrasts_from_spec(mobj, lmfit = NULL)
+get_contrasts_from_spec(mobj, lmfit = NULL, allow_interactive_dedupe = NULL)
 }
 \arguments{
 \item{mobj}{a model object created by build_l<X>_models}
 
 \item{lmfit}{an optional lm() object used for emmeans calculations. If provided, this object
 will be used instead of mobj$lmfit (the parent lm on the overall dataset).}
+
+\item{allow_interactive_dedupe}{Optional logical flag controlling whether duplicate contrasts
+prompt interactively (defaults to \code{FALSE} on refits, otherwise \code{rlang::is_interactive()}).}
 }
 \value{
 a modified copy of the model object \code{mobj} with $contrast_list and $contrasts

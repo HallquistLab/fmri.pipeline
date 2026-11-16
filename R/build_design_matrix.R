@@ -402,9 +402,21 @@ build_design_matrix <- function(
   # ============================================================================
   
   # Expand signals (handle wi_factors, beta_series, etc.) and align with events
-  stage2_result <- expand_and_align_signals(signals, events, lg)
+  stage2_result <- expand_and_align_signals(signals, events, lg, center_values = center_values)
   signals_expanded <- stage2_result$signals_expanded
   signals_aligned <- stage2_result$signals_aligned
+  bdm_args$signals <- signals_expanded
+
+  # Collect per-run trial-level model matrices for formula-coded wi_factors signals
+  wi_run_trial_matrices <- list()
+  for (s_exp in signals_expanded) {
+    if (!is.null(s_exp$wi_run_trial_matrices) && !is.null(s_exp$parent_signal_name)) {
+      for (rk in names(s_exp$wi_run_trial_matrices)) {
+        if (is.null(wi_run_trial_matrices[[rk]])) wi_run_trial_matrices[[rk]] <- list()
+        wi_run_trial_matrices[[rk]][[s_exp$parent_signal_name]] <- s_exp$wi_run_trial_matrices[[rk]]
+      }
+    }
+  }
   
   # Extract signal configuration into bdm_args
   signal_config <- stage2_result$signal_config
@@ -447,6 +459,10 @@ build_design_matrix <- function(
       mm <- as.matrix(run)
       attr(mm, "event") <- attr(run, "event") # propagate event tag
       attr(mm, "physio_only") <- attr(run, "physio_only") # propagate physio indicator
+      attr(mm, "return_deriv") <- attr(run, "return_deriv")
+      attr(mm, "is_parametric") <- attr(run, "is_parametric")
+      attr(mm, "precentered_parametric") <- attr(run, "precentered_parametric")
+      attr(mm, "demean_convolved") <- attr(run, "demean_convolved")
       return(mm)
     })
   }))
@@ -621,13 +637,21 @@ build_design_matrix <- function(
 
   timing_files <- list(convolved = tf_convolved, convolved_concat = tf_convolved_concat, fsl = tf_fsl, afni = tf_afni)
 
+  # Record empty convolved EVs per run for downstream FSL shape=10 and contrast-validity handling
+  runs_empty_evs <- stats::setNames(lapply(names(dmat_convolved), function(rk) {
+    rc <- dmat_convolved[[rk]]
+    names(rc)[vapply(rc, function(col) all(abs(col[is.finite(col)]) <= sqrt(.Machine$double.eps)), logical(1))]
+  }), names(dmat_convolved))
+
   to_return <- list(
     design = dmat, design_concat = design_concat, design_convolved = dmat_convolved,
     design_unconvolved = dmat_unconvolved, collin_events = collin_diag_events,
     collin_convolved = collin_diag_convolved, concat_onsets = concat_onsets, runs_to_output = runs_to_output,
     run_nifti = run_nifti, run_volumes = run_volumes, drop_volumes = drop_volumes, tr = tr,
     output_directory = output_directory, additional_regressors = additional_regressors,
-    timing_files = timing_files)
+    timing_files = timing_files, runs_empty_evs = runs_empty_evs,
+    wi_run_trial_matrices = wi_run_trial_matrices
+  )
 
   to_return$design_plot <- visualize_design_matrix(concat_design_runs(to_return))
 

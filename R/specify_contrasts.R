@@ -1,8 +1,125 @@
+extract_lm_var_types <- function(lmfit) {
+  if (is.null(lmfit)) {
+    return(list(cat_vars = character(0), cont_vars = character(0)))
+  }
+  tt <- stats::terms(lmfit)
+  rhs_vars <- all.vars(stats::delete.response(tt))
+  dclass <- attr(tt, "dataClasses")
+  if (is.null(dclass) || length(rhs_vars) == 0L) {
+    return(list(cat_vars = character(0), cont_vars = character(0)))
+  }
+  present <- intersect(rhs_vars, names(dclass))
+  cat_vars <- present[dclass[present] %in% c("factor", "character", "ordered")]
+  cont_vars <- present[dclass[present] %in% c("integer", "numeric")]
+  list(cat_vars = cat_vars, cont_vars = cont_vars)
+}
+
+coerce_yaml_char_vec <- function(x) {
+  if (is.null(x)) return(character(0))
+  if (is.list(x)) {
+    if (length(x) == 0L) return(character(0))
+    x <- unlist(x, recursive = TRUE, use.names = FALSE)
+  }
+  as.character(x)
+}
+
+parse_custom_contrast_spec <- function(custom_spec, reg_names = NULL, lg = NULL) {
+  if (is.null(custom_spec) || length(custom_spec) == 0L) return(NULL)
+  if (is.null(lg)) lg <- lgr::get_logger()
+
+  if (is.matrix(custom_spec)) {
+    if (nrow(custom_spec) == 0L) return(NULL)
+    storage.mode(custom_spec) <- "double"
+    if (is.null(colnames(custom_spec)) && !is.null(reg_names) && ncol(custom_spec) == length(reg_names)) {
+      colnames(custom_spec) <- reg_names
+    }
+    return(custom_spec)
+  }
+
+  if (is.data.frame(custom_spec)) {
+    return(parse_custom_contrast_spec(as.matrix(custom_spec), reg_names = reg_names, lg = lg))
+  }
+
+  if (!is.list(custom_spec)) {
+    stop("custom contrasts must be a matrix or a named list of contrast vectors.", call. = FALSE)
+  }
+
+  cnames <- names(custom_spec)
+  if (is.null(cnames)) {
+    cnames <- paste0("custom_", seq_along(custom_spec))
+  } else {
+    empty_nm <- !nzchar(cnames) | is.na(cnames)
+    if (any(empty_nm)) cnames[empty_nm] <- paste0("custom_", which(empty_nm))
+  }
+
+  # Collect union of named columns if reg_names is not yet known
+  if (is.null(reg_names)) {
+    named_cols <- unique(unlist(lapply(custom_spec, function(entry) {
+      if (is.list(entry)) names(entry) else names(entry)
+    })))
+    if (length(named_cols) > 0L) reg_names <- named_cols
+  }
+
+  rows <- list()
+  kept_names <- character(0)
+  for (ii in seq_along(custom_spec)) {
+    entry <- custom_spec[[ii]]
+    if (is.list(entry) && !is.null(names(entry))) {
+      entry <- unlist(entry)
+    }
+    if (!is.numeric(entry)) {
+      entry_num <- suppressWarnings(as.numeric(entry))
+      if (!is.null(names(entry))) names(entry_num) <- names(entry)
+      entry <- entry_num
+    }
+
+    if (!is.null(names(entry)) && any(nzchar(names(entry)))) {
+      if (is.null(reg_names)) {
+        cvec <- entry
+      } else {
+        unknown_cols <- setdiff(names(entry), reg_names)
+        if (length(unknown_cols) > 0L) {
+          lg$warn(
+            "Custom contrast '%s' references unknown/dropped regressor(s) (%s); dropping this custom contrast.",
+            cnames[ii], paste(unknown_cols, collapse = ", ")
+          )
+          next
+        }
+        cvec <- stats::setNames(rep(0, length(reg_names)), reg_names)
+        cvec[names(entry)] <- as.numeric(entry)
+      }
+    } else {
+      if (!is.null(reg_names) && length(entry) != length(reg_names)) {
+        lg$warn(
+          "Custom contrast '%s' has length %d, expected %d (%s); dropping this custom contrast.",
+          cnames[ii], length(entry), length(reg_names), paste(reg_names, collapse = ", ")
+        )
+        next
+      }
+      cvec <- as.numeric(entry)
+      if (!is.null(reg_names)) names(cvec) <- reg_names
+    }
+
+    rows[[length(rows) + 1L]] <- cvec
+    kept_names <- c(kept_names, cnames[ii])
+  }
+
+  if (length(rows) == 0L) return(NULL)
+  out <- do.call(rbind, rows)
+  rownames(out) <- kept_names
+  if (!is.null(reg_names) && ncol(out) == length(reg_names)) {
+    colnames(out) <- reg_names
+  }
+  out
+}
+
 #' Internal function to add, edit, rename, delete contrasts
 #'
 #' @param mobj \code{l1_model_spec} or \code{hi_model_spec} object
 #' @param signals a list of signals that provide information about regressor specification
 #' @param spec_list a list of settings for this model based on an external YAML/JSON specification file
+#' @param preselected_pairwise Optional character vector of factor names preselected for pairwise differences
+#'   in interactive higher-level model setup.
 #' @keywords internal
 #' @author Michael Hallquist
 #' @importFrom magrittr %>%
@@ -11,7 +128,7 @@
 #' @importFrom checkmate assert_multi_class assert_integerish
 #' @importFrom stats coef model.matrix setNames terms
 #' @importFrom utils menu modifyList
-specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
+specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL, preselected_pairwise = NULL) {
   checkmate::assert_multi_class(mobj, c("l1_model_spec", "l1_wi_spec", "hi_model_spec")) # verify that we have an object of known structure
   checkmate::assert_list(signals, null.ok = TRUE)
 
@@ -20,15 +137,19 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
 
   # ideally, we should expect a fitted model object to be passed in to support condition means and differences
   # default values for different contrast selections
-  cond_means <- c() # factors for which we want model-predicted condition means
-  pairwise_diffs <- c() # factors for which we want pairwise differences
+  cond_means <- character(0) # factors for which we want model-predicted condition means
+  pairwise_diffs <- if (!is.null(preselected_pairwise)) as.character(preselected_pairwise) else character(0) # factors for which we want pairwise differences
+  interaction_diffs <- character(0) # factorial interaction (difference-of-differences) contrasts
   cell_means <- FALSE # whether to include cell means across all factors in design
   overall_response <- FALSE # whether to include predicted average response across all predictors
   simple_slopes <- list() # continuous variables over which to test slopes
+  slope_diffs <- list() # pairwise/interaction differences in slopes across factor levels
+  custom_contrasts <- mobj$contrast_spec$custom %||% mobj$contrast_list$custom
   weights <- "cells"
-  cat_vars <- c()
-  cont_vars <- c()
-  delete <- c() # contrasts to be deleted based on user specification or redundancy
+  factor_coding <- mobj$factor_coding %||% NULL
+  cat_vars <- character(0)
+  cont_vars <- character(0)
+  delete <- character(0) # contrasts to be deleted based on user specification or redundancy
 
   # subfunction to populate contrast_spec and create $contrast_list from spec
   # uses lexical scope of specify_contrasts
@@ -36,13 +157,20 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
     mobj$contrast_spec$diagonal <- include_diagonal
     mobj$contrast_spec$cond_means <- cond_means
     mobj$contrast_spec$pairwise_diffs <- pairwise_diffs
+    mobj$contrast_spec$interaction_diffs <- interaction_diffs
     mobj$contrast_spec$cell_means <- cell_means
     mobj$contrast_spec$overall_response <- overall_response
     mobj$contrast_spec$simple_slopes <- simple_slopes
+    mobj$contrast_spec$slope_diffs <- slope_diffs
+    mobj$contrast_spec$custom <- custom_contrasts
     mobj$contrast_spec$weights <- weights
+    mobj$contrast_spec$factor_coding <- factor_coding
     mobj$contrast_spec$cat_vars <- cat_vars
     mobj$contrast_spec$regressors <- mobj$regressors
     mobj$contrast_spec$delete <- delete
+    if (!is.null(custom_contrasts)) {
+      mobj$contrast_list$custom <- custom_contrasts
+    }
     mobj <- get_contrasts_from_spec(mobj)
   }
 
@@ -57,16 +185,21 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
     if (is.null(nm)) return(x)
 
     valid_keys <- c(
-      "diagonal", "cond_means", "pairwise_diffs", "cell_means",
-      "overall_response", "simple_slopes", "weights", "delete", "wi_contrasts"
+      "diagonal", "cond_means", "pairwise_diffs", "interaction_diffs", "cell_means",
+      "overall_response", "simple_slopes", "slope_diffs", "custom",
+      "weights", "factor_coding", "delete", "wi_contrasts"
     )
     alias_map <- c(
       include_diagonal = "diagonal",
       pairwise_diff = "pairwise_diffs",
+      interaction_diff = "interaction_diffs",
+      interaction_contrasts = "interaction_diffs",
       cond_mean = "cond_means",
       cell_mean = "cell_means",
       overall_responses = "overall_response",
       simple_slope = "simple_slopes",
+      slope_diff = "slope_diffs",
+      custom_contrasts = "custom",
       wi_contrast = "wi_contrasts"
     )
 
@@ -109,9 +242,10 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
       lg,
       allow_noncontrast = c(
         "signals", "name", "level", "model_formula", "num2fac",
-        "covariate_transform", "reference_level", "contrasts", "fsl_outlier_deweighting",
+        "covariate_transform", "reference_level", "factor_coding", "contrasts", "fsl_outlier_deweighting",
         "l2_scope", "l3_input_mode", "execution_backend", "producer_backend",
-        "random_effects", "lmer_formula", "lmer_mask", "lmer_njobs", "lmer_glt_codes"
+        "random_effects", "lmer_formula", "lmer_mask", "lmer_njobs", "lmer_glt_codes",
+        "wi_expansion", "wi_factor_levels"
       )
     )
 
@@ -123,8 +257,9 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
     mm <- tryCatch(model.matrix(mobj$lmfit), error = function(e) NULL)
     if (!is.null(mm) && ncol(mm) == 1L && colnames(mm)[1] == "(Intercept)") {
       contrast_keys <- c(
-        "diagonal", "cond_means", "pairwise_diffs", "cell_means",
-        "overall_response", "simple_slopes", "weights", "delete", "wi_contrasts"
+        "diagonal", "cond_means", "pairwise_diffs", "interaction_diffs", "cell_means",
+        "overall_response", "simple_slopes", "slope_diffs", "custom",
+        "weights", "factor_coding", "delete", "wi_contrasts"
       )
       present_keys <- character(0)
       if (!is.null(spec_list) && checkmate::test_list(spec_list)) {
@@ -143,10 +278,14 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
         diagonal = TRUE,
         cond_means = character(0),
         pairwise_diffs = character(0),
+        interaction_diffs = character(0),
         cell_means = FALSE,
         overall_response = FALSE,
         simple_slopes = list(),
+        slope_diffs = list(),
+        custom = NULL,
         weights = "cells",
+        factor_coding = factor_coding,
         cat_vars = character(0),
         regressors = mobj$regressors,
         delete = character(0)
@@ -163,6 +302,7 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
   }
 
   prompt_contrasts <- FALSE
+  has_only_lmer_glts <- FALSE
   if (!is.null(spec_list)) {
     # If spec_list is malformed/empty, fall back to interactive prompts.
     if (!checkmate::test_list(spec_list)) {
@@ -170,49 +310,79 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
       spec_list <- NULL
     } else {
       has_any_contrast_spec <- any(c(
-        "diagonal", "cond_means", "pairwise_diffs", "cell_means", "overall_response",
-        "simple_slopes", "weights", "delete", "wi_contrasts"
+        "diagonal", "cond_means", "pairwise_diffs", "interaction_diffs", "cell_means",
+        "overall_response", "simple_slopes", "slope_diffs", "custom",
+        "weights", "factor_coding", "delete", "wi_contrasts"
       ) %in% names(spec_list))
-      if (!isTRUE(has_any_contrast_spec)) {
-        lg$warn("contrast spec_list is empty or missing contrast fields; falling back to interactive contrast prompts.")
-        spec_list <- NULL
+      has_only_lmer_glts <- !isTRUE(has_any_contrast_spec) &&
+        !is.null(spec_list$lmer_glt_codes) && length(spec_list$lmer_glt_codes) > 0L
+      if (!isTRUE(has_any_contrast_spec) && !isTRUE(has_only_lmer_glts)) {
+        if (rlang::is_interactive()) {
+          lg$warn("contrast spec_list is empty or missing contrast fields; falling back to interactive contrast prompts.")
+          spec_list <- NULL
+        } else {
+          lg$warn("contrast spec_list has no explicit contrast fields in non-interactive mode; using default contrast settings.")
+        }
       }
     }
   }
 
   if (!is.null(spec_list)) {
     if (is.null(mobj$lmfit)) {
-      emmeans_fields <- c("cond_means", "pairwise_diffs", "cell_means", "overall_response", "simple_slopes")
-      has_emmeans_fields <- any(emmeans_fields %in% names(spec_list))
+      emmeans_fields <- c(
+        "cond_means", "pairwise_diffs", "interaction_diffs",
+        "cell_means", "overall_response", "simple_slopes", "slope_diffs"
+      )
+      has_emmeans_fields <- any(vapply(emmeans_fields, function(fld) {
+        val <- spec_list[[fld]]
+        if (is.null(val)) return(FALSE)
+        if (is.logical(val)) return(isTRUE(val))
+        length(val) > 0L
+      }, logical(1)))
       if (isTRUE(has_emmeans_fields)) {
+        present_emm <- emmeans_fields[vapply(emmeans_fields, function(fld) {
+          val <- spec_list[[fld]]
+          if (is.null(val)) return(FALSE)
+          if (is.logical(val)) return(isTRUE(val))
+          length(val) > 0L
+        }, logical(1))]
         lg$warn(
           "Contrast spec includes emmeans-based fields (%s), but no model is available. Dropping them. For L1, use wi_contrasts on within-subject signals.",
-          paste(intersect(emmeans_fields, names(spec_list)), collapse = ", ")
+          paste(present_emm, collapse = ", ")
         )
-        spec_list$cond_means <- NULL
-        spec_list$pairwise_diffs <- NULL
-        spec_list$cell_means <- NULL
-        spec_list$overall_response <- NULL
-        spec_list$simple_slopes <- NULL
       }
+      spec_list$cond_means <- NULL
+      spec_list$pairwise_diffs <- NULL
+      spec_list$interaction_diffs <- NULL
+      spec_list$cell_means <- NULL
+      spec_list$overall_response <- NULL
+      spec_list$simple_slopes <- NULL
+      spec_list$slope_diffs <- NULL
     }
 
     if (!is.null(spec_list$diagonal)) {
       checkmate::assert_logical(spec_list$diagonal, len = 1L)
       include_diagonal <- spec_list$diagonal
+    } else if (inherits(mobj, "l1_wi_spec") || isTRUE(has_only_lmer_glts)) {
+      include_diagonal <- FALSE
     } else {
       lg$debug("In contrast specification from spec file, including diagonal contrasts by default")
       include_diagonal <- TRUE
     }
 
     if (!is.null(spec_list$cond_means)) {
-      checkmate::assert_character(spec_list$cond_means)
-      cond_means <- spec_list$cond_means
+      cond_means <- coerce_yaml_char_vec(spec_list$cond_means)
+      checkmate::assert_character(cond_means)
     }
 
     if (!is.null(spec_list$pairwise_diffs)) {
-      checkmate::assert_character(spec_list$pairwise_diffs)
-      pairwise_diffs <- spec_list$pairwise_diffs
+      pairwise_diffs <- coerce_yaml_char_vec(spec_list$pairwise_diffs)
+      checkmate::assert_character(pairwise_diffs)
+    }
+
+    if (!is.null(spec_list$interaction_diffs)) {
+      interaction_diffs <- coerce_yaml_char_vec(spec_list$interaction_diffs)
+      checkmate::assert_character(interaction_diffs)
     }
 
     if (!is.null(spec_list$cell_means)) {
@@ -226,8 +396,26 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
     }
 
     if (!is.null(spec_list$simple_slopes)) {
-      # checkmate::assert_character(spec_list$simple_slopes)
       simple_slopes <- spec_list$simple_slopes
+    }
+
+    if (!is.null(spec_list$slope_diffs)) {
+      slope_diffs <- spec_list$slope_diffs
+    }
+
+    if (!is.null(spec_list$factor_coding)) {
+      factor_coding <- unlist(spec_list$factor_coding)
+      mobj$factor_coding <- factor_coding
+    }
+
+    if (!is.null(spec_list$custom)) {
+      reg_for_custom <- if (!is.null(mobj$lmfit)) {
+        prefix_tmp <- ifelse(inherits(mobj, "l1_wi_spec"), paste0(mobj$signal_name, "."), "")
+        paste0(prefix_tmp, names(coef(mobj$lmfit)))
+      } else {
+        mobj$regressors
+      }
+      custom_contrasts <- parse_custom_contrast_spec(spec_list$custom, reg_names = reg_for_custom, lg = lg)
     }
 
     if (!is.null(spec_list$weights)) {
@@ -240,15 +428,15 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
     }
 
     if (!is.null(spec_list$delete)) {
-      checkmate::assert_character(spec_list$delete)
-      delete <- spec_list$delete
+      delete <- coerce_yaml_char_vec(spec_list$delete)
+      checkmate::assert_character(delete)
     }
 
     # populate categorical vars for within-subject contrast and higher-level models
     if (inherits(mobj, c("l1_wi_spec", "hi_model_spec"))) {
-      term_labels <- attr(terms(mobj$lmfit), "term.labels") # names of regressors
-      dclass <- attr(mobj$lmfit$terms, "dataClasses")[term_labels] # omit response variable
-      cat_vars <- names(dclass[which(dclass %in% c("factor", "character"))])
+      vtypes <- extract_lm_var_types(mobj$lmfit)
+      cat_vars <- vtypes$cat_vars
+      cont_vars <- vtypes$cont_vars
     }
 
     if (length(cat_vars) == 1L && isTRUE(spec_list$cell_means)) {
@@ -286,7 +474,9 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
 
         wi_obj <- list(
           level = 1L, lmfit = signals[[sig]]$wi_model, signal_name = sig,
-          wi_factors = signals[[sig]]$wi_factors, wi_formula = signals[[sig]]$wi_formula
+          wi_factors = signals[[sig]]$wi_factors, wi_formula = signals[[sig]]$wi_formula,
+          wi_expansion = signals[[sig]]$wi_expansion,
+          wi_expansion_resolved = signals[[sig]]$wi_expansion_resolved
         )
         class(wi_obj) <- c("list", "l1_wi_spec")
 
@@ -376,9 +566,9 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
     # these apply to L2 and L3 model specification
     term_labels <- attr(terms(mobj$lmfit), "term.labels") # names of regressors
     int_terms <- attr(terms(mobj$lmfit), "order") # interactions in model
-    dclass <- attr(mobj$lmfit$terms, "dataClasses")[term_labels] # omit response variable
-    cat_vars <- names(dclass[which(dclass %in% c("factor", "character"))])
-    cont_vars <- names(dclass[which(dclass %in% c("integer", "numeric"))])
+    vtypes <- extract_lm_var_types(mobj$lmfit)
+    cat_vars <- vtypes$cat_vars
+    cont_vars <- vtypes$cont_vars
 
     cat(
       "First, please decide on your weighting scheme for computing contrasts.",
@@ -419,6 +609,7 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
 
     # for categorical variables and their interactions, ask about pairwise differences, computed by emmeans
     emm_vars <- cat_vars
+    cat_int_names <- character(0)
     if (any(int_terms > 1)) {
       cat_int <- sapply(term_labels[which(int_terms > 1)], function(tt) {
         term_split <- strsplit(tt, ":")[[1]] # split terms on colon
@@ -426,12 +617,14 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
       })
 
       if (any(cat_int)) {
-        emm_vars <- c(emm_vars, names(cat_int)[cat_int])
+        cat_int_names <- names(cat_int)[cat_int]
+        emm_vars <- c(emm_vars, cat_int_names)
       }
     }
     
     # handle pairwise differences for all factors (and interactions, if specified)
     for (vv in seq_along(emm_vars)) {
+      if (emm_vars[vv] %in% pairwise_diffs) next
       title_str <- paste0(
         "Do you want to include pairwise differences for ",
         ifelse(inherits(mobj, "l1_wi_spec"), paste(emm_vars[vv], "modulation of", mobj$signal_name), emm_vars[vv]), "?"
@@ -439,7 +632,21 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
       ii <- menu(c("Yes", "No"), title = title_str)
       ii <- ifelse(ii == 1L, TRUE, FALSE)
       if (isTRUE(ii)) {
-        pairwise_diffs <- c(pairwise_diffs, emm_vars[vv])
+        pairwise_diffs <- unique(c(pairwise_diffs, emm_vars[vv]))
+      }
+    }
+
+    # handle difference-of-differences interaction contrasts for categorical interactions
+    if (length(cat_int_names) > 0L) {
+      for (int_nm in cat_int_names) {
+        title_str <- paste0(
+          "Do you want to include factorial interaction (difference-of-differences) contrasts for ",
+          ifelse(inherits(mobj, "l1_wi_spec"), paste(int_nm, "modulation of", mobj$signal_name), int_nm), "?"
+        )
+        ii <- menu(c("Yes", "No"), title = title_str)
+        if (identical(ii, 1L)) {
+          interaction_diffs <- unique(c(interaction_diffs, int_nm))
+        }
       }
     }
 
@@ -470,13 +677,21 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
         has_vv <- which(sapply(term_split, function(x) any(x == vv))) # does this term have the target var
         for (tt in seq_along(has_vv)) {
           this_term <- term_split[[has_vv[tt]]]
+          fac_part <- this_term[!this_term == vv]
+          if (length(fac_part) == 0L || !all(fac_part %in% cat_vars)) next
           ii <- menu(c("Yes", "No"), title = paste0(
-            "Do you want to include model-predicted simple slopes across levels of the factors ",
-            paste(this_term[!this_term == vv], collapse = ", "), "?"
+            "Do you want to include model-predicted simple slopes of ", vv, " across levels of ",
+            paste(fac_part, collapse = ", "), "?"
           ))
-          ii <- ifelse(ii == 1L, TRUE, FALSE)
-          if (isTRUE(ii)) { # build list where top-level elements are continuous variables
-            simple_slopes[[vv]] <- c(simple_slopes[[vv]], list(this_term[!this_term == vv]))
+          if (identical(ii, 1L)) { # build list where top-level elements are continuous variables
+            simple_slopes[[vv]] <- c(simple_slopes[[vv]], list(fac_part))
+          }
+          ii_diff <- menu(c("Yes", "No"), title = paste0(
+            "Do you want to include pairwise slope differences of ", vv, " across levels of ",
+            paste(fac_part, collapse = ", "), "?"
+          ))
+          if (identical(ii_diff, 1L)) {
+            slope_diffs[[vv]] <- c(slope_diffs[[vv]], list(fac_part))
           }
         }
       }
@@ -502,7 +717,7 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
       sep = "\n"
     )
 
-    has_alias <- which(apply(cmat[, mobj$aliased_terms, drop=F], 1, function(x) {
+    has_alias <- which(apply(cmat[, intersect(mobj$aliased_terms, colnames(cmat)), drop=F], 1, function(x) {
       any(abs(x - 0) > 1e-5)
     }))
 
@@ -521,6 +736,11 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
     return(mobj)
   }
 
+  if (!rlang::is_interactive()) {
+    if (!is.null(mobj$aliased_terms)) mobj$contrasts_noalias <- cmat_reduce
+    return(mobj)
+  }
+
   # syntax of contrast
   cat("\n\n-----\nContrast editor\n\n")
   cat("When entering contrasts, you have two options:\n\n")
@@ -535,6 +755,7 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
     add_more <- menu(c("Add contrast", "Show contrasts", "Delete contrast", "Done with contrast setup"),
       title = "Contrast setup menu"
     )
+    if (identical(add_more, 0L)) break
 
     if (add_more == 1L) {
       cname <- readline("Enter contrast name: ")
@@ -571,6 +792,7 @@ specify_contrasts <- function(mobj = NULL, signals = NULL, spec_list = NULL) {
       if (!is.null(cvec)) {
         mobj$contrast_list$custom <- rbind(mobj$contrast_list$custom, cvec)
         rownames(mobj$contrast_list$custom)[nrow(mobj$contrast_list$custom)] <- cname
+        mobj$contrast_spec$custom <- mobj$contrast_list$custom
       }
     } else if (add_more == 2L) {
       summarize_contrasts(mobj$contrasts)

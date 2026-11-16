@@ -509,12 +509,19 @@ afni_3dclustsim <- R6::R6Class("afni_3dclustsim",
       }
 
       # calculate the threshold value based on the statistic type
-      if (voxelwise_stat$stat_type == "z") {
-        thresh_val <- qnorm(test_p, lower.tail = FALSE)
-      } else if (voxelwise_stat$stat_type == "p") {
+      stype <- tolower(as.character(voxelwise_stat$stat_type)[1L])
+      if (stype == "z") {
+        thresh_val <- stats::qnorm(test_p, lower.tail = FALSE)
+      } else if (stype == "p") {
         thresh_val <- test_p
-      } else if (voxelwise_stat$stat_type == "t") {
-        thresh_val <- qt(test_p, df = voxelwise_stat$df, lower.tail = FALSE)
+      } else if (stype == "t") {
+        thresh_val <- stats::qt(test_p, df = voxelwise_stat$df, lower.tail = FALSE)
+      } else if (stype %in% c("chisq", "chi2")) {
+        thresh_val <- stats::qchisq(pthr, df = voxelwise_stat$df, lower.tail = FALSE)
+      } else if (stype == "f") {
+        df1_val <- voxelwise_stat$df1 %||% voxelwise_stat$df[1L]
+        df2_val <- voxelwise_stat$df2 %||% voxelwise_stat$df[2L]
+        thresh_val <- stats::qf(pthr, df1 = df1_val, df2 = df2_val, lower.tail = FALSE)
       } else {
         stop("Cannot interpret stat_type ", voxelwise_stat$stat_type)
       }
@@ -524,7 +531,7 @@ afni_3dclustsim <- R6::R6Class("afni_3dclustsim",
         upper_thresh <- thresh_val
 
         # not sure this really makes sense... like do we really want the most non-significant p-values?
-        if (voxelwise_stat$stat_type == "p") lower_thresh <- 1 + lower_thresh
+        if (stype == "p") lower_thresh <- 1 + lower_thresh
       } else {
         one_thresh <- thresh_val
       }
@@ -538,7 +545,7 @@ afni_3dclustsim <- R6::R6Class("afni_3dclustsim",
       }
 
       thresholded_stat_file <- NULL
-      if (isTRUE(output_cluster_mask)) {
+      if (isTRUE(output_thresholded_image)) {
         thresholded_stat_file <- paste0(
           file_sans_ext(statistic_nifti),
           glue::glue("_3dC_thresholded_voxp{pthr}_clusp{athr}_NN{NN}_{sided}sided.nii.gz")
@@ -561,6 +568,7 @@ afni_3dclustsim <- R6::R6Class("afni_3dclustsim",
         arg_list[["upper_thresh"]] <- upper_thresh
       } else {
         arg_list[["one_thresh"]] <- one_thresh
+        arg_list[["one_tail"]] <- voxelwise_stat$one_tail %||% "RIGHT_TAIL"
       }
 
       cobj <- do.call(afni_3dclusterize$new, arg_list)

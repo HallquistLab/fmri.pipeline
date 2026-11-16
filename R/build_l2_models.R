@@ -19,7 +19,7 @@
 build_l2_models <- function(gpa, from_spec_file = NULL, regressor_cols = NULL) {
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
   # capture whether we are building level 2 (subject) or level 3 (sample) models
-  fname <- match.call()[[1]]
+  fname <- utils::tail(as.character(match.call()[[1]]), 1L)
   if (fname == "build_l2_models") {
     menu_desc <- "second-level (subject)"
     model_set <- gpa$l2_models
@@ -39,6 +39,15 @@ build_l2_models <- function(gpa, from_spec_file = NULL, regressor_cols = NULL) {
     data <- compose_l2_model_data(gpa, lg = lg) # L2 pooled modeling frame: run + session predictors
   } else {
     data <- gpa$subject_data # L3
+    if (!is.null(gpa$session_data) && is.data.frame(gpa$session_data) &&
+        all(c("id", "session") %in% names(data)) && all(c("id", "session") %in% names(gpa$session_data))) {
+      extra_sess_cols <- setdiff(names(gpa$session_data), names(data))
+      if (length(extra_sess_cols) > 0L) {
+        sdat_sub <- gpa$session_data[, c("id", "session", extra_sess_cols), drop = FALSE]
+        sdat_sub$session <- if (is.integer(data$session)) as.integer(sdat_sub$session) else as.character(sdat_sub$session)
+        data <- dplyr::left_join(data, sdat_sub, by = c("id", "session"))
+      }
+    }
   }
 
   # allow deferred model specification upstream
@@ -95,7 +104,7 @@ build_l2_models <- function(gpa, from_spec_file = NULL, regressor_cols = NULL) {
     if (any(duplicated(nm))) {
       msg <- sprintf(
         "Duplicate %s model names in %s. Cannot proceed. Resolve duplicates: %s",
-        out_field, from_spec_file, paste(unique(nm[duplicated[nm]]), collapse = ", ")
+        out_field, from_spec_file, paste(unique(nm[duplicated(nm)]), collapse = ", ")
       )
       lg$error(msg)
       stop(msg)
@@ -116,6 +125,7 @@ build_l2_models <- function(gpa, from_spec_file = NULL, regressor_cols = NULL) {
       # these are converted to lists during the export so that YAML/JSON preserves the key:value pairs
       spec_list[[mm]]$covariate_transform <- unlist(spec_list[[mm]]$covariate_transform)
       spec_list[[mm]]$reference_level <- unlist(spec_list[[mm]]$reference_level)
+      spec_list[[mm]]$factor_coding <- unlist(spec_list[[mm]]$factor_coding)
       model_set$models[[names(spec_list)[mm]]] <- create_new_hi_model(data, level = level, cur_model_names = NULL, spec_list = spec_list[[mm]], lg = lg)
     }
   } else {
@@ -633,7 +643,7 @@ create_new_hi_model <- function(data, to_modify = NULL, level = NULL, cur_model_
         data[[vv]] <- as.factor(data[[vv]])
       }
 
-      if (is.integer(data[[vv]]) && length(unique(data[[vv]]) < 20)) {
+      if (is.integer(data[[vv]]) && length(unique(data[[vv]])) < 20L) {
         if (!is.null(spec_list)) {
           conv <- if (vv %in% spec_list$num2fac) 1L else 2L
         } else if (vv %in% spec_list$num2fac) {
@@ -653,8 +663,13 @@ create_new_hi_model <- function(data, to_modify = NULL, level = NULL, cur_model_
         if (conv == 1L) {
           cat("Converting", vv, "into a factor.\n")
           data[[vv]] <- as.factor(data[[vv]])
-          mobj$num2fac <- c(mobj$num2fac, vv)
+          mobj$num2fac <- unique(c(mobj$num2fac, vv))
         }
+      }
+
+      if (is.factor(data[[vv]])) {
+        if (is.null(mobj$factor_levels)) mobj$factor_levels <- list()
+        mobj$factor_levels[[vv]] <- levels(data[[vv]])
       }
     }
 
@@ -664,6 +679,7 @@ create_new_hi_model <- function(data, to_modify = NULL, level = NULL, cur_model_
     if (!is.null(spec_list)) {
       mobj$covariate_transform <- spec_list$covariate_transform
       mobj$reference_level <- spec_list$reference_level
+      mobj$factor_coding <- spec_list$factor_coding
     }
     alias_check <- handle_aliased_model(
       mobj_fit_lm(mobj, as.character(model_formula), data, id_cols, lg = lg, report_alias = FALSE),
@@ -686,6 +702,7 @@ create_new_hi_model <- function(data, to_modify = NULL, level = NULL, cur_model_
     if (!is.null(spec_list)) {
       mobj$covariate_transform <- spec_list$covariate_transform
       mobj$reference_level <- spec_list$reference_level
+      mobj$factor_coding <- spec_list$factor_coding
     } else if (length(mobj$model_variables) > 0L) {
       cat("Summary of variables included in model:\n\n")
       print(summary(data[, mobj$model_variables, drop = FALSE]))
@@ -832,6 +849,8 @@ create_new_hi_model <- function(data, to_modify = NULL, level = NULL, cur_model_
     if (level == 3L && identical(mobj$l3_input_mode, "3dlmer")) {
       if (!is.null(spec_list$random_effects)) {
         mobj$random_effects <- spec_list$random_effects
+      } else if (!is.null(spec_list$lmer_formula)) {
+        mobj$lmer_formula <- spec_list$lmer_formula
       } else {
         cat(
           "\n--- 3dLMEr Random Effects ---\n",
@@ -845,18 +864,36 @@ create_new_hi_model <- function(data, to_modify = NULL, level = NULL, cur_model_
         if (res == "") res <- "(1 | Subj)" # sensible default
         mobj$random_effects <- res
       }
-      
-      # Combine fixed and random effects into full lmer formula for AFNI.
-      # One-sided formulas can deparse to c("~", "rhs"), while two-sided formulas
-      # use c("~", "lhs", "rhs"), so take the last non-empty element.
-      fixed_rhs <- tail(as.character(model_formula), 1L)
-      fixed_rhs <- sub("^~\\s*", "", fixed_rhs, perl = TRUE)
-      mobj$lmer_formula <- paste(fixed_rhs, "+", mobj$random_effects)
+
+      # Combine fixed and random effects into full lmer formula for AFNI unless lmer_formula was explicitly set without random_effects.
+      if (!is.null(mobj$random_effects) || is.null(mobj$lmer_formula)) {
+        fixed_rhs <- tail(as.character(model_formula), 1L)
+        fixed_rhs <- sub("^~\\s*", "", fixed_rhs, perl = TRUE)
+        mobj$lmer_formula <- paste(fixed_rhs, "+", mobj$random_effects)
+      }
+      mobj$lmer_mask <- spec_list$lmer_mask
+      mobj$lmer_njobs <- spec_list$lmer_njobs
       mobj$lmer_glt_codes <- spec_list$lmer_glt_codes
+
+      # Preserve any grouping/random-slope variables referenced only in lmer_formula (e.g., site in (1|site/Subj))
+      lmer_all_vars <- tryCatch(
+        all.vars(stats::as.formula(paste("~", sub("^~\\s*", "", mobj$lmer_formula)))),
+        error = function(e) character(0)
+      )
+      extra_re_vars <- setdiff(lmer_all_vars, c("Subj", "id", "session", mobj$model_variables))
+      if (length(extra_re_vars) > 0L) {
+        checkmate::assert_subset(extra_re_vars, names(data))
+        mobj$random_effects_vars <- extra_re_vars
+        mobj$model_variables <- unique(c(mobj$model_variables, extra_re_vars))
+        # Re-fit so model_data / complete-case filtering includes random-effects grouping columns
+        mobj <- mobj_fit_lm(mobj, as.character(model_formula), data, id_cols, lg = lg, report_alias = FALSE)
+      }
+
       cat("Full 3dLMEr formula: ", mobj$lmer_formula, "\n")
     }
 
     # Guided longitudinal prompt: offer between-session pairwise contrasts when applicable
+    preselected_pw <- character(0)
     has_multi_session <- "session" %in% names(data) && length(unique(data$session)) > 1L
     if (level == 2L && has_multi_session && identical(mobj$l2_scope, "id") && is.null(spec_list)) {
       var_origin <- attr(data, "l2_var_origin")
@@ -879,9 +916,7 @@ create_new_hi_model <- function(data, to_modify = NULL, level = NULL, cur_model_
               title = paste0("Add pairwise between-session contrasts for '", sc, "'?")
             )
             if (add_pw == 1L) {
-              if (is.null(spec_list)) spec_list <- list()
-              existing_pw <- spec_list$pairwise_diffs
-              spec_list$pairwise_diffs <- unique(c(existing_pw, sc))
+              preselected_pw <- unique(c(preselected_pw, sc))
               cat("  Added pairwise differences for '", sc, "'.\n", sep = "")
             }
           }
@@ -890,7 +925,11 @@ create_new_hi_model <- function(data, to_modify = NULL, level = NULL, cur_model_
     }
 
     # walk through contrast generation for this model
-    mobj <- specify_contrasts(mobj, spec_list = spec_list)
+    mobj <- specify_contrasts(
+      mobj,
+      spec_list = spec_list,
+      preselected_pairwise = if (length(preselected_pw) > 0L) preselected_pw else NULL
+    )
 
     # ask about outlier deweighting
     if (level == 3L) {

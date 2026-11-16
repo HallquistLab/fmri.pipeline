@@ -262,12 +262,18 @@ extract_fsl_betas <- function(gpa, extract=NULL, level=NULL, what = c("cope", "z
         "l2_cope_number", "l2_cope_name", "l3_model", "l3_cope_number", "l3_cope_name"),
       names(extract)
     )
-    checkmate::assert_subset(c("l1_model", "l3_model"), selection_keys)
-    to_extract <- dplyr::semi_join(to_extract, extract, by = selection_keys)
+    if (nrow(to_extract) > 0L) {
+      checkmate::assert_subset(c("l1_model", "l3_model"), selection_keys)
+      to_extract <- dplyr::semi_join(to_extract, extract, by = selection_keys)
+    }
   }
 
-  to_extract <- to_extract %>%
-    dplyr::filter(feat_dir_exists == TRUE & feat_complete == TRUE)
+  if (nrow(to_extract) > 0L && all(c("feat_dir_exists", "feat_complete") %in% names(to_extract))) {
+    to_extract <- to_extract %>%
+      dplyr::filter(feat_dir_exists == TRUE & feat_complete == TRUE)
+  } else {
+    to_extract <- to_extract[0L, , drop = FALSE]
+  }
 
   if (nrow(to_extract) == 0L) {
     lg$warn("No valid model outputs to extract for input:")

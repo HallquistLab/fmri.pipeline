@@ -114,8 +114,12 @@ signals_from_spec <- function(l1_model_set, slist, trial_data, lg=NULL) {
     sobj <- get_trial_subset_stats(sobj, trial_data, trial_set)
 
     if (!is.null(ss$parametric_modulator)) {
-      stopifnot(ss$parametric_modulator %in% slist$values)
-      sobj$parametric_modulator <- ss$parametric_modulator
+      pm_col <- as.character(unlist(ss$parametric_modulator))[1L]
+      checkmate::assert_subset(pm_col, names(trial_data))
+      if (!pm_col %in% l1_model_set$values) {
+        l1_model_set$values <- unique(c(l1_model_set$values, pm_col))
+      }
+      sobj$parametric_modulator <- pm_col
       sobj$value_type <- "parametric"
       sobj$value_fixed <- NULL
     } else if (!is.null(ss$value_fixed)) {
@@ -148,19 +152,50 @@ signals_from_spec <- function(l1_model_set, slist, trial_data, lg=NULL) {
       sobj$keep_duplicate_occurrences <- ss$keep_duplicate_occurrences
     }
 
+    if (!is.null(ss$beta_series)) {
+      checkmate::assert_logical(ss$beta_series, len = 1L)
+      sobj$beta_series <- ss$beta_series
+    }
+
+    if (!is.null(ss$convmax_1)) {
+      checkmate::assert_logical(ss$convmax_1, len = 1L)
+      sobj$convmax_1 <- ss$convmax_1
+    }
+
+    if (!is.null(ss$ts_multiplier) && !isFALSE(ss$ts_multiplier)) {
+      checkmate::assert_string(ss$ts_multiplier)
+      sobj$ts_multiplier <- ss$ts_multiplier
+    }
+
+    if (!is.null(ss$wi_expansion)) {
+      checkmate::assert_string(ss$wi_expansion)
+      checkmate::assert_subset(tolower(ss$wi_expansion), c("auto", "cell_means", "formula"))
+      sobj$wi_expansion <- tolower(ss$wi_expansion)
+    }
+
+    if (!is.null(ss$reference_level)) {
+      sobj$reference_level <- unlist(ss$reference_level)
+    }
+
+    if (!is.null(ss$factor_coding)) {
+      sobj$factor_coding <- unlist(ss$factor_coding)
+    }
+
     # TODO: this is a bit redundant with parts of bl1_specify_wi_factors... would be nice to unify
     if (!is.null(ss$wi_factors)) {
-      checkmate::assert_subset(ss$wi_factors, l1_model_set$wi_factors)
-      sobj$wi_factors <- ss$wi_factors
+      wi_fac_chr <- as.character(unlist(ss$wi_factors))
+      checkmate::assert_subset(wi_fac_chr, names(trial_data))
+      if (!all(wi_fac_chr %in% l1_model_set$wi_factors)) {
+        l1_model_set$wi_factors <- unique(c(l1_model_set$wi_factors, wi_fac_chr))
+      }
+      sobj$wi_factors <- wi_fac_chr
 
       ff <- NULL
       if (!is.null(ss$wi_formula)) {
-        ff <- tryCatch(as.formula(ss$wi_formula), error = function(e) {
-          wi_formula <- tryCatch(as.formula(wi_formula), error = function(e) {
-            print(e)
-            cat("Problem converting your syntax to formula. Defaulting to additive model\n")
-            return(NULL)
-          })
+        raw_wf <- sub("^[^~]*", "", trimws(as.character(ss$wi_formula)[1L]), perl = TRUE)
+        ff <- tryCatch(as.formula(raw_wf), error = function(e) {
+          if (!is.null(lg)) lg$warn("Problem converting wi_formula '%s' to formula (%s). Defaulting to additive model.", ss$wi_formula, conditionMessage(e))
+          NULL
         })
       }
 
@@ -168,7 +203,11 @@ signals_from_spec <- function(l1_model_set, slist, trial_data, lg=NULL) {
         ff <- as.formula(paste("~", paste(ss$wi_factors, collapse = " + ")))
       }
 
-      sobj$wi_formula <- as.character(ff)
+      # Strip grand intercept by default at L1 (matching bl1_specify_wi_factors)
+      if (!identical(sobj$wi_expansion, "formula") || identical(attr(stats::terms(ff), "intercept"), 0L)) {
+        ff <- stats::update.formula(ff, ~ . - 1)
+      }
+      sobj$wi_formula <- as.character.formula(ff)
 
       model_vars <- all.vars(ff)
       if (!all(model_vars %in% sobj$wi_factors)) {
