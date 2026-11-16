@@ -1887,17 +1887,19 @@ fit_lm_with_canonical_levels <- function(model_formula, model_data, canonical_le
     canonical_levels[[fv]] %||% levels(model_data[[fv]])
   }), fac_vars)
   pad_grid <- expand.grid(lev_list, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
-  pad_df <- model_data[rep(1L, nrow(pad_grid)), , drop = FALSE]
-  for (col_nm in names(pad_df)) {
-    if (col_nm %in% fac_vars) {
-      pad_df[[col_nm]] <- factor(pad_grid[[col_nm]], levels = lev_list[[col_nm]])
-    } else if (is.numeric(pad_df[[col_nm]]) || is.integer(pad_df[[col_nm]])) {
-      pad_df[[col_nm]] <- 0
-    }
+  obs_n <- nrow(model_data)
+  # emmeans needs rows representing every factor level, even when their weights
+  # are zero. Its continuous-covariate reductions are unweighted, so copy each
+  # observed covariate row equally often rather than inventing zeros or means.
+  # This preserves both the empirical distribution and discrete covariate values.
+  pad_n <- obs_n * ceiling(nrow(pad_grid) / obs_n)
+  pad_df <- model_data[rep(seq_len(obs_n), length.out = pad_n), , drop = FALSE]
+  grid_idx <- rep(seq_len(nrow(pad_grid)), length.out = pad_n)
+  for (fv in fac_vars) {
+    pad_df[[fv]] <- factor(pad_grid[[fv]][grid_idx], levels = lev_list[[fv]])
   }
   if ("dummy" %in% names(pad_df)) pad_df$dummy <- 0
 
-  obs_n <- nrow(model_data)
   df_aug <- rbind(model_data, pad_df)
   for (fv in fac_vars) {
     df_aug[[fv]] <- factor(as.character(df_aug[[fv]]), levels = lev_list[[fv]])

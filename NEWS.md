@@ -1,5 +1,18 @@
 # fmri.pipeline 0.5
 
+## Factorial GLM correctness
+
+* Preserve signed L1 formula weights during convolution and exclude canonical
+  factor padding from continuous-covariate reference values.
+* Write FSL L3 contrasts on the same reduced basis as their design and retain
+  analysis-specific COPE numbering across models, contrasts, and sessions.
+* Generate AFNI slope differences within the requested conditioning slices.
+  Overall responses now preserve supported weighting schemes and reject joint
+  cell weights that AFNI's factor-by-factor GLT syntax cannot express. Define a
+  joint-cell factor for those weights, or explicitly request an equal-cell mean.
+* Retain estimable L1 cell means after run-specific alias reduction while still
+  rejecting non-estimable contrasts and missing lower-level outputs.
+
 ## MEDuSA extracted to standalone `medusa` package
 
 * Extracted all MEDuSA deconvolution, cross-run HRF estimation, event-locked

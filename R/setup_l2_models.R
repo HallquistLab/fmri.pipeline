@@ -521,18 +521,30 @@ build_l1_cope_validity <- function(l1_setup_fsl, gpa, lg = NULL) {
         contrast_evs <- colnames(contrasts)[which(abs(contrasts[cc, ]) > 0)]
       }
       empty_for_cope <- intersect(contrast_evs, empty_info$empty_evs)
-      empty_reasons <- empty_info$empty_ev_reasons[empty_for_cope]
-      empty_reasons <- empty_reasons[!is.na(empty_reasons)]
-
       sidecar_nonest <- FALSE
       sidecar_reason <- NA_character_
       if (!is.null(sidecar_df) && "l1_cope_number" %in% names(sidecar_df) && "estimable" %in% names(sidecar_df)) {
         sc_idx <- which(sidecar_df$l1_cope_number == cc)
-        if (length(sc_idx) == 1L && !isTRUE(as.logical(sidecar_df$estimable[sc_idx]))) {
+        if ("l1_cope_name" %in% names(sidecar_df)) {
+          sc_idx <- intersect(sc_idx, which(sidecar_df$l1_cope_name == l1_cope_name))
+        }
+        if (length(sc_idx) != 1L) {
+          sidecar_nonest <- TRUE
+          sidecar_reason <- "contrast_sidecar_mismatch"
+        } else if (!isTRUE(as.logical(sidecar_df$estimable[sc_idx]))) {
           sidecar_nonest <- TRUE
           sidecar_reason <- as.character(sidecar_df$reason[sc_idx])
+        } else if (length(sc_idx) == 1L && "aliased_evs" %in% names(sidecar_df)) {
+          # An estimable contrast was already expressed on the retained run basis.
+          # Its original weights may touch EVs emptied only for alias reduction.
+          aliases <- as.character(sidecar_df$aliased_evs[sc_idx])
+          if (!is.na(aliases)) {
+            empty_for_cope <- setdiff(empty_for_cope, strsplit(aliases, ";", fixed = TRUE)[[1L]])
+          }
         }
       }
+      empty_reasons <- empty_info$empty_ev_reasons[empty_for_cope]
+      empty_reasons <- empty_reasons[!is.na(empty_reasons)]
 
       validity_state <- "valid"
       validity_reason <- NA_character_

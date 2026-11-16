@@ -90,14 +90,16 @@ fsl_l3_model <- function(l3_df=NULL, gpa) {
   l3_df <- l3_df %>% dplyr::inner_join(meta_for_join, by = c("id", "session"))
 
   dmat_to_write <- if (!is.null(mobj$model_matrix_noalias)) mobj$model_matrix_noalias else mobj$model_matrix
-  if (is.null(mobj$contrasts) || nrow(mobj$contrasts) == 0L) {
+  cmat_to_write <- if (!is.null(mobj$model_matrix_noalias)) mobj$contrasts_noalias else mobj$contrasts
+  if (is.null(cmat_to_write) || nrow(cmat_to_write) == 0L) {
     lg$warn("No estimable L3 contrasts remain for L3 model '%s' after respecification. Skipping.", l3_model)
     return(NULL)
   }
+  stopifnot(ncol(dmat_to_write) == ncol(cmat_to_write))
 
   feat_l3_df$cope_list <- list(data.frame(
-    l3_cope_number = seq_len(nrow(mobj$contrasts)),
-    l3_cope_name = rownames(mobj$contrasts) %||% paste0("cope", seq_len(nrow(mobj$contrasts))),
+    l3_cope_number = seq_len(nrow(cmat_to_write)),
+    l3_cope_name = rownames(cmat_to_write) %||% paste0("cope", seq_len(nrow(cmat_to_write))),
     stringsAsFactors = FALSE
   ))
 
@@ -105,7 +107,7 @@ fsl_l3_model <- function(l3_df=NULL, gpa) {
   ev_syntax <- fsl_generate_fsf_ev_syntax(inputs = l3_df$cope_file, dmat = dmat_to_write)
 
   # generate FSF contrast syntax for this setup
-  contrast_syntax <- fsl_generate_fsf_contrast_syntax(mobj$contrasts)
+  contrast_syntax <- fsl_generate_fsf_contrast_syntax(cmat_to_write)
 
   l3_fsf_syntax <- readLines(system.file("feat_lvl3_copefiles_template.fsf", package = "fmri.pipeline"))
 

@@ -489,23 +489,30 @@ setup_l3_backend_fsl <- function(gpa, backend, lg, l1_model_names, l2_model_name
   # Synchronize l3_cope_config metadata with actual post-refit contrasts (e.g., when pooled_sessions_subject_ev
   # suppresses EV_id* diagonals or prunes aliased between-subject contrasts)
   if (nrow(fsl_df) > 0L && "cope_list" %in% names(fsl_df)) {
-    refit_cope_maps <- lapply(seq_len(nrow(fsl_df)), function(ii) {
-      cl <- fsl_df$cope_list[[ii]]
-      if (is.null(cl) || nrow(cl) == 0L) return(NULL)
-      cl$l3_model <- fsl_df$l3_model[ii]
-      cl
-    })
-    refit_cope_df <- dplyr::bind_rows(refit_cope_maps) %>% dplyr::distinct()
-    if (nrow(refit_cope_df) > 0L) {
-      updated_models <- unique(refit_cope_df$l3_model)
-      keep_cfg <- l3_cope_config %>% dplyr::filter(!.data$l3_model %in% updated_models)
-      upd_base <- l3_cope_config %>%
-        dplyr::filter(.data$l3_model %in% updated_models) %>%
+    analysis_keys <- intersect(default_fsl_id_cols, names(fsl_df))
+    refit_configs <- lapply(seq_len(nrow(fsl_df)), function(ii) {
+      analysis <- fsl_df[ii, analysis_keys, drop = FALSE]
+      # Pooled outputs use session=0, while input metadata retains real sessions.
+      # Match those inputs across sessions; partitioned outputs match one session.
+      join_keys <- analysis_keys
+      if ("session" %in% join_keys && identical(as.character(analysis$session), "0")) {
+        join_keys <- setdiff(join_keys, "session")
+      }
+      base <- l3_cope_config %>%
+        dplyr::semi_join(analysis, by = join_keys) %>%
         dplyr::select(-c("l3_cope_number", "l3_cope_name")) %>%
-        dplyr::distinct() %>%
-        dplyr::left_join(refit_cope_df, by = "l3_model", relationship = "many-to-many")
-      l3_cope_config <- dplyr::bind_rows(keep_cfg, upd_base)
-    }
+        dplyr::distinct()
+      cl <- fsl_df$cope_list[[ii]]
+      if (is.null(cl)) {
+        cl <- data.frame(l3_cope_number = integer(0), l3_cope_name = character(0))
+      }
+      list(base = base, metadata = dplyr::cross_join(base, cl))
+    })
+    updated_bases <- dplyr::bind_rows(lapply(refit_configs, "[[", "base"))
+    keep_cfg <- dplyr::anti_join(l3_cope_config, updated_bases, by = names(updated_bases))
+    l3_cope_config <- dplyr::bind_rows(
+      keep_cfg, dplyr::bind_rows(lapply(refit_configs, "[[", "metadata"))
+    )
     fsl_df$cope_list <- NULL
   }
 

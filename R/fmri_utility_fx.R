@@ -194,6 +194,7 @@ place_dmat_on_time_grid <- function(dmat, convolve=TRUE, run_timing=NULL, bdm_ar
       attr(concat_timing, "return_deriv") <- attr(this_reg[[1]], "return_deriv")
       attr(concat_timing, "is_parametric") <- attr(this_reg[[1]], "is_parametric")
       attr(concat_timing, "precentered_parametric") <- attr(this_reg[[1]], "precentered_parametric")
+      attr(concat_timing, "formula_weighted") <- attr(this_reg[[1]], "formula_weighted")
       attr(concat_timing, "demean_convolved") <- attr(this_reg[[1]], "demean_convolved")
 
       #concat runs of the ts_multiplier within the current regressor
@@ -209,7 +210,7 @@ place_dmat_on_time_grid <- function(dmat, convolve=TRUE, run_timing=NULL, bdm_ar
                          hrf_parameters = bdm_args$hrf_parameters, lg=lg)
 
       #now, to be consistent with code below (and elsewhere), split back into runs
-      splitreg <- split(all.convolve, do.call(c, sapply(seq_along(bdm_args$run_volumes), function(x) { rep(x, bdm_args$run_volumes[x]) })))
+      splitreg <- split(all.convolve, do.call(c, lapply(seq_along(bdm_args$run_volumes), function(x) { rep(x, bdm_args$run_volumes[x]) })))
 
       return(splitreg)
     })
@@ -333,6 +334,10 @@ convolve_regressor <- function(n_vols, reg, tr=1.0, normalization="none", rm_zer
   event_name <- attr(reg, "event")
   reg_name <- attr(reg, "reg_name")
   physio_only <- ifelse(isTRUE(attr(reg, "physio_only")), TRUE, FALSE)
+  # Read these before subsetting late events, which drops matrix attributes.
+  is_param_reg <- isTRUE(attr(reg, "is_parametric"))
+  is_precentered <- isTRUE(attr(reg, "precentered_parametric"))
+  formula_weighted <- isTRUE(attr(reg, "formula_weighted"))
 
   # check for the possibility that the onset of an event falls after the number of good volumes in the run
   # if so, this should be omitted from the convolution altogether
@@ -395,9 +400,9 @@ convolve_regressor <- function(n_vols, reg, tr=1.0, normalization="none", rm_zer
     # Handle mean centering of parametric values prior to convolution
     # This is useful when one wishes to dissociate variance due to parametric modulation versus stimulus occurrence
     # Don't demean a constant regressor such as an event regressor (all values = 1) unless explicitly marked is_parametric
-    is_param_reg <- isTRUE(attr(reg, "is_parametric"))
-    is_precentered <- isTRUE(attr(reg, "precentered_parametric"))
-    if (!isTRUE(is_precentered) && isTRUE(center_values)) {
+    # Formula weights define the coefficient basis used by the contrasts. Only raw
+    # parametric values may be centered; shifting signed factor weights changes it.
+    if (!is_precentered && !formula_weighted && isTRUE(center_values)) {
       if (isTRUE(is_param_reg)) {
         if (length(values) <= 1L || all(is.na(values)) || stats::sd(values, na.rm = TRUE) <= 1e-5) {
           lg$info("Parametric regressor '%s' has <= 1 event or zero variance in run; centered regressor is all-zero.", reg_name)

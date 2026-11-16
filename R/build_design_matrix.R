@@ -462,6 +462,7 @@ build_design_matrix <- function(
       attr(mm, "return_deriv") <- attr(run, "return_deriv")
       attr(mm, "is_parametric") <- attr(run, "is_parametric")
       attr(mm, "precentered_parametric") <- attr(run, "precentered_parametric")
+      attr(mm, "formula_weighted") <- attr(run, "formula_weighted")
       attr(mm, "demean_convolved") <- attr(run, "demean_convolved")
       return(mm)
     })

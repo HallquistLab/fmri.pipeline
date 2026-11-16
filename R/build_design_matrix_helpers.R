@@ -626,7 +626,8 @@ align_signal_with_events <- function(s, events, lg = NULL, center_values = TRUE)
     return_deriv = isTRUE(s$return_deriv),
     is_parametric = isTRUE(s$is_parametric),
     precentered_parametric = precentered_param,
-    demean_convolved = isTRUE(s$demean_convolved)
+    demean_convolved = isTRUE(s$demean_convolved),
+    formula_weighted = isTRUE(s$formula_weighted)
   )
 
   return(retsplit)
@@ -710,7 +711,8 @@ apply_signal_duration <- function(s_aligned, duration_spec, signal_name = "<unna
 #' @noRd
 split_signal_by_run <- function(s_aligned, event_runs, event_name, physio_only = FALSE,
                                 return_deriv = FALSE, is_parametric = FALSE,
-                                precentered_parametric = FALSE, demean_convolved = FALSE) {
+                                precentered_parametric = FALSE, demean_convolved = FALSE,
+                                formula_weighted = FALSE) {
   retdf <- s_aligned %>%
     dplyr::select("run_number", "trial", "onset", "duration", "value") %>%
     dplyr::mutate(run_number = factor(.data$run_number, levels = event_runs)) %>%
@@ -727,6 +729,7 @@ split_signal_by_run <- function(s_aligned, event_runs, event_name, physio_only =
     if (isTRUE(return_deriv)) attr(rr, "return_deriv") <- TRUE
     if (isTRUE(is_parametric)) attr(rr, "is_parametric") <- TRUE
     if (isTRUE(precentered_parametric)) attr(rr, "precentered_parametric") <- TRUE
+    if (isTRUE(formula_weighted)) attr(rr, "formula_weighted") <- TRUE
     if (isTRUE(demean_convolved)) attr(rr, "demean_convolved") <- TRUE
     return(rr)
   })

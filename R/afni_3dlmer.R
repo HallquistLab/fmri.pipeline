@@ -984,15 +984,42 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
     # 4. Overall average response across categorical factors
     if (isTRUE(spec$overall_response) && length(cat_cols) > 0L) {
       if (!slice_touches_empty_cell(character(0), "overall")) {
-        parts <- vapply(cat_cols, function(cv) {
-          levs <- get_levels_ordered(cv)
-          if (identical(eff_weights, "equal")) {
-            w <- rep(1 / length(levs), length(levs))
-          } else {
-            tab <- table(factor(as.character(data[[cv]]), levels = levs))
-            w <- as.numeric(tab) / sum(tab)
-          }
-          paste0(cv, " : ", paste0(round(w, 6), "*", levs, collapse = " "))
+        levs <- stats::setNames(lapply(cat_cols, get_levels_ordered), cat_cols)
+        grid <- expand.grid(levs, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+        grid_keys <- do.call(paste, c(lapply(grid, as.character), sep = "\r"))
+        data_keys <- do.call(paste, c(lapply(data[, cat_cols, drop = FALSE], as.character), sep = "\r"))
+        counts <- tabulate(match(data_keys, grid_keys), nbins = nrow(grid))
+        joint_weights <- switch(eff_weights,
+          equal = rep(1, nrow(grid)),
+          flat = as.numeric(counts > 0L),
+          cells = as.numeric(counts),
+          proportional = as.numeric(counts),
+          stop("Unsupported AFNI overall-response weighting: ", eff_weights, call. = FALSE)
+        )
+        joint_weights <- joint_weights / sum(joint_weights)
+        margins <- lapply(cat_cols, function(cv) {
+          vapply(levs[[cv]], function(lv) sum(joint_weights[grid[[cv]] == lv]), numeric(1))
+        })
+        product_weights <- rep(1, nrow(grid))
+        for (k in seq_along(cat_cols)) {
+          product_weights <- product_weights * margins[[k]][match(grid[[cat_cols[k]]], levs[[k]])]
+        }
+        # An AFNI GLT with one weight block per factor represents an outer product.
+        # General joint-cell frequencies cannot be expressed by those blocks.
+        if (any(abs(product_weights - joint_weights) > 1e-8)) {
+          stop(
+            sprintf(
+              paste0(
+                "Cannot translate AFNI overall_response with weights='%s': joint cell weights are not separable across factors. ",
+                "Define a joint-cell factor to express this weighting, or explicitly choose weights='equal' for an equal-cell mean."
+              ),
+              eff_weights
+            ),
+            call. = FALSE
+          )
+        }
+        parts <- vapply(seq_along(cat_cols), function(k) {
+          paste0(cat_cols[k], " : ", paste0(format(margins[[k]], digits = 16, trim = TRUE), "*", levs[[k]], collapse = " "))
         }, character(1))
         add_generated(label = "overall", code = paste(parts, collapse = " "), contrast_type = "overall")
       }
@@ -1186,21 +1213,53 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
         if (is.character(comb_list)) comb_list <- as.list(comb_list)
         for (comb in comb_list) {
           ps <- parse_emm_spec_string(paste(as.character(comb), collapse = ":"))
-          fac_pairs <- lapply(ps$focal_vars, function(fv) utils::combn(get_levels_ordered(fv), 2L, simplify = FALSE))
+          if (length(ps$focal_vars) > 1L && length(ps$by_vars) > 0L) {
+            stop(
+              "AFNI conditioned slope_diffs supports one focal factor (for example, 'A | B'); use an unconditioned interaction for multiple focal factors.",
+              call. = FALSE
+            )
+          }
+          all_v <- unique(c(ps$by_vars, ps$focal_vars))
+          checkmate::assert_subset(all_v, names(data))
+          fac_pairs <- lapply(ps$focal_vars, function(fv) {
+            levs <- get_levels_ordered(fv)
+            if (length(levs) < 2L) return(list())
+            utils::combn(levs, 2L, simplify = FALSE)
+          })
           if (any(lengths(fac_pairs) == 0L)) next
           idx_grid <- expand.grid(lapply(fac_pairs, seq_along), KEEP.OUT.ATTRS = FALSE)
-          for (ir in seq_len(nrow(idx_grid))) {
-            chosen <- lapply(seq_along(ps$focal_vars), function(k) fac_pairs[[k]][[idx_grid[ir, k]]])
-            code_blocks <- vapply(seq_along(ps$focal_vars), function(k) {
-              paste0(ps$focal_vars[k], " : 1*", chosen[[k]][1L], " -1*", chosen[[k]][2L])
-            }, character(1))
-            lbl_blocks <- vapply(chosen, function(pp) paste0(pp[1L], "_M_", pp[2L]), character(1))
-            lbl <- paste(trend_var, paste(ps$focal_vars, collapse = "_x_"), paste(lbl_blocks, collapse = "_x_"), sep = ".")
-            add_generated(
-              label = lbl,
-              code = paste0(paste(code_blocks, collapse = " "), " ", trend_var, " :"),
-              contrast_type = "slope_diff"
-            )
+          by_grid <- if (length(ps$by_vars) > 0L) {
+            expand.grid(stats::setNames(lapply(ps$by_vars, get_levels_ordered), ps$by_vars), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+          } else {
+            data.frame(.dummy = 1L)
+          }
+          for (br in seq_len(nrow(by_grid))) {
+            by_vals <- if (length(ps$by_vars) > 0L) {
+              stats::setNames(as.character(unlist(by_grid[br, ps$by_vars, drop = FALSE])), ps$by_vars)
+            } else character(0)
+            for (ir in seq_len(nrow(idx_grid))) {
+              chosen <- stats::setNames(lapply(seq_along(ps$focal_vars), function(k) fac_pairs[[k]][[idx_grid[ir, k]]]), ps$focal_vars)
+              cell_grid <- expand.grid(c(as.list(by_vals), chosen), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+              obs_keys <- do.call(paste, c(lapply(data[, names(cell_grid), drop = FALSE], as.character), sep = "\r"))
+              cell_keys <- do.call(paste, c(lapply(cell_grid, as.character), sep = "\r"))
+              if (!all(cell_keys %in% obs_keys)) next
+
+              lbl_blocks <- vapply(chosen, function(pp) paste0(pp[1L], "_M_", pp[2L]), character(1))
+              lbl <- paste(trend_var, paste(ps$focal_vars, collapse = "_x_"), paste(lbl_blocks, collapse = "_x_"), sep = ".")
+              if (length(by_vals) > 0L) {
+                lbl <- paste0(paste(names(by_vals), by_vals, sep = ".", collapse = "_"), "_", lbl)
+              }
+              if (any(vapply(seq_len(nrow(cell_grid)), function(cr) {
+                vals <- stats::setNames(as.character(unlist(cell_grid[cr, , drop = FALSE])), names(cell_grid))
+                slice_touches_empty_cell(vals, lbl)
+              }, logical(1)))) next
+
+              code_blocks <- vapply(seq_along(ps$focal_vars), function(k) {
+                paste0(ps$focal_vars[k], " : 1*", chosen[[k]][1L], " -1*", chosen[[k]][2L])
+              }, character(1))
+              code_parts <- c(if (length(by_vals) > 0L) build_cell_code(names(by_vals), by_vals), code_blocks, paste0(trend_var, " :"))
+              add_generated(label = lbl, code = paste(code_parts, collapse = " "), contrast_type = "slope_diff")
+            }
           }
         }
       }
