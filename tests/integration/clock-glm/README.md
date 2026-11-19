@@ -19,10 +19,13 @@ Both profiles use the same clock and feedback events, reaction-time durations, c
 
 Install the checkout under test in an R library visible to compute nodes. Load R, FSL, AFNI and licensed MATLAB in the submission shell. Set `SPM_PATH` to an SPM installation containing `spm.m` (the default on Longleaf is `/proj/mnhallqlab/lab_resources/spm12`). The engine workers inherit the submission R library paths. The default fixture is `/proj/mnhallqlab/projects/fmri.pipeline_test_data`. Set `FMRI_TEST_DATA` to use a copy with the same layout.
 
-From the repository root, use a **new directory on shared storage** for every invocation. The parent directory must exist. Allow space for trimmed time series and native fit outputs for each engine. The full profile processes 240 run-equivalents across the three engines.
+Run the driver in a compute allocation when processing whole-brain images. Finalization trims time series synchronously before submitting estimation jobs. From the repository root, use a **new directory on shared storage** for every invocation. The parent directory must exist. Allow space for trimmed time series and native fit outputs for each engine. The full profile processes 240 run-equivalents across the three engines.
 
 ```bash
-R CMD INSTALL .
+test_lib="$SCRATCH/clock-e2e-r-lib"
+mkdir -p "$test_lib"
+export R_LIBS="$test_lib${R_LIBS:+:$R_LIBS}"
+R CMD INSTALL --library="$test_lib" .
 Rscript --vanilla tests/integration/clock-glm/run.R "$SCRATCH/clock-smoke-01" smoke
 Rscript --vanilla tests/integration/clock-glm/run.R "$SCRATCH/clock-full-01" full
 ```
