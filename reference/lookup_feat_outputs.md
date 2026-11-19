@@ -118,3 +118,14 @@ marked with `is_passthrough = TRUE`, `materialized_level = 1`, and
 materialized, `analysis_fsf` and `analysis_dir` are missing and
 `image_feat_dir` identifies the originating L1 FEAT directory. A
 passthrough has only a `"cope"` image row.
+
+Higher-level rows report `feat_requested_estimator` and
+`feat_actual_estimator` (`ols`, `fe`, `flame1`, `flame12`, or
+`randomise`). A partial FLAME1 fallback is `flame12+flame1`;
+`feat_flame1_fallback_count` counts affected slices.
+`feat_requested_outlier_deweighting` and
+`feat_actual_outlier_deweighting` report the FSF request and the
+retained fit's outlier option. `feat_auto_retried` identifies a
+whole-model outlier retry. Actual settings are missing for unvalidated
+fits or when execution evidence is unavailable. Use
+`refresh_status = TRUE` to update a setup table saved before estimation.

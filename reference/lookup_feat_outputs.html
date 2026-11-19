@@ -172,6 +172,16 @@ marked with <code>is_passthrough = TRUE</code>,
 materialized, <code>analysis_fsf</code> and <code>analysis_dir</code> are missing and
 <code>image_feat_dir</code> identifies the originating L1 FEAT directory. A
 passthrough has only a <code>"cope"</code> image row.</p>
+<p>Higher-level rows report <code>feat_requested_estimator</code> and
+<code>feat_actual_estimator</code> (<code>ols</code>, <code>fe</code>, <code>flame1</code>,
+<code>flame12</code>, or <code>randomise</code>). A partial FLAME1 fallback is
+<code>flame12+flame1</code>; <code>feat_flame1_fallback_count</code> counts affected
+slices. <code>feat_requested_outlier_deweighting</code> and
+<code>feat_actual_outlier_deweighting</code> report the FSF request and the retained
+fit's outlier option. <code>feat_auto_retried</code> identifies a whole-model
+outlier retry. Actual settings are missing for unvalidated fits or when
+execution evidence is unavailable. Use <code>refresh_status = TRUE</code> to
+update a setup table saved before estimation.</p>
     </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
