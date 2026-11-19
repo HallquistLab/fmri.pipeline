@@ -186,8 +186,8 @@ normalize_fwe_compute <- function(compute) {
   if (!is.list(compute) || (length(compute) > 0L && is.null(names(compute)))) {
     stop("compute must be a named list.", call. = FALSE)
   }
-  defaults <- list(scheduler = "inherit", memgb_per_command = 8,
-    time_per_command = "12:00", commands_per_cpu = 1L, cpus_per_job = 1L)
+  defaults <- list(scheduler = "inherit", memgb_per_command = 1,
+    time_per_command = "00:00:45", commands_per_cpu = 1L, cpus_per_job = 1L)
   unknown <- setdiff(names(compute), names(defaults))
   if (length(unknown) > 0L) {
     stop("Unknown compute field(s): ", paste(unknown, collapse = ", "), call. = FALSE)

@@ -1,16 +1,7 @@
 ptfce_require_dependencies <- function() {
-  if (!requireNamespace("pTFCE", quietly = TRUE)) {
-    stop("pTFCE is required on the execution host. Install it before submitting correction jobs.", call. = FALSE)
+  if (!requireNamespace("pTFCE", quietly = TRUE) || utils::packageVersion("pTFCE") < "0.4.0") {
+    stop("Install HallquistLab/pTFCE (>= 0.4.0) on the execution host for native sided enhancement.", call. = FALSE)
   }
-}
-
-ptfce_enhance <- function(args) {
-  # pTFCE 0.2.x calls these oro.nifti helpers without importing them. Bind
-  # them locally so workers do not depend on packages attached by a profile.
-  worker <- pTFCE::ptfce
-  environment(worker) <- list2env(list(nifti = oro.nifti::nifti,
-    zero_trans = oro.nifti::zero_trans), parent = environment(worker))
-  do.call(worker, args)
 }
 
 ptfce_fwe_threshold <- function(resels, alpha, two_sided) {
@@ -72,67 +63,48 @@ run_ptfce_image <- function(zstat, mask, out_dir = dirname(zstat), fwe_alpha = 0
     model_inside <- ptfce_read_mask(model_mask, zstat)
     if (any(inside & !model_inside)) stop("Correction mask extends outside the model mask.")
   }
-  Z <- oro.nifti::readNIfTI(zstat, reorient = FALSE)
+  Z <- RNifti::readNifti(zstat)
   if (any(!is.finite(Z[inside]))) stop("Non-finite Z statistics inside the correction mask.")
-  Z[!inside] <- 0
-  mask_image <- oro.nifti::readNIfTI(mask, reorient = FALSE)
-  args <- list(mask = mask_image, verbose = verbose)
+  smoothness <- list()
   if (!is.null(residuals)) {
     checkmate::assert_file_exists(residuals)
     checkmate::assert_number(dof, lower = 1, finite = TRUE)
     residual_geometry <- roi_image_geometry(residuals)
     residual_geometry$volumes <- 1L
     validate_roi_geometry(roi_image_geometry(mask), residual_geometry, mask, residuals)
-    smooth <- pTFCE::smoothest(oro.nifti::readNIfTI(residuals, reorient = FALSE), mask_image,
-      dof = dof, verbose = verbose)
-    args <- c(args, list(V = smooth$volume, Rd = smooth$dLh * smooth$volume, resels = smooth$resels))
+    smoothness <- list(residual = residuals, dof = dof)
   } else if (!is.null(fsl_smoothest)) {
-    args <- c(args, ptfce_smoothness(fsl_smoothest, inside))
-  } else {
-    smooth <- pTFCE::smoothest(Z, mask_image, verbose = verbose)
-    args <- c(args, list(V = smooth$volume, Rd = smooth$dLh * smooth$volume, resels = smooth$resels))
+    smoothness <- ptfce_smoothness(fsl_smoothest, inside)
   }
-  enhance <- function(img) {
-    this <- args
-    this$img <- img
-    this$logpmax <- -stats::pnorm(max(img[inside]), lower.tail = FALSE, log.p = TRUE)
-    value <- ptfce_enhance(this)
-    if (any(!is.finite(value$Z[inside]))) {
-      stop("pTFCE produced non-finite values inside the correction mask; outputs were not accepted.")
-    }
-    value$Z[value$Z < 0 | !inside] <- 0
-    value
-  }
-  positive <- enhance(Z)
-  output <- positive$Z
-  if (two_sided) {
-    negative <- enhance(-Z)
-    if (!isTRUE(all.equal(positive$number_of_resels, negative$number_of_resels))) {
-      stop("pTFCE estimated different resel counts for the two tails.")
-    }
-    output <- positive$Z - negative$Z
-  }
+  result <- do.call(pTFCE::ptfce, c(list(img = Z, mask = inside, verbose = verbose,
+    sided = if (two_sided) "two.sided" else "positive", fwe_p = fwe_alpha), smoothness))
+  output <- result$Z
+  if (any(!is.finite(output[inside]))) stop("pTFCE produced non-finite values inside the correction mask.")
+  checkmate::assert_numeric(result$fwe.Z, len = length(fwe_alpha), lower = 0, finite = TRUE, any.missing = FALSE)
+  if (!two_sided) output[output < 0] <- 0
   output[!inside] <- 0
   parts <- fwe_nifti_parts(zstat)
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   base <- file.path(out_dir, paste0(parts$stem, "_ptfce"))
-  gzip <- identical(parts$extension, ".nii.gz")
   labels <- vapply(fwe_alpha, format_fwe_probability, character(1L))
   if (anyDuplicated(labels)) stop("FWE alpha values are too close to give distinct output names.")
+  table_file <- paste0(base, "_zthresh.csv")
+  if (file.exists(table_file) && !file.remove(table_file)) stop("Cannot replace ", table_file)
   thresholds <- lapply(seq_along(fwe_alpha), function(i) {
-    z <- ptfce_fwe_threshold(positive$number_of_resels, fwe_alpha[i], two_sided)
+    z <- unname(result$fwe.Z[i])
     significant <- inside & abs(output) >= z & output != 0
     if (write_threshold_images) {
       thresholded <- output
       thresholded[!significant] <- 0
-      oro.nifti::writeNIfTI(thresholded, paste0(base, "_fwep_", labels[i]), gzipped = gzip)
+      RNifti::writeNifti(thresholded, paste0(base, "_fwep_", labels[i], parts$extension), datatype = "float")
     }
     data.frame(z_ptfce = z, p_value = fwe_alpha[i], two_sided = two_sided,
-      number_of_resels = positive$number_of_resels, search_voxels = sum(inside),
-      significant_voxels = sum(significant))
+      number_of_resels = result$number_of_resels, search_voxels = sum(inside),
+      significant_voxels = sum(significant), ptfce_version = as.character(utils::packageVersion("pTFCE")),
+      write_threshold_images = write_threshold_images)
   })
-  oro.nifti::writeNIfTI(output, base, gzipped = gzip)
-  utils::write.csv(do.call(rbind, thresholds), paste0(base, "_zthresh.csv"), row.names = FALSE)
+  RNifti::writeNifti(output, paste0(base, parts$extension), datatype = "float")
+  utils::write.csv(do.call(rbind, thresholds), table_file, row.names = FALSE)
   invisible(do.call(rbind, thresholds))
 }
 
@@ -141,13 +113,18 @@ ptfce_cli <- function(args) {
     cat("Usage: ptfce_zstat.R --zstat image --mask mask [--model_mask mask] [--fsl_smoothest file]\n",
       "  [--residuals image --dof number_or_file] [--out_dir directory]\n",
       "  [--fwep alpha ...] [--twosided | --onesided] [--write_thresh_imgs] [--verbose]\n")
+    cat("   or: ptfce_zstat.R --gfeat directory [--fwep alpha ...] [--twosided | --onesided]",
+      "[--write_thresh_imgs] [--force]\n")
     return(invisible(NULL))
   }
   options <- list(two_sided = TRUE, write_threshold_images = FALSE)
   flags <- c("--twosided" = "two_sided", "--onesided" = "two_sided",
     "--write_thresh_imgs" = "write_threshold_images", "--verbose" = "verbose")
   values <- c("--zstat" = "zstat", "--mask" = "mask", "--model_mask" = "model_mask",
-    "--out_dir" = "out_dir", "--fsl_smoothest" = "fsl_smoothest", "--residuals" = "residuals", "--dof" = "dof")
+    "--out_dir" = "out_dir", "--fsl_smoothest" = "fsl_smoothest", "--residuals" = "residuals", "--dof" = "dof",
+    "--gfeat" = "gfeat_dir")
+  force <- "--force" %in% args
+  args <- args[args != "--force"]
   i <- 1L
   while (i <= length(args)) {
     flag <- args[i]
@@ -166,6 +143,15 @@ ptfce_cli <- function(args) {
       i <- i + 2L
     } else stop("Unknown argument: ", flag)
   }
+  if (!is.null(options$gfeat_dir)) {
+    allowed <- c("gfeat_dir", "fwe_alpha", "two_sided", "write_threshold_images")
+    if (!all(names(options) %in% allowed)) stop("Use --gfeat with directory-mode options only (see --help).")
+    spec <- ptfce_spec$new(gfeat_dir = options$gfeat_dir, fwe_p = options$fwe_alpha %||% 0.05,
+      two_sided = options$two_sided, write_thresh_imgs = options$write_threshold_images)
+    spec$run(force = force)
+    return(invisible(NULL))
+  }
+  if (force) stop("--force applies only with --gfeat.")
   if (!all(c("zstat", "mask") %in% names(options))) stop("--zstat and --mask are required.")
   if (!is.null(options$dof)) {
     if (file.exists(options$dof)) options$dof <- readLines(options$dof, warn = FALSE)

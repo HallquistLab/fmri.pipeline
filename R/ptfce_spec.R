@@ -5,7 +5,6 @@
 #' @export
 ptfce_spec <- R6::R6Class("ptfce_spec",
   private = list(
-    gfeat_info = NULL,
     z_files = NULL,
     mask_files = NULL,
     residuals_file = NULL,
@@ -17,8 +16,8 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
     pvt_fwe_p = NULL,
     expect_list = NULL,
     scheduler = "slurm",
-    time_per_zstat = "12:00", # 12 minutes for one run of pTFCE (at 2.3mm, takes about 2.5 mins for me)
-    memgb_per_command = 8, # 8 GB requested for every ptfce run
+    time_per_zstat = "00:00:45",
+    memgb_per_command = 1,
     pvt_cluster_objs = NULL,
     all_cope_df = NULL, # if gfeats are passed in, keep the contrast info for all z's as a data.frame
     set_fwep = function(vec) {
@@ -44,6 +43,32 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
         return(file.path(z_dir, paste0(base, "_ptfce_zthresh.csv")))
       }
     },
+    worker_args = function(i) {
+      smoothness <- switch(private$smoothness_method,
+        smoothest = c("--fsl_smoothest", private$fsl_smoothest_file[i]),
+        residuals = c("--residuals", private$residuals_file[i], "--dof", private$dof[i]))
+      c("--zstat", private$z_files[i], "--mask", private$mask_files[i],
+        "--fwep", as.character(self$fwe_p), smoothness,
+        if (private$write_thresh_imgs) "--write_thresh_imgs",
+        if (self$two_sided) "--twosided" else "--onesided")
+    },
+    pending_maps = function(force) {
+      checkmate::assert_flag(force)
+      if (force) return(seq_along(private$z_files))
+      complete <- vapply(private$expect_list, function(files) {
+        if (!all(file.exists(unlist(files)))) return(FALSE)
+        table <- tryCatch(utils::read.csv(files$z_csv), error = function(e) NULL)
+        required <- c("p_value", "two_sided", "ptfce_version", "write_threshold_images")
+        if (!all(required %in% names(table))) return(FALSE)
+        # The submission host can prepare jobs without installing pTFCE locally.
+        current_version <- if (requireNamespace("pTFCE", quietly = TRUE)) as.character(utils::packageVersion("pTFCE"))
+        identical(sort(table$p_value), sort(as.numeric(self$fwe_p))) &&
+          all(table$two_sided %in% self$two_sided) &&
+          (is.null(current_version) || all(table$ptfce_version %in% current_version)) &&
+          (!private$write_thresh_imgs || all(table$write_threshold_images %in% TRUE))
+      }, logical(1))
+      which(!complete)
+    },
     set_expected_files = function() {
       f_list <- list()
       for (ii in seq_along(private$z_files)) {
@@ -54,7 +79,7 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
           z_ptfce = private$ptfce_outfile_from_zstat(this_z),
           z_csv = private$ptfce_outfile_from_zstat(this_z, what = "csv")
         )
-        for (pp in private$pvt_fwe_p) {
+        if (private$write_thresh_imgs) for (pp in private$pvt_fwe_p) {
           f_list[[ii]][[paste0("z_ptfce_fwep_", format_fwe_probability(pp))]] <- private$ptfce_outfile_from_zstat(this_z, fwe_p = pp)
         }
       }
@@ -68,11 +93,12 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
         return(private$pvt_fwe_p)
       } else {
         private$set_fwep(vec)
+        private$set_expected_files()
       }
     },
 
-    #' @field two_sided It \code{TRUE}, run pTFCE on both tails of the statistic separately. If \code{FALSE},
-    #'   only run pTFCE on the positve tail (z > 0).
+    #' @field two_sided If \code{TRUE}, use native two-sided pTFCE on a shared threshold grid. If \code{FALSE},
+    #'   only run pTFCE on the positive tail (z > 0).
     two_sided = function(val) {
       if (missing(val)) {
         return(private$pvt_two_sided)
@@ -103,8 +129,8 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
     #'   to the same folder as the z-statistic. These thresholded files let you look at the map at a given FWE threshold.
     #' @param scheduler Which scheduler to use for submitting jobs. Options are 'local', 'slurm', and 'torque'.
     #' @param time_per_zstat The amount of time to budget for each zstat to run through pTFCE in dd-hh:mm:ss format.
-    #'   Default is 10:00 (10 minutes).
-    #' @param memgb_per_command How many GB of memory should be requested for each pTFCE command/run. If not provided, defaults to 8.
+    #'   Default is 00:00:45 (45 seconds).
+    #' @param memgb_per_command How many GB of memory should be requested for each pTFCE command/run. If not provided, defaults to 1.
     initialize = function(gfeat_dir = NULL, zstat_numbers = NULL, fsl_smoothest_file = NULL, dof = NULL, residuals_file = NULL,
                           z_files = NULL, mask_files = NULL, fwe_p = .05, two_sided = TRUE, write_thresh_imgs = TRUE,
                           scheduler = NULL, time_per_zstat = NULL, memgb_per_command = NULL) {
@@ -114,57 +140,25 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
         }
 
         checkmate::assert_directory_exists(gfeat_dir)
-        private$gfeat_info <- lapply(gfeat_dir, read_gfeat_dir, what = "stat_files") # don't parse dof, smoothness, etc.
-
-        private$all_cope_df <- dplyr::bind_rows(purrr::list_flatten(lapply(private$gfeat_info, function(x) {
-          lapply(x$cope_dirs, "[[", "cope_df")
-        }))) %>% dplyr::select("cope_number", "contrast_name", "z")
-
-        # TODO: need to support subsetting by cope number (e.g., cope3.feat) and zstat number (e.g., zstat1.nii.gz)
-        # not currently supported (no high-priority use case)
-        z_list <- do.call(c, lapply(private$gfeat_info, function(gf) {
-          lapply(gf$cope_dirs, function(x) {
-            if (!is.null(zstat_numbers)) {
-              checkmate::assert_integerish(zstat_numbers)
-              x$cope_df %>%
-                filter(cope_number %in% !!zstat_numbers) %>%
-                pull("z")
-            } else {
-              x$cope_df %>% pull("z")
-            }
-          })
-        }))
-
-        # number of z stats in each .feat folder
-        z_lens <- sapply(z_list, length)
-
-        # build out mask files to match each cope directory zstats
-        mask_files <- rep(
-          do.call(c, lapply(private$gfeat_info, function(gf) {
-            sapply(gf$cope_dirs, "[[", "mask_file", USE.NAMES = FALSE)
-          })),
-          z_lens
-        )
-        fsl_smoothest_file <- rep(
-          do.call(c, lapply(private$gfeat_info, function(gf) {
-            sapply(gf$cope_dirs, "[[", "smoothness_file", USE.NAMES = FALSE)
-          })),
-          z_lens
-        )
-
-        # for now, if gfeat_dir is provided, just use smoothness file, which is computed by smoothest on the res4D
-        # this is more efficient than having ptfce handle it internally
-        # dof <- rep(sapply(private$gfeat_info$cope_dirs, function(x) x$parsed_txt$dof), z_lens)
-
-        # To support multiple L2 cope folders in an L3 gfeat folder, we need to allow for multiple stats/smoothness and dof files
-        # these can vary by the .feat folder. Thus, build out logic that class has an fsl_smoothest element for every z_file
-        # example:
-        # [mnhallq@longleaf-login5 v_entropy-Intercept-Age.gfeat]$ head -n 1 ./cope3.feat/stats/smoothness
-        # DLH 0.139392
-        # [mnhallq@longleaf-login5 v_entropy-Intercept-Age.gfeat]$ head -n 1 ./cope5.feat/stats/smoothness
-        # DLH 0.137736
-
-        private$z_files <- unname(do.call(c, z_list))
+        if (!is.null(zstat_numbers)) checkmate::assert_integerish(zstat_numbers)
+        groups <- lapply(gfeat_dir, read_gfeat_dir, what = "stat_files", statistics = "zstat")
+        maps <- lapply(groups, function(group) {
+          lapply(group$cope_dirs, function(cope) {
+            if (is.null(cope)) return(NULL)
+            rows <- cope$cope_df[, c("cope_number", "contrast_name", "z"), drop = FALSE]
+            if (!is.null(zstat_numbers)) rows <- rows[rows$cope_number %in% zstat_numbers, , drop = FALSE]
+            rows <- rows[!is.na(rows$z), , drop = FALSE]
+            if (!nrow(rows)) return(NULL)
+            rows$mask <- cope$mask_file
+            rows$smoothness <- cope$smoothness_file
+            rows
+          }) |> dplyr::bind_rows()
+        }) |> dplyr::bind_rows()
+        if (!nrow(maps)) stop("No matching z-statistic images in gfeat_dir.")
+        private$all_cope_df <- maps[, c("cope_number", "contrast_name", "z"), drop = FALSE]
+        private$z_files <- maps$z
+        mask_files <- maps$mask
+        fsl_smoothest_file <- maps$smoothness
       } else if (!is.null(z_files)) {
         checkmate::assert_file_exists(z_files)
         private$z_files <- z_files
@@ -187,7 +181,8 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
 
       if (!is.null(residuals_file)) {
         checkmate::assert_file_exists(residuals_file)
-        private$residuals_file <- residuals_file
+        if (!length(residuals_file) %in% c(1L, length(private$z_files))) stop("Supply one residual file or one per map.")
+        private$residuals_file <- rep_len(residuals_file, length(private$z_files))
 
         if (is.null(dof)) {
           stop("If a residuals file is provided, you also need to provide dof (either as an integer or a file containing that integer).")
@@ -199,6 +194,8 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
           stop("Can't sort out this dof input")
         }
 
+        if (!length(private$dof) %in% c(1L, length(private$z_files))) stop("Supply one dof or one per map.")
+        private$dof <- rep_len(private$dof, length(private$z_files))
         private$smoothness_method <- "residuals"
       } else if (!is.null(fsl_smoothest_file)) {
         checkmate::assert_file_exists(fsl_smoothest_file)
@@ -218,12 +215,13 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
       # populate fwep and twosided
       private$set_fwep(fwe_p)
       private$set_twosided(two_sided)
-      private$set_expected_files()
 
       if (!is.null(write_thresh_imgs)) {
         checkmate::assert_logical(write_thresh_imgs, len = 1L)
         private$write_thresh_imgs <- write_thresh_imgs
       }
+
+      private$set_expected_files()
 
       if (!is.null(scheduler)) {
         checkmate::assert_string(scheduler)
@@ -245,50 +243,10 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
     #' @param include_complete if TRUE, return calls for zstats that already appear to have
     #'   pTFCE-corrected images in place. Default: FALSE.
     get_ptfce_calls = function(include_complete = FALSE) {
-      if (isTRUE(private$write_thresh_imgs)) {
-        write_string <- "--write_thresh_imgs"
-      } else {
-        write_string <- ""
-      }
-
-      if (isTRUE(private$pvt_two_sided)) {
-        side_string <- "--twosided"
-      } else {
-        side_string <- "--onesided"
-      }
-
-      calls <- rep(NA_character_, length(private$z_files))
-      script_loc <- system.file("bin/ptfce_zstat.R", package = "fmri.pipeline")
-      if (script_loc == "") {
-        stop("Cannot find ptfce_zstat.R inside fmri.pipeline R installation folder.")
-      }
-
-      for (pp in seq_along(private$z_files)) {
-        if (isTRUE(include_complete)) {
-          run_me <- TRUE
-        } else {
-          # check whether all expected files for a given zstat input exist
-          run_me <- !checkmate::test_file_exists(unlist(private$expect_list[[pp]]))
-        }
-
-        if (run_me == FALSE) next
-
-        if (private$smoothness_method == "smoothest") {
-          method_string <- glue("--fsl_smoothest {private$fsl_smoothest_file[pp]}")
-        } else if (private$smoothness_method == "residuals") {
-          method_string <- glue("--residuals {private$residuals_file[pp]} --dof {private$dof[pp]}")
-        } else {
-          method_string <- ""
-        }
-
-        calls[pp] <- glue(
-          "{script_loc} --zstat {private$z_files[pp]} --mask {private$mask_files[pp]}",
-          "--fwep {paste(self$fwe_p, collapse=' ')} {method_string} {write_string} {side_string}",
-          .sep = " "
-        )
-      }
-
-      return(na.omit(calls))
+      script <- resolve_ptfce_worker_script()
+      vapply(private$pending_maps(include_complete), function(i) {
+        fwe_shell_command("Rscript", c("--vanilla", script, private$worker_args(i)))
+      }, character(1L))
     },
 
     #' @description return the vector of expected output files
@@ -296,26 +254,24 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
       private$expect_list
     },
 
-    #' @description Run pTFCE in this compute environment. This is not supported at present!
+    #' @description Run each pending map sequentially in the current R session.
     #' @param force if TRUE, re-run pTFCE on an existing output
     run = function(force = FALSE) {
-      # run pTFCE right here
-      require(pTFCE)
-      stop("At present, we only work through the external ptfce_zstat.R script. Use $submit()")
+      for (i in private$pending_maps(force)) ptfce_cli(private$worker_args(i))
+      invisible(self)
     },
 
     #' method to submit all ptfce_zstat.R calls to a cluster based on the scheduler specified
     #' @param force if TRUE, re-run pTFCE for zstat images that already appear to have pTFCE-corrected outputs in place
     submit = function(force = FALSE) {
-      checkmate::assert_logical(force, len = 1L)
-      if (isTRUE(self$is_complete()) && isFALSE(force)) {
-        message("All expected pTFCE outputs exist. No jobs to submit.")
+      checkmate::assert_flag(force)
+      if (private$scheduler == "local") {
+        self$run(force)
         return(invisible(character(0)))
       }
-
       # lookup ptfce calls for all inputs
       ptfce_calls <- self$get_ptfce_calls(include_complete = force)
-      if (length(ptfce_calls) == 0L) { # this is unlikely given the is_complete() check above, but still
+      if (length(ptfce_calls) == 0L) {
         message("No pTFCE jobs need to be run for this input. If you want to recalculate completed outputs, use force=TRUE")
         return(invisible(character(0)))
       }
@@ -331,9 +287,9 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
       return(invisible(child_job_ids))
     },
 
-    #' @description returns \code{TRUE} if all expected pTFCE output files exist, \code{FALSE} if any output is missing
+    #' @description returns \code{TRUE} when all expected outputs exist and their threshold tables match the requested settings
     is_complete = function() {
-      checkmate::test_file_exists(unlist(private$expect_list))
+      length(private$pending_maps(FALSE)) == 0L
     },
 
     #' @description for each input file, obtain 3dClusterize objects that reflect the pTFCE-corrected clusters

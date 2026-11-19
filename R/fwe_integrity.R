@@ -1,5 +1,5 @@
 # Version the numerical/worker contract independently of the serialized plan.
-fwe_implementation_version <- function() 2L
+fwe_implementation_version <- function() 3L
 
 fwe_hash <- function(x) {
   path <- tempfile("fwe_hash_")
@@ -78,10 +78,14 @@ execute_fwe_task <- function(request_file, worker_script, arguments) {
     stop("FWE inputs changed after submission; replan the correction.")
   }
   unlink(request$artifacts$artifact_file)
-  status <- system2(rscript_executable(), vapply(c(worker_script, arguments), shQuote, character(1L)))
-  if (status != 0L) stop(structure(
-    list(message = paste("FWE worker failed with exit status", status), call = NULL, status = status),
-    class = c("fwe_worker_error", "error", "condition")))
+  if (identical(normalizePath(worker_script), resolve_ptfce_worker_script())) {
+    ptfce_cli(arguments)
+  } else {
+    status <- system2(rscript_executable(), vapply(c(worker_script, arguments), shQuote, character(1L)))
+    if (status != 0L) stop(structure(
+      list(message = paste("FWE worker failed with exit status", status), call = NULL, status = status),
+      class = c("fwe_worker_error", "error", "condition")))
+  }
   validate_ptfce_outputs(task, request$artifacts)
   if (!identical(fwe_task_fingerprints(task), task$input_fingerprint)) {
     stop("FWE inputs changed during execution; replan the correction.")
