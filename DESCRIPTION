@@ -72,6 +72,7 @@ Imports:
 Suggests:
     knitr,
     pkgload,
+    pTFCE,
     rmarkdown,
     testthat (>= 3.0.0),
     withr

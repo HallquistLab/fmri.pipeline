@@ -1,98 +1,3 @@
-make_fwe_execution_test_gpa <- function(root, create_smoothness = TRUE) {
-  l3_feat <- file.path(
-    root, "feat_l3", "L3m-l3_group", "L1m-facehouse",
-    "L2m-l2_session", "l2c-overall", "FEAT_l1c-EV_face.gfeat"
-  )
-  image_feat_dir <- file.path(l3_feat, "cope1.feat")
-  stats_dir <- file.path(image_feat_dir, "stats")
-  dir.create(stats_dir, recursive = TRUE)
-  file.create(file.path(stats_dir, c("zstat1.nii.gz", "zstat2.nii.gz")))
-  file.create(file.path(image_feat_dir, "mask.nii.gz"))
-  if (isTRUE(create_smoothness)) {
-    writeLines(
-      c("DLH 0.1", "VOLUME 1000", "RESELS 100"),
-      file.path(stats_dir, "smoothness")
-    )
-  }
-
-  l3_setup <- data.frame(
-    l1_model = "facehouse",
-    l1_cope_name = "EV_face",
-    l2_model = "l2_session",
-    l2_cope_name = "overall",
-    l3_model = "l3_group",
-    session = 0L,
-    l3_input_mode = "all_sessions",
-    feat_fsf = sub("\\.gfeat$", ".fsf", l3_feat),
-    feat_dir = l3_feat,
-    feat_complete = TRUE,
-    feat_failed = FALSE,
-    feat_dir_exists = TRUE,
-    feat_fsf_exists = FALSE,
-    stringsAsFactors = FALSE
-  )
-  l3_metadata <- data.frame(
-    id = c("01", "01"),
-    session = c(1L, 1L),
-    l1_model = c("facehouse", "facehouse"),
-    l1_cope_number = c(1L, 1L),
-    l1_cope_name = c("EV_face", "EV_face"),
-    l2_model = c("l2_session", "l2_session"),
-    l2_cope_number = c(1L, 1L),
-    l2_cope_name = c("overall", "overall"),
-    l3_model = c("l3_group", "l3_group"),
-    l3_cope_number = c(1L, 2L),
-    l3_cope_name = c("group", "age"),
-    stringsAsFactors = FALSE
-  )
-
-  structure(
-    list(
-      output_directory = root,
-      scheduler = "slurm",
-      lgr_threshold = "warn",
-      multi_run = TRUE,
-      l3_model_setup = structure(
-        list(metadata = l3_metadata, fsl = l3_setup),
-        class = c("l3_setup", "list")
-      )
-    ),
-    class = c("glm_pipeline_arguments", "list")
-  )
-}
-
-make_fake_ptfce_worker <- function(root, fail = FALSE) {
-  worker <- file.path(root, if (fail) "fail_ptfce.R" else "fake_ptfce.R")
-  if (isTRUE(fail)) {
-    lines <- c("#!/usr/bin/env Rscript", "quit(save = 'no', status = 3L)")
-  } else {
-    lines <- c(
-      "#!/usr/bin/env Rscript",
-      "args <- commandArgs(trailingOnly = TRUE)",
-      "one <- function(flag) args[match(flag, args) + 1L]",
-      "zstat <- one('--zstat')",
-      "out_dir <- one('--out_dir')",
-      "dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)",
-      "filename <- basename(zstat)",
-      "ext <- if (grepl('\\\\.nii\\\\.gz$', filename)) '.nii.gz' else '.nii'",
-      "stem <- substr(filename, 1L, nchar(filename) - nchar(ext))",
-      "base <- file.path(out_dir, paste0(stem, '_ptfce'))",
-      "file.create(paste0(base, ext))",
-      "file.create(paste0(base, '_zthresh.csv'))",
-      "if ('--write_thresh_imgs' %in% args) {",
-      "  start <- match('--fwep', args) + 1L",
-      "  stop_at <- which(seq_along(args) > start & grepl('^--', args))[1L]",
-      "  end <- if (is.na(stop_at)) length(args) else stop_at - 1L",
-      "  alpha <- args[start:end]",
-      "  for (value in alpha) file.create(paste0(base, '_fwep_', value, ext))",
-      "}"
-    )
-  }
-  writeLines(lines, worker)
-  Sys.chmod(worker, mode = "0755")
-  worker
-}
-
 test_that("pTFCE execution dry runs expose commands without side effects", {
   root <- tempfile("fwe_execute_dry_")
   gpa <- make_fwe_execution_test_gpa(root)
@@ -136,7 +41,7 @@ test_that("pTFCE commands retain structured arguments for local execution", {
   expect_identical(commands$executable, rscript_executable())
   expect_length(commands$arguments, 1L)
   expect_identical(
-    commands$arguments[[1L]][1L],
+    commands$arguments[[1L]][5L],
     normalizePath(worker, mustWork = TRUE)
   )
   expect_true("--zstat" %in% commands$arguments[[1L]])
@@ -242,7 +147,7 @@ test_that("refresh_fwe_plan detects artifacts created outside the runner", {
   )
   plan <- plan_fwe_correction(gpa, spec, source = "setup")
   dir.create(plan$tasks$output_directory, recursive = TRUE)
-  file.create(plan$artifacts$artifact_file)
+  write_fwe_test_result(plan)
 
   refreshed <- refresh_fwe_plan(plan)
 
@@ -254,11 +159,16 @@ test_that("scheduler execution records submitted job identifiers", {
   root <- tempfile("fwe_execute_scheduler_")
   gpa <- make_fwe_execution_test_gpa(root)
   worker <- make_fake_ptfce_worker(root)
-  spec <- fwe_spec("scheduler", targets = list(l3_cope_name = "group"))
+  spec <- fwe_spec("scheduler", targets = list(l3_cope_name = "group"),
+    compute = list(cpus_per_job = 2L, memgb_per_command = 3, time_per_command = "00:20:00"))
   plan <- plan_fwe_correction(gpa, spec, source = "setup")
 
   testthat::local_mocked_bindings(
     cluster_submit_shell_jobs = function(job_list, log_file, ...) {
+      settings <- list(...)
+      expect_equal(settings$cpus_per_job, 2L)
+      expect_equal(settings$memgb_per_command, 3)
+      expect_identical(settings$time_per_command, "00:20:00")
       utils::write.csv(
         data.frame(
           job_number = seq_along(job_list),
@@ -274,11 +184,16 @@ test_that("scheduler execution records submitted job identifiers", {
     .package = "fmri.pipeline"
   )
 
-  run <- run_fwe_plan(plan, scheduler = "slurm", worker_script = worker)
+  run <- run_fwe_plan(plan, scheduler = "slurm", worker_script = worker,
+    tracking_sqlite_db = file.path(root, "tracking.sqlite"))
 
   expect_identical(run$execution$execution_status, "submitted")
   expect_identical(run$execution$job_id, "12345")
   expect_identical(run$job_ids, "12345")
+  tracked <- fmri.pipeline:::submit_sqlite_query("SELECT job_id, job_name FROM job_tracking",
+    file.path(root, "tracking.sqlite"), return_result = TRUE)
+  expect_identical(tracked$job_id, "12345")
+  expect_identical(tracked$job_name, "fwe_scheduler")
   expect_s3_class(run$result, "fwe_result")
   expect_false(run$result$complete)
   expect_true(file.exists(run$result$manifest_file))
@@ -321,11 +236,11 @@ test_that("result collection updates a partial persistent manifest", {
   expect_true(all(partial$manifest$artifact_status == "missing_required"))
   expect_error(
     collect_fwe_results(partial, require_complete = TRUE),
-    "Required FWE artifacts are missing"
+    "Required FWE artifacts are missing or unverified"
   )
 
   dir.create(plan$tasks$output_directory, recursive = TRUE)
-  file.create(plan$artifacts$artifact_file)
+  write_fwe_test_result(plan)
   complete <- collect_fwe_results(partial, require_complete = TRUE)
 
   expect_true(complete$complete)

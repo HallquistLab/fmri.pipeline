@@ -7,7 +7,7 @@
 build_fwe_correction(gpa, lg = NULL)
 }
 \arguments{
-\item{gpa}{a \code{glm_pipeline_arguments} object containing model outputs in l3_model_setup}
+\item{gpa}{a \code{glm_pipeline_arguments} object containing configured L3 models}
 
 \item{lg}{a logger object for logging messages}
 }

@@ -8,8 +8,8 @@ make_fwe_plan_test_gpa <- function(root, create_mask = TRUE,
   image_feat_dir <- file.path(l3_feat, "cope1.feat")
   stats_dir <- file.path(image_feat_dir, "stats")
   dir.create(stats_dir, recursive = TRUE)
-  file.create(file.path(stats_dir, c("zstat1.nii.gz", "zstat2.nii.gz")))
-  if (isTRUE(create_mask)) file.create(file.path(image_feat_dir, "mask.nii.gz"))
+  for (file in file.path(stats_dir, c("zstat1.nii.gz", "zstat2.nii.gz"))) write_fwe_test_image(file)
+  if (isTRUE(create_mask)) write_fwe_test_image(file.path(image_feat_dir, "mask.nii.gz"), 1)
   if (isTRUE(create_smoothness)) {
     writeLines(c("DLH 0.1", "VOLUME 1000", "RESELS 100"), file.path(stats_dir, "smoothness"))
   }
@@ -92,9 +92,9 @@ test_that("pTFCE planning fans out over all selected L3 contrasts", {
 
 test_that("pTFCE planning applies a custom correction mask to every task", {
   root <- tempfile("fwe_plan_mask_")
-  gpa <- make_fwe_plan_test_gpa(root, create_mask = FALSE)
+  gpa <- make_fwe_plan_test_gpa(root)
   custom_mask <- file.path(root, "custom_mask.nii.gz")
-  file.create(custom_mask)
+  write_fwe_test_image(custom_mask, 1)
   spec <- fwe_spec(
     "custom_mask",
     targets = list(l3_model = "l3_group"),
@@ -108,7 +108,7 @@ test_that("pTFCE planning applies a custom correction mask to every task", {
     as.character(fs::path_abs(custom_mask))
   )
   expect_true(all(plan$tasks$status == "ready"))
-  expect_false(all(plan$analyses$model_mask_exists))
+  expect_true(all(plan$analyses$model_mask_exists))
 })
 
 test_that("pTFCE planning reports missing inputs or returns a blocked preview", {
@@ -145,7 +145,7 @@ test_that("compiled FWE plans detect completed artifacts", {
   expect_equal(nrow(preview$artifacts), 2L)
 
   dir.create(preview$tasks$output_directory, recursive = TRUE)
-  file.create(preview$artifacts$artifact_file)
+  write_fwe_test_result(preview)
   complete <- plan_fwe_correction(gpa, spec, source = "setup")
 
   expect_identical(complete$tasks$status, "complete")

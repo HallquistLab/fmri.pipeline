@@ -11,7 +11,8 @@ run_glm_pipeline(
   l3_model_names = "prompt",
   glm_software = NULL,
   level_backends = NULL,
-  backend_overrides = NULL
+  backend_overrides = NULL,
+  run_fwe = TRUE
 )
 }
 \arguments{
@@ -28,6 +29,8 @@ run_glm_pipeline(
 \item{level_backends}{optional per-level backend override list keyed by `l1`, `l2`, and/or `l3`}
 
 \item{backend_overrides}{optional model-specific backend override list}
+
+\item{run_fwe}{run configured FWE correction after the selected L3 models finish.}
 }
 \description{
 primary function for running a GLM analysis pipeline

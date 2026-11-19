@@ -23,6 +23,9 @@ ptfce_missing_inputs <- function(tasks) {
     if (!file.exists(tasks$correction_mask_file[ii])) {
       missing <- c(missing, "correction_mask_file")
     }
+    if ("model_mask_file" %in% names(tasks) && !file.exists(tasks$model_mask_file[ii])) {
+      missing <- c(missing, "model_mask_file")
+    }
     if (!file.exists(tasks$smoothness_file[ii])) {
       missing <- c(missing, "smoothness_file")
     }
@@ -31,11 +34,9 @@ ptfce_missing_inputs <- function(tasks) {
 }
 
 fwe_complete_tasks <- function(tasks, artifacts) {
-  vapply(tasks$task_id, function(task_id) {
-    task_artifacts <- artifacts[artifacts$task_id == task_id, , drop = FALSE]
-    required <- task_artifacts$required
-    nrow(task_artifacts) > 0L && any(required) &&
-      all(task_artifacts$exists[required])
+  vapply(seq_len(nrow(tasks)), function(i) {
+    fwe_task_is_complete(tasks[i, , drop = FALSE],
+      artifacts[artifacts$task_id == tasks$task_id[i], , drop = FALSE])
   }, logical(1L))
 }
 
@@ -46,6 +47,7 @@ refresh_fwe_method.fwe_method_ptfce <- function(method, plan) {
   plan$analyses$smoothness_exists <- file.exists(plan$analyses$smoothness_file)
   plan$artifacts$exists <- file.exists(plan$artifacts$artifact_file)
   plan$tasks$missing_inputs <- ptfce_missing_inputs(plan$tasks)
+  plan$tasks$input_fingerprint <- fwe_task_fingerprints(plan$tasks)
   plan$tasks$status <- ifelse(
     nzchar(plan$tasks$missing_inputs), "blocked", "ready"
   )
@@ -114,12 +116,15 @@ fwe_shell_command <- function(executable, arguments) {
 build_fwe_commands.fwe_method_ptfce <- function(
     method, plan, task_rows, worker_script = NULL) {
   worker_script <- resolve_ptfce_worker_script(worker_script)
+  wrapper <- system.file("bin", "fwe_task.R", package = "fmri.pipeline")
+  checkmate::assert_file_exists(wrapper)
   rscript <- rscript_executable()
   arguments <- lapply(seq_len(nrow(task_rows)), function(ii) {
     alpha <- task_rows$fwe_alpha[[ii]]
     task_arguments <- c(
       "--zstat", task_rows$zstat_file[ii],
       "--mask", task_rows$correction_mask_file[ii],
+      if ("model_mask_file" %in% names(task_rows)) c("--model_mask", task_rows$model_mask_file[ii]),
       "--fsl_smoothest", task_rows$smoothness_file[ii],
       "--out_dir", task_rows$output_directory[ii],
       "--fwep", vapply(alpha, format_fwe_probability, character(1L)),
@@ -131,7 +136,8 @@ build_fwe_commands.fwe_method_ptfce <- function(
     task_arguments <- task_arguments[
       !is.na(task_arguments) & nzchar(task_arguments)
     ]
-    c(worker_script, task_arguments)
+    c(wrapper, "--request", file.path(task_rows$output_directory[ii], "request.rds"),
+      "--worker", worker_script, task_arguments)
   })
   commands <- vapply(
     arguments,
@@ -264,6 +270,8 @@ stop_fwe_execution <- function(message, run) {
 #' @param sched_args,env_variables,wait_jobs optional scheduler settings passed
 #'   to \code{cluster_submit_shell_jobs()}. Named \code{env_variables} are also
 #'   applied during local execution.
+#' @param tracking_sqlite_db,tracking_args optional SQLite database and metadata
+#'   for registering submitted correction jobs in pipeline job tracking.
 #' @param stop_on_error raise an \code{fwe_execution_error} if a local command
 #'   fails, does not produce all required artifacts, or a scheduler submission
 #'   fails. The condition contains the run report in its \code{run} field.
@@ -277,10 +285,11 @@ stop_fwe_execution <- function(message, run) {
 run_fwe_plan <- function(
     plan, scheduler = NULL, force = FALSE, dry_run = FALSE,
     allow_blocked = FALSE, worker_script = NULL,
-    commands_per_cpu = 1L, cpus_per_job = 1L,
-    memgb_per_command = 8, time_per_command = "12:00",
+    commands_per_cpu = NULL, cpus_per_job = NULL,
+    memgb_per_command = NULL, time_per_command = NULL,
     sched_args = NULL, env_variables = NULL, wait_jobs = NULL,
-    stop_on_error = TRUE, persist_results = TRUE) {
+    stop_on_error = TRUE, persist_results = TRUE,
+    tracking_sqlite_db = NULL, tracking_args = list()) {
   if (checkmate::test_string(plan) && file.exists(plan)) {
     plan <- read_fwe_plan(plan)
   }
@@ -290,6 +299,11 @@ run_fwe_plan <- function(
   checkmate::assert_logical(allow_blocked, len = 1L, any.missing = FALSE)
   checkmate::assert_logical(stop_on_error, len = 1L, any.missing = FALSE)
   checkmate::assert_logical(persist_results, len = 1L, any.missing = FALSE)
+  compute <- normalize_fwe_compute(plan$spec$compute)
+  commands_per_cpu <- commands_per_cpu %||% compute$commands_per_cpu
+  cpus_per_job <- cpus_per_job %||% compute$cpus_per_job
+  memgb_per_command <- memgb_per_command %||% compute$memgb_per_command
+  time_per_command <- time_per_command %||% compute$time_per_command
   if (is.null(scheduler)) scheduler <- plan$scheduler
   scheduler <- normalize_fwe_run_scheduler(scheduler)
   started_at <- Sys.time()
@@ -364,6 +378,15 @@ run_fwe_plan <- function(
   dir.create(jobs_directory, recursive = TRUE, showWarnings = FALSE)
   dir.create(logs_directory, recursive = TRUE, showWarnings = FALSE)
 
+  for (ii in run_rows) {
+    task <- plan$tasks[ii, , drop = FALSE]
+    unlink(fwe_completion_file(task))
+    request <- list(task = task, artifacts = plan$artifacts[
+      plan$artifacts$task_id == task$task_id, , drop = FALSE])
+    fwe_atomic_write(file.path(task$output_directory, "request.rds"),
+      function(path) saveRDS(request, path))
+  }
+
   if (identical(scheduler, "local")) {
     # Validate names and values before changing the current process.
     normalize_fwe_run_environment(env_variables)
@@ -427,6 +450,13 @@ run_fwe_plan <- function(
       debug = FALSE
     )
     submitted <- utils::read.csv(submission_log, stringsAsFactors = FALSE)
+    for (job_id in unique(stats::na.omit(submitted$job_id))) {
+      if (!nzchar(job_id)) next
+      insert_tracked_job(tracking_sqlite_db, as.character(job_id), utils::modifyList(list(
+        job_name = paste0("fwe_", plan$name), scheduler = scheduler,
+        batch_directory = jobs_directory, n_cpus = cpus_per_job
+      ), tracking_args))
+    }
     submitted_rows <- match(execution$command[run_rows], submitted$cmd)
     execution$job_id[run_rows] <- submitted$job_id[submitted_rows]
     execution$execution_status[run_rows] <- ifelse(
