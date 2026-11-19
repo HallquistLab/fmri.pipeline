@@ -1,23 +1,23 @@
 # fmri.pipeline
 
-`fmri.pipeline` is an R package for setting up, submitting, and tracking hierarchical fMRI GLM analyses on high-performance computing systems. It is designed for studies where the scientifically interesting model is larger than a single FEAT or SPM job: many subjects, many runs, multiple model variants, longitudinal visits, and downstream group models that need to be reproducible months or years later.
+`fmri.pipeline` is an R package for setting up, submitting, and tracking hierarchical fMRI GLM analyses on high-performance computing systems. It is designed for studies where the scientifically interesting model is larger than a single GLM fit: many subjects, many runs, multiple model variants, longitudinal visits, and downstream group models that need to be reproducible months or years later.
 
 The package is built around a single analysis object, usually called `gpa`, that stores the input tables, model specifications, output locations, backend choices, scheduler settings, and job-tracking state for one analysis.
 
-Current package version: `0.4` (May 2026).
+Current package version: `0.5`.
 
 ## Why this package exists
 
 Large fMRI GLM projects have a familiar failure mode: the actual analysis is a constellation of design files, shell scripts, scheduler jobs, and partially remembered choices. `fmri.pipeline` tries to make that constellation explicit. The package helps you:
 
 - define run-level, subject/session-level, and group-level models in one place;
-- generate backend-specific analysis files for FSL, AFNI, and selected SPM workflows;
+- generate backend-specific analysis files for FSL, AFNI, and SPM;
 - submit staged analyses through Slurm, TORQUE, or local execution;
 - keep track of job dependencies, logs, and analysis status;
 - reuse the same input tables and YAML model specification across model revisions;
 - support longitudinal analyses where runs are nested within sessions and sessions are nested within subjects.
 
-FSL FEAT/FLAME, SPM, and AFNI have backend-specific estimation paths. AFNI combines runs within each subject/session using `3dDeconvolve` and `3dREMLfit`, then supplies contrast maps to ordinary group GLMs or longitudinal `3dLMEr` models. Hybrid FSL Levels 1–2 → AFNI `3dLMEr` workflows remain supported.
+Choose an engine with `glm_software = "fsl"`, `"afni"`, or `"spm"` in `setup_glm_pipeline()`. FSL fits runs separately and can carry their variances into higher-level models. AFNI estimates shared task effects across runs. SPM models runs as separate SPM sessions by default and can contrast their coefficients within one first-level model. The [GLM engine guide](https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.html) follows a two-run task through each suite and shows where to inspect its design and contrast maps.
 
 `fmri.pipeline` is not a preprocessing pipeline. It expects preprocessed 4D BOLD NIfTI files, event timing, and optional confound files from tools such as fMRIPrep, custom preprocessing workflows, or lab-specific derivatives.
 
@@ -25,11 +25,11 @@ FSL FEAT/FLAME, SPM, and AFNI have backend-specific estimation paths. AFNI combi
 
 The package uses a stable three-level vocabulary:
 
-- **Level 1**: run-level time-series GLM. Events and parametric modulators are converted into design matrices or timing files and estimated separately for each run.
-- **Level 2**: within-subject or within-subject-session run combination. Multiple Level 1 COPEs are combined into subject-level or session-level estimates.
-- **Level 3**: sample-level, group-level, or longitudinal model. Subject or subject-session maps are modeled across participants.
+- **Level 1** fits the BOLD time series using trial events, signals, and nuisance regressors.
+- **Level 2** combines run-level contrasts in multi-run FSL analyses. SPM and AFNI handle the runs within L1.
+- **Level 3** models subject or subject-session contrast maps across participants.
 
-Model definitions are organized as sets at each level. If you define two L1 models, two L2 models, and two L3 models, the pipeline can run the full grid of eight model combinations. This makes systematic model comparison possible, but it also means you should start small, verify the analysis path, and then expand.
+Models are organized as sets at each level. For a multi-run FSL analysis, two compatible models at each of the three levels yield eight combinations. For native AFNI or SPM, select the L1 and L3 models to run.
 
 ## Input data
 
@@ -90,12 +90,14 @@ gpa <- setup_glm_pipeline(
   trial_data = trial_df,
   glm_software = c("fsl", "afni"),
   n_expected_runs = 4L,
+  l1_models = NULL, l2_models = NULL, l3_models = NULL,
   confound_settings = list(
     motion_params_file = NULL,
     confound_input_file = NULL,
     spike_volumes = NULL
   )
 )
+gpa$level_backends <- list(l1 = "fsl", l2 = "fsl", l3 = c("fsl", "afni"))
 ```
 
 Define models interactively:
@@ -164,7 +166,7 @@ glm_settings = list(afni = list(
 ))
 ```
 
-When `run_data$afni_censor_file` is supplied, each path points to a single-column binary vector (`1 = keep`, `0 = censor`). Censor files and nuisance files may contain either retained volumes or original volumes with the specified leading drops. Length mismatches fail setup. Existing spike regressors remain nuisance regressors. Without an explicit mask, L1 intersects masks derived from the retained runs. Image geometry must match; AFNI estimation does not perform registration or intensity normalization. Supply preprocessed images in a common space and on a comparable intensity scale.
+When `run_data$afni_censor_file` is supplied, each path points to a single-column binary vector (`1 = keep`, `0 = censor`). Censor files and nuisance files may contain either retained volumes or original volumes with the specified leading drops. Length mismatches fail setup. Spikes on retained volumes remain nuisance regressors. The AFNI design drops spike columns that become empty after censoring. Without an explicit mask, L1 intersects masks derived from the retained runs. Image geometry must match; AFNI estimation does not perform registration or intensity normalization. Supply preprocessed images in a common space and on a comparable intensity scale.
 
 L3 uses ordinary least squares for the pipeline's group design and contrasts, through `3dDeconvolve` with no temporal baseline or prewhitening. `per_session` analyses stay separate by session; `pooled_sessions_subject_ev` retains the pipeline's subject effects. For longitudinal mixed models, specify `l3_input_mode: 3dlmer`. AFNI-only analyses use AFNI contrasts as group inputs. To retain a hybrid workflow, set `execution_backend: afni` and `producer_backend: fsl` on the L3 model and select FSL at L1/L2. Existing mixed FSL/AFNI `3dlmer` configurations continue to default to FSL inputs.
 
@@ -176,7 +178,7 @@ AFNI's [3dDeconvolve documentation](https://afni.nimh.nih.gov/pub/dist/doc/progr
 
 ## YAML model specifications
 
-YAML specifications are the recommended way to make analysis decisions reviewable and repeatable. A compact face/house example looks like this:
+The model builders read the model sections of the YAML file. Set the analysis-wide `glm_software` and `level_backends` in R as shown above. The `analysis` block below records those choices alongside the face/house model definitions:
 
 ```yaml
 analysis:
@@ -286,6 +288,10 @@ analysis_name/
   feat_l1/                 # FSL Level 1 setup and outputs
   feat_l2/                 # FSL Level 2 setup and outputs
   feat_l3/                 # FSL Level 3 setup and outputs
+  spm_l1/                  # SPM first-level analyses
+  spm_l3/                  # SPM group models
+  afni_l1/                 # AFNI subject/session fits
+  afni_l3/                 # AFNI ordinary group GLMs
   afni_3dlmer/             # AFNI 3dLMEr data tables, scripts, and outputs
   logs/                    # text and JSON logs
   glm_pipeline.sqlite      # job tracking database
@@ -345,6 +351,7 @@ The pkgdown site is the primary documentation entry point:
 
 - Package website: <https://hallquistlab.github.io/fmri.pipeline/>
 - Quick start: <https://hallquistlab.github.io/fmri.pipeline/articles/quickstart.html>
+- Choosing a GLM engine: <https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.html>
 - Design concepts: <https://hallquistlab.github.io/fmri.pipeline/articles/design.html>
 - Longitudinal analyses: <https://hallquistlab.github.io/fmri.pipeline/articles/longitudinal.html>
 - Pipeline diagnosis: <https://hallquistlab.github.io/fmri.pipeline/articles/diagnosis.html>
@@ -354,6 +361,6 @@ MEDuSA deconvolution, event-locked alignment, and multilevel trajectory modeling
 
 ## Development status
 
-`fmri.pipeline` is under active development. FSL-centered analyses are the most established path. Backend resolution, SPM support, AFNI Level 3 workflows, longitudinal model specification, and diagnostic tooling are current areas of active work. For new projects, prefer YAML model specifications, explicit `subject_data`/`run_data`/`trial_data` tables, and small test runs before launching the full model grid.
+`fmri.pipeline` is under active development. For new projects, prefer YAML model specifications, explicit `subject_data`/`run_data`/`trial_data` tables, and small test runs before launching the full model grid.
 
 Issues and feature requests are tracked at <https://github.com/HallquistLab/fmri.pipeline/issues>.

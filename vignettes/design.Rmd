@@ -138,159 +138,42 @@ id  session    age  sex   impulsivity_score
 
 For fmri.pipeline to setup and estimate GLM models, the user first specifies what models should be fit at each level of the analysis (for background, see Overview of GLM levels below). These can be provided as model sets using the `l1_models`, `l2_models`, and `l3_models` arguments to `setup_glm_pipeline`. If the user specifies `"prompt"` as the argument for any of these levels, the pipeline will walk the user through the model setup. In general, this is the right approach since the internal structure of the model objects is a bit unintuitive. That said, you can specify the models in advance (before `setup_glm_pipeline`) or you can call `build_l1_models`, `build_l2_models`, or `build_l3_models` after `setup_glm_pipeline`.
 
-A major asset of using `fmri.pipeline` is that it handles model estimation for any combination of models across levels. The pipeline is built to fit all combination of level 1, level 2, and level 3 models for a given dataset. 
+For a multi-run FSL analysis, the pipeline can fit every compatible combination of L1, L2, and L3 models.
 
 For example, consider a scenario where one level 1 model includes a parametric modulator for working memory load, while another model only includes onsets for the encoding and retrieval phases of the task. Likewise, if runs vary in terms of average difficulty, one level 2 model might include the average as a continuous covariate, while another might treat average difficulty as a categorical variable (aka factor) so that nonlinearities can be examined. Finally, in the level 3 specification, one model might include nonverbal intelligence as a covariate, while another includes both age and nonverbal intelligence as covariates. In this case, `fmri.pipeline` will fit all eight model combinations (2 level 1 x 2 level 2 x 2 level 3) and provide labeled outputs for each.
 
 ## Choosing model backends
 
-`fmri.pipeline` now supports backend selection at multiple levels of specificity. The simplest workflow is still to choose one software package globally:
+Choose `glm_software` when calling `setup_glm_pipeline()`. A single engine supplies defaults for all levels it implements. Multiple engines can run at the same level. For example, to use FSL at L1 and L2 and select between FSL and AFNI group fits, configure `glm_software = c("fsl", "afni")` at setup and then set:
 
 ```r
-gpa$glm_software <- "fsl"
+gpa$level_backends <- list(l1 = "fsl", l2 = "fsl", l3 = c("fsl", "afni"))
 ```
 
-This means "use FSL everywhere unless something more specific overrides it."
+For ordinary models, execution settings take precedence in this order, highest first:
 
-For more complex workflows, users can override backend choice at three additional levels:
+1. A model named in `run_glm_pipeline(backend_overrides = ...)`.
+2. The model's `execution_backend` in its YAML specification or model object.
+3. A level named in `run_glm_pipeline(level_backends = ...)`.
+4. The corresponding entry in `gpa$level_backends`.
+5. The global `glm_software` default (initially `"fsl"`).
 
-- Per level of analysis using `gpa$level_backends`
-- Per model using `execution_backend`
-- At run time using arguments to `run_glm_pipeline()`
-
-The intended precedence order is:
-
-1. Run-time model override
-2. Model-specific backend field
-3. Run-time level override
-4. `gpa$level_backends`
-5. `gpa$glm_software`
-
-In other words, broad defaults are allowed, but more specific settings win.
-
-### Global default
-
-If you want one backend for all model setup and estimation, continue using `gpa$glm_software`:
-
-```r
-gpa$glm_software <- "fsl"
-```
-
-This remains the easiest option and is fully backward compatible.
-
-### Per-level overrides
-
-If you want different software at different levels, use `gpa$level_backends`:
-
-```r
-gpa$glm_software <- "fsl"
-gpa$level_backends <- list(
-  l1 = "fsl",
-  l2 = "fsl",
-  l3 = "afni"
-)
-```
-
-This says:
-
-- Level 1 setup and execution should use FSL
-- Level 2 setup and execution should use FSL
-- Level 3 setup and execution should use AFNI
-
-This is the most useful configuration for longitudinal `3dLMEr` analyses at present.
-
-### Per-model overrides
-
-If only some models should use a different backend, set a backend field on the model specification itself.
-
-For any model level, `execution_backend` controls where that model is estimated:
-
-```r
-gpa$l3_models$models$longitudinal_main$execution_backend <- "afni"
-```
-
-For Level 3 models that consume lower-level inputs, a separate `producer_backend` field can be used to indicate which upstream backend should provide those inputs:
-
-```r
-gpa$l3_models$models$longitudinal_main$execution_backend <- "afni"
-gpa$l3_models$models$longitudinal_main$producer_backend <- "fsl"
-```
-
-The distinction matters because the backend that estimates a model is not always the same as the backend that produces the inputs it needs. For example, an AFNI `3dLMEr` model may currently be estimated by AFNI while consuming lower-level contrast images produced by FSL.
-
-Model-level backend fields can also be included in YAML model specifications:
-
-- `execution_backend` for L1, L2, or L3 models
-- `producer_backend` for L3 models
-
-### Run-time overrides
-
-If you want to override backend selection without changing the saved `gpa` object, pass overrides directly to `run_glm_pipeline()`:
+Passing `glm_software` to **run_glm_pipeline()** resets the level defaults for that call. Use `level_backends` to change just one level. For an individual L3 model, `execution_backend` selects the estimator and `producer_backend` selects the source of the contrast images. For example, to run a group model named `group_mean` in AFNI using FSL estimates for this submission:
 
 ```r
 run_glm_pipeline(
-  gpa,
-  l3_model_names = "longitudinal_main",
-  level_backends = list(l3 = "afni")
+  gpa, l1_model_names = "task", l2_model_names = "run_average",
+  l3_model_names = "group_mean",
+  backend_overrides = list(l3 = list(
+    execution = c(group_mean = "afni"),
+    producer = c(group_mean = "fsl")
+  ))
 )
 ```
 
-For model-specific run-time overrides, use `backend_overrides`:
+An ordinary group model defaults to inputs from its own engine. For native SPM, leave `producer_backend` unset so SPM can match its L1 contrasts by name. AFNI accepts either AFNI or FSL inputs. The longitudinal mode `3dlmer` selects AFNI execution automatically and defaults to FSL inputs when FSL is configured at L1, otherwise to AFNI inputs. Set both fields explicitly when the origin of a mixed model's maps matters.
 
-```r
-run_glm_pipeline(
-  gpa,
-  l3_model_names = c("longitudinal_main", "cross_sectional_main"),
-  backend_overrides = list(
-    l3 = c(longitudinal_main = "afni", cross_sectional_main = "fsl")
-  )
-)
-```
-
-This is useful when you want to try a different backend for a subset of models without permanently modifying the model specification.
-
-### How backend resolution works in practice
-
-The current behavior is intentionally flexible but conservative:
-
-- If you only set `gpa$glm_software`, that backend is used as the default everywhere.
-- If you also set `gpa$level_backends`, those values override the global default for the specified levels.
-- If a model has `execution_backend`, that model uses that backend even if the level default is different.
-- If `run_glm_pipeline()` receives `level_backends` or `backend_overrides`, those run-time values override the object.
-
-This allows workflows such as:
-
-- Mostly-FSL analyses with one AFNI `3dLMEr` Level 3 model
-- SPM Level 1 with AFNI Level 3 for selected longitudinal models
-- Temporary run-time backend experiments without rewriting saved model objects
-
-### How backends declare artifacts and dependencies
-
-Under the hood, the backend system is organized around **artifacts** and **producer requirements**. Each backend declares which artifacts it produces (e.g., `cope`, `varcope`, `dof`) and at which analysis levels it operates. When a Level 3 backend needs lower-level inputs—such as an AFNI `3dLMEr` model consuming FSL-derived COPEs—it declares the required artifacts via its specification. The pipeline resolves these requirements at submission time by matching each L3 backend's declared needs against the artifacts produced by the upstream (producer) backend. This resolution step is what makes the `producer_backend` field meaningful: it tells the pipeline which earlier backend's outputs to harvest.
-
-The pipeline also logs a **preflight report** at submission time that shows, for every analysis level, which backends will execute, which will produce inputs for downstream levels, and whether all artifact requirements are satisfied. If you see unexpected "unsupported producer" errors, the preflight report (visible in the pipeline log at `info` level) is the first place to look.
-
-### Current limitations
-
-The backend-selection interface is more general than the currently implemented producer backends.
-
-At present:
-
-- FSL supports distinct Level 1, Level 2, and Level 3 execution
-- SPM concatenates runs/sessions at Level 1 and does not run a standalone Level 2 estimation step
-- AFNI `3dLMEr` is supported as a Level 3 execution backend
-- `producer_backend` for Level 3 models is currently implemented only for `fsl`
-
-So, while you can now declare producer backends explicitly, only FSL is presently supported as the upstream producer for Level 3 input harvesting. If a different producer backend is requested for Level 3 inputs, `fmri.pipeline` will stop with an explicit error rather than silently guessing.
-
-For longitudinal AFNI analyses, the recommended current pattern is:
-
-```r
-gpa$glm_software <- "fsl"
-gpa$level_backends <- list(l3 = "afni")
-gpa$l3_models$models$longitudinal_main$execution_backend <- "afni"
-gpa$l3_models$models$longitudinal_main$producer_backend <- "fsl"
-```
+The submission log's backend preflight report identifies the execution engine for each selected model and the producer and level supplying the group inputs. See [Choosing a GLM engine](glm-engines.html) for the models, native files, and statistical implications of each route.
 
 # Naming outputs files and folders
 
@@ -327,23 +210,15 @@ Here is a description of the fields in this list:
 In data science terms, task fMRI data are fundamentally multilevel or 'clustered.' That is, timepoints are specific to a given run
 and task runs are nested within subject. Whereas many multilevel structures are analyzed using multilevel regression models, this is challenging in fMRI data for a couple of reasons. First, run-level data are time series data that have complex temporal characteristics (e.g., slow autocorrelation) that must be addressed by strategies like prewhitening or the inclusion of autocorrelation and moving average parameters that mitigate the risk of spurious and anticonservative statistical tests that would result from a simple ordinary least squares model. Second, we have the challenge of carrying forward parameter estimates in the run-level models for group analysis. The simple fixed-effects approach would be to include only the parameter estimates (aka 'betas') -- one per subject. What if one subject has very precise betas (small standard errors) and another has very noisy betas (large standard errors)? The approach of carrying forward betas alone does not incorporate these uncertainties, so noisy and precise betas are treated the same.
 
-Given these challenges, most fMRI software adopts the approach of separating out the estimation of activation statistics across the run, subject, and sample levels. Ideally, such an approach should propagate uncertainty estimates (usually, standard errors) from one level of the model to the next. This is analogous to meta-analyses where pooled estimates of an effect (e.g., the mean effect size for a cognitive-behavioral therapy) are weighted (inversely) by the standard error from each individual study.
+Given these challenges, most fMRI software adopts the approach of separating out the estimation of activation statistics across the run, subject, and sample levels. Ideally, such an approach should propagate uncertainty estimates (usually, standard errors) from one level of the model to the next. This is analogous to meta-analyses where pooled estimates of an effect (e.g., the mean effect size for a cognitive-behavioral therapy) are weighted by the inverse variance from each individual study.
 
-At present (July 2021), `fmri.pipeline` is designed with a general structure to support GLM analyses using any software, including AFNI, FSL, SPM, and R. However, the machinery is built out for FSL FEAT, which I think has some of the best features in terms of parameter estimation (e.g., Tukey tapering for prewhitening and Bayesian incorporation of lower-level standard errors in group analyses).
-
-FSL adopts the approach of analyzing each run of fMRI data in a separate GLM model. This is called a 'first-level' analysis (aka Level 1) and, fundamentally, is a time series analysis in which design regressors are convolved with a hemodynamic response function (HRF) and associations between these regressors and the BOLD are estimated for each voxel. If a subject has multiple runs of the same task, these are integrated by combining parameter estimates using a fixed-effects weighted (by standard errors) estimation approach. This yields a voxelwise estimate for each level 1 regressor (e.g., occurrence of a stimulus type) that can be carried forward for group analysis.
+FSL adopts the approach of analyzing each run of fMRI data in a separate GLM model. This is called a 'first-level' analysis (aka Level 1) and, fundamentally, is a time series analysis in which design regressors are convolved with a hemodynamic response function (HRF) and associations between these regressors and the BOLD are estimated for each voxel. If a subject has multiple runs of the same task, these are integrated by combining parameter estimates using a fixed-effects approach weighted by inverse variance. This yields a voxelwise estimate for each level 1 regressor (e.g., occurrence of a stimulus type) that can be carried forward for group analysis.
 
 The combination of runs for a single subject is called a 'second-level' (aka Level 2) analysis. In addition to simply averaging first-level regressors, level 2 analyses can incorporate between-run regressors that capture categorical or continuous predictors of run-to-run differences. For example, if one expects decreases in task-related activation with each additional run (task familiarity, habituation), the linear effect of run can be included as a regressor in the level 2 model. Or if a design factor varies from one run to the next (e.g., run 1 is cat pictures and run 2 is dog pictures), these can be incorporated as a dummy codes at level 2 that capture between-condition differences.
 
 The simplest and most common model at Level 2 is a simple intercept-only model in which only an intercept is included in the GLM design matrix. This model yields the weighted combination of run-level estimates for each contrast estimated at level 1. If there are no between-run predictors of interest, the intercept-only model is sufficient to prepare the data for 'third-level' (aka Level 3) analysis, which estimates effects in the overall sample.
 
-For comparison, some software packages (e.g., AFNI), concatenate all runs together and include run-specific baseline regressors to control for intensity and drift differences from one run to the next. In a concatenated approach, there are only two levels: a subject-level analysis and a sample-level analysis. Throughout fmri.pipeline, we adopt the nomenclature of a three-level perspective on fMRI data.
-
-To sum up:
-
-- Level 1 is a *run-level* analysis of the BOLD time series. The design matrix typically includes convolved regressors that represent task-related events. Parameters are estimated for each run separately.
-- Level 2 is a *subject-level* analysis that integrates Level 1 effects across all runs. Level 2 design matrices can also include regressors that capture between-run manipulations or covariates.
-- Level 3 is a *sample-level* analysis that estimates effects across all subjects. The design matrix includes between-subjects predictors (e.g., Age or trait anxiety) of task-related activation.
+AFNI estimates shared task effects across runs with separate run baselines. SPM's default gives each run a separate set of columns in the first-level design and combines their effects through contrasts. Both engines produce inputs for the group model at L1. The pipeline calls that group model L3 even when there is no intervening L2 job.
 
 ## Distinction between two-level and three-level analyses
 
@@ -351,7 +226,7 @@ In some designs, we may have only one run of a task, which may include multiple 
 
 Thus, in `fmri.pipeline`, if only a single run of data exists per subject, the user will build and fit level 1 and level 3 models, but there will not be any level 2 models. I suppose you could say that level 2 should be the sample-level analysis in this case, but for consistency, I have adopted a fixed nomenclature: level 1 is for runs, level 2 is for combining runs within subject, and level 3 is for sample analysis. For single-run analyses, the user simply skips the level 2 model specification step.
 
-For multi-run data, the user will specify level 1, level 2, and level 3 models.
+For multi-run FSL data, specify L1, L2, and L3 models. For native AFNI or SPM group analyses, select L1 and L3.
 
 # fMRI confounds
 
