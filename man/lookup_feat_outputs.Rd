@@ -89,4 +89,15 @@ marked with \code{is_passthrough = TRUE},
 materialized, \code{analysis_fsf} and \code{analysis_dir} are missing and
 \code{image_feat_dir} identifies the originating L1 FEAT directory. A
 passthrough has only a \code{"cope"} image row.
+
+Higher-level rows report \code{feat_requested_estimator} and
+\code{feat_actual_estimator} (\code{ols}, \code{fe}, \code{flame1},
+\code{flame12}, or \code{randomise}). A partial FLAME1 fallback is
+\code{flame12+flame1}; \code{feat_flame1_fallback_count} counts affected
+slices. \code{feat_requested_outlier_deweighting} and
+\code{feat_actual_outlier_deweighting} report the FSF request and the retained
+fit's outlier option. \code{feat_auto_retried} identifies a whole-model
+outlier retry. Actual settings are missing for unvalidated fits or when
+execution evidence is unavailable. Use \code{refresh_status = TRUE} to
+update a setup table saved before estimation.
 }

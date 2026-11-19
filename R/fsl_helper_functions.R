@@ -108,7 +108,8 @@ get_feat_status <- function(feat_dir, feat_fsf=NULL, lg=NULL, prefix=NULL) {
       feat_checks$feat_failed <- TRUE
     } else if (file.exists(complete)) {
       timing_file <- complete
-      feat_checks$feat_complete <- feat_outputs_valid(feat_dir, feat_fsf)
+      saved <- feat_read_validation(feat_dir)
+      feat_checks$feat_complete <- feat_outputs_valid(feat_dir, feat_fsf, saved = saved)
       feat_checks$feat_failed <- !feat_checks$feat_complete
     }
 
@@ -142,7 +143,15 @@ get_feat_status <- function(feat_dir, feat_fsf=NULL, lg=NULL, prefix=NULL) {
     feat_checks$feat_auto_retried <- FALSE
   }
 
-  df <- as.data.frame(feat_checks)
+  estimator <- feat_requested_estimator()
+  if (endsWith(feat_dir, ".gfeat")) {
+    if (isTRUE(feat_checks$feat_complete)) {
+      estimator <- saved$estimator %||% feat_estimator_result(feat_read_setup(feat_fsf))
+    } else if (file.exists(feat_fsf) && !identical(feat_fsf, file.path(feat_dir, "design.fsf"))) {
+      estimator <- feat_requested_estimator(readLines(feat_fsf, warn = FALSE))
+    }
+  }
+  df <- cbind(as.data.frame(feat_checks), estimator)
   if (!is.null(prefix)) { #support naming prefix like "l1_"
     names(df) <- paste0(prefix, names(df))
   }

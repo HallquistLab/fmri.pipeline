@@ -93,12 +93,16 @@ feat_save_setup <- function(fsf, syntax, inputs, level, spec = NULL, force = FAL
   invisible(changed || isTRUE(force))
 }
 
-feat_outputs_valid <- function(output_dir, fsf, seen = character()) {
+feat_read_validation <- function(output_dir) {
+  path <- file.path(output_dir, ".feat_validated.rds")
+  if (!file.exists(path)) return(NULL)
+  tryCatch(suppressWarnings(readRDS(path)), error = function(e) NULL)
+}
+
+feat_outputs_valid <- function(output_dir, fsf, seen = character(), saved = feat_read_validation(output_dir)) {
   tryCatch({
     if (file.exists(file.path(output_dir, ".feat_fail")) || !feat_setup_current(fsf, seen)) return(FALSE)
-    record <- file.path(output_dir, ".feat_validated.rds")
-    if (!file.exists(record)) return(FALSE)
-    saved <- readRDS(record)
+    if (is.null(saved)) return(FALSE)
     expected <- feat_read_setup(fsf)
     isTRUE(identical(normalizePath(output_dir, winslash = "/", mustWork = FALSE), expected$output_dir) &&
       identical(saved$setup_md5, unname(tools::md5sum(feat_setup_file(fsf)))) &&
@@ -192,6 +196,7 @@ feat_validate_outputs <- function(fsf) {
     files <- c(files, dof_file)
   }
   saveRDS(list(setup_md5 = unname(tools::md5sum(feat_setup_file(fsf))),
+    estimator = if (setup$level > 1L) feat_estimator_result(setup),
     files = feat_file_signature(c(design_files, mask_file, files))), file.path(out, ".feat_validated.rds"))
   invisible(out)
 }

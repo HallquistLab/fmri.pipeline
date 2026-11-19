@@ -198,7 +198,7 @@ test_that("flame_runner retries failed FLAME12 slices with FLAME1", {
     "    case \" $* \" in",
     "      *' --nj='*|*' --bi='*|*' --se='*|*' --zlt='*|*' --zut='*|*' --fm'*) exit 43;;",
     "    esac",
-    "    exit 0;;",
+    '    exit "${FAKE_FLAME1_STATUS:-0}";;',
     "esac",
     "exit 44"
   ), fake_flameo)
@@ -232,6 +232,10 @@ test_that("flame_runner retries failed FLAME12 slices with FLAME1", {
   expect_false(grepl("--nj=|--bi=|--se=|--fm|--zlt=|--zut=", attempts[[2]]))
 
   fallback_records <- readLines(fallback_log)
+  audit_file <- file.path(tmp, "flame_runner_fallbacks.tsv")
+  audit <- readLines(audit_file)
+  expect_identical(sub("\t[^\t]+$", "", audit), fallback_records)
+  expect_match(audit[[2]], "\t0$")
   expect_length(fallback_records, 2)
   expect_equal(
     fallback_records[[1]],
@@ -239,6 +243,11 @@ test_that("flame_runner retries failed FLAME12 slices with FLAME1", {
   )
   expect_true(grepl("\t42\tstats0007\t", fallback_records[[2]], fixed = TRUE))
   expect_true(grepl("--runmode=flame1", fallback_records[[2]], fixed = TRUE))
+
+  withr::local_envvar(c(FAKE_FLAME1_STATUS = "43"))
+  failed <- suppressWarnings(system2(flame_runner, c(flame_list, "1"), stdout = TRUE, stderr = TRUE))
+  expect_true(attr(failed, "status") > 0L)
+  expect_identical(utils::read.delim(audit_file)$fallback_status, 43L)
 })
 
 test_that("flame_runner reports unrecovered non-FLAME12 failures", {

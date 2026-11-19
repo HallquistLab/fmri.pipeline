@@ -65,7 +65,8 @@ move_failed_ld_dir() {
         return 0
     fi
 
-    failed_ld="${ld}.flame12_failed.$$"
+    # FEAT merges stats*/ images after slicing. Keep failed images outside that glob.
+    failed_ld="$(command -p dirname "$ld")/.flame12_failed.${ld##*/}.$$"
     if /bin/mv "$ld" "$failed_ld" 2>/dev/null; then
         echo "flame_runner: moved failed FLAME12 log directory to ${failed_ld}" >&2
         printf '%s\n' "$failed_ld"
@@ -75,20 +76,31 @@ move_failed_ld_dir() {
     fi
 }
 
+# Preserve the original six-column format for consumers of an external log.
+legacy_header='timestamp_utc\tpid\tflame12_status\tld_dir\tfailed_ld_dir\tfallback_command'
+append_external_log() {
+    local log_file="$1"
+    if [[ ! -s "$log_file" ]]; then printf '%b\n' "$legacy_header" > "$log_file" || return 1; fi
+    command -p cut -f1-6 >> "$log_file"
+}
+
 log_flame12_fallback() {
     local status="$1"
     local ld="$2"
     local failed_ld="$3"
     local fallback="$4"
-    local log_file="${FLAME_RUNNER_FALLBACK_LOG:-flame_runner_fallbacks.tsv}"
-    local timestamp
-
-    if [ ! -s "$log_file" ]; then
-        printf 'timestamp_utc\tpid\tflame12_status\tld_dir\tfailed_ld_dir\tfallback_command\n' > "$log_file"
+    local fallback_status="$5"
+    local record row
+    printf -v row '%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        "$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" "$$" "$status" "${ld:-NA}" \
+        "${failed_ld:-NA}" "$fallback" "$fallback_status"
+    if [[ -n "${FLAME_RUNNER_RECORD_DIR:-}" ]]; then
+        record=$(command -p mktemp "$FLAME_RUNNER_RECORD_DIR/row.XXXXXXXX") || return 1
+        printf '%s\n' "$row" > "$record"
+    else
+        # Direct --run-command invocations have no batch audit.
+        append_external_log "${FLAME_RUNNER_FALLBACK_LOG:-flame_runner_fallbacks.tsv}" <<< "$row"
     fi
-    timestamp="$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$timestamp" "$$" "$status" "${ld:-NA}" "${failed_ld:-NA}" "$fallback" >> "$log_file"
 }
 
 run_flame_command() {
@@ -106,9 +118,10 @@ run_flame_command() {
         echo "flame_runner: FLAME12 slice command failed with status ${status}; retrying with FLAME1: ${fallback}" >&2
         ld="$(extract_ld_dir "$cmd")"
         failed_ld="$(move_failed_ld_dir "$cmd")"
-        log_flame12_fallback "$status" "$ld" "$failed_ld" "$fallback"
         sh -c "$fallback"
-        return $?
+        local fallback_status=$?
+        log_flame12_fallback "$status" "$ld" "$failed_ld" "$fallback" "$fallback_status" || return 1
+        return "$fallback_status"
     fi
 
     return "$status"
@@ -170,8 +183,12 @@ if [ "$njobs" -le 0 ]; then
     njobs=1
 fi
 
-fallback_log="${FLAME_RUNNER_FALLBACK_LOG:-flame_runner_fallbacks.tsv}"
-export FLAME_RUNNER_FALLBACK_LOG="$fallback_log"
+# Each child owns one fallback record. Only the parent writes the shared TSV.
+list_dir=$(command -p dirname "$flame_list")
+audit="$list_dir/flame_runner_fallbacks.tsv"
+FLAME_RUNNER_RECORD_DIR=$(command -p mktemp -d "$list_dir/.flame_records.XXXXXXXX") || exit 1
+export FLAME_RUNNER_RECORD_DIR
+trap 'command -p rm -rf "$FLAME_RUNNER_RECORD_DIR"' EXIT
 
 cmd_parallel=$(command -v parallel)
 cmd_xargs=$(command -v xargs)
@@ -191,10 +208,10 @@ fi
 
 if [ "$has_parallel" -eq 1 ]; then
     "$cmd_parallel" --jobs "$njobs" "$0" --run-command {} < "$flame_list"
-    exit $?
+    status=$?
 elif [ "$has_xargs" -eq 1 ] && [ "$xargs_supports_d" -eq 1 ]; then
     "$cmd_xargs" -d '\n' -n 1 -P "$njobs" "$0" --run-command < "$flame_list"
-    exit $?
+    status=$?
 else
     running=0
     fail=0
@@ -224,7 +241,20 @@ else
         wait_one
     done
 
-    if [ "$fail" -ne 0 ]; then
-        exit 1
-    fi
+    status="$fail"
 fi
+
+# A header-only audit records a completed run with zero slice fallbacks.
+header="${legacy_header}\tfallback_status"
+printf '%b\n' "$header" > "$FLAME_RUNNER_RECORD_DIR/audit" || exit 1
+shopt -s nullglob
+rows=("$FLAME_RUNNER_RECORD_DIR"/row.*)
+if (( ${#rows[@]} )); then
+    command -p cat "${rows[@]}" >> "$FLAME_RUNNER_RECORD_DIR/audit" || exit 1
+fi
+command -p mv "$FLAME_RUNNER_RECORD_DIR/audit" "$audit" || exit 1
+# Preserve the optional external log while retaining an audit specific to this fit.
+if [[ -n "${FLAME_RUNNER_FALLBACK_LOG:-}" && ! "$audit" -ef "$FLAME_RUNNER_FALLBACK_LOG" && ${#rows[@]} -gt 0 ]]; then
+    command -p cat "${rows[@]}" | append_external_log "$FLAME_RUNNER_FALLBACK_LOG" || exit 1
+fi
+exit "$status"

@@ -414,3 +414,29 @@ test_that("lookup results have stable empty level schemas", {
   expect_true(all(c("l3_model", "l3_input_mode") %in% names(result$l3)))
   expect_equal(nrow(as.data.frame(result)), 0L)
 })
+
+test_that("higher-level estimator fields reach default lookup from refreshed setup and disk", {
+  root <- withr::local_tempdir()
+  location <- file.path(root, "feat_l3", "L3m-l3_group", "L1m-facehouse",
+    "L2m-l2_session", "l2c-overall")
+  fit <- make_valid_feat(location, "FEAT_l1c-EV_face", level = 3L)
+  syntax <- c(fit$syntax, "set fmri(mixed_yn) 1", "set fmri(robust_yn) 1")
+  feat_save_setup(fit$fsf, syntax, character(), 3L)
+  writeLines("flameo --ld=stats0000 --runmode=flame12", file.path(fit$fit, ".flame"))
+  writeLines(c("ld_dir\tfallback_status", "stats0000\t0"), file.path(fit$fit, "flame_runner_fallbacks.tsv"))
+  writeLines("Successful retry", file.path(fit$out, ".feat_auto_retry_warning"))
+  feat_validate_outputs(fit$fsf)
+  writeLines(rep("2026-01-01 10:00:00", 2), file.path(fit$out, ".feat_complete"))
+  gpa <- make_lookup_feat_outputs_gpa(root, l3_feat = fit$out)
+  for (source in c("setup", "filesystem")) {
+    rows <- lookup_feat_outputs(gpa, level = 3L, what = "cope", source = source,
+      refresh_status = source == "setup")$l3
+    expect_gt(nrow(rows), 0L)
+    expect_identical(unique(rows$feat_requested_estimator), "flame12")
+    expect_identical(unique(rows$feat_actual_estimator), "flame1")
+    expect_true(all(rows$feat_requested_outlier_deweighting))
+    expect_false(any(rows$feat_actual_outlier_deweighting))
+    expect_true(all(rows$feat_auto_retried))
+    expect_identical(unique(rows$feat_flame1_fallback_count), 1L)
+  }
+})
