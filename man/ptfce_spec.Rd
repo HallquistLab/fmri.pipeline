@@ -11,8 +11,8 @@ R6 class for pTFCE specification for one or more z-statistic images
   \describe{
     \item{\code{fwe_p}}{a vector of p-values used for familywise error (FWE) z-statistic threshold calculations in pTFCE.}
 
-    \item{\code{two_sided}}{It \code{TRUE}, run pTFCE on both tails of the statistic separately. If \code{FALSE},
-only run pTFCE on the positve tail (z > 0).}
+    \item{\code{two_sided}}{If \code{TRUE}, use native two-sided pTFCE on a shared threshold grid. If \code{FALSE},
+only run pTFCE on the positive tail (z > 0).}
   }
   \if{html}{\out{</div>}}
 }
@@ -76,8 +76,8 @@ the TFCE z-threshold calculation.)}
 to the same folder as the z-statistic. These thresholded files let you look at the map at a given FWE threshold.}
       \item{\code{scheduler}}{Which scheduler to use for submitting jobs. Options are 'local', 'slurm', and 'torque'.}
       \item{\code{time_per_zstat}}{The amount of time to budget for each zstat to run through pTFCE in dd-hh:mm:ss format.
-Default is 10:00 (10 minutes).}
-      \item{\code{memgb_per_command}}{How many GB of memory should be requested for each pTFCE command/run. If not provided, defaults to 8.}
+Default is 00:00:45 (45 seconds).}
+      \item{\code{memgb_per_command}}{How many GB of memory should be requested for each pTFCE command/run. If not provided, defaults to 1.}
     }
     \if{html}{\out{</div>}}
   }
@@ -119,7 +119,7 @@ pTFCE-corrected images in place. Default: FALSE.}
 \if{html}{\out{<a id="method-ptfce_spec-run"></a>}}
 \if{latex}{\out{\hypertarget{method-ptfce_spec-run}{}}}
 \subsection{\code{ptfce_spec$run()}}{
-  Run pTFCE in this compute environment. This is not supported at present!
+  Run each pending map sequentially in the current R session.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{ptfce_spec$run(force = FALSE)}
@@ -157,7 +157,7 @@ method to submit all ptfce_zstat.R calls to a cluster based on the scheduler spe
 \if{html}{\out{<a id="method-ptfce_spec-is_complete"></a>}}
 \if{latex}{\out{\hypertarget{method-ptfce_spec-is_complete}{}}}
 \subsection{\code{ptfce_spec$is_complete()}}{
-  returns \code{TRUE} if all expected pTFCE output files exist, \code{FALSE} if any output is missing
+  returns \code{TRUE} when all expected outputs exist and their threshold tables match the requested settings
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{ptfce_spec$is_complete()}
