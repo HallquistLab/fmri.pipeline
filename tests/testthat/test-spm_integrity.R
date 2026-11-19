@@ -83,11 +83,22 @@ test_that("SPM keeps identically named compressed runs separate and honors leadi
 test_that("SPM BDM cache compares timing and model inputs", {
   path <- tempfile(fileext = ".RData")
   d_obj <- structure(list(design = "old"), class = "bdm")
-  bdm_args <- list(events = c(1, 3), signals = "A", lg = NULL)
-  save(d_obj, bdm_args, file = path)
+  regressors <- tempfile()
+  writeLines("1", regressors)
+  bdm_args <- list(events = c(1, 3), signals = "A", additional_regressors = regressors, lg = NULL)
   lg <- lgr::get_logger("test")
+
+  save(d_obj, bdm_args, file = path)
+  expect_true(fmri.pipeline:::load_cached_l1_bdm(path, lg, bdm_args)$run_bdm)
+
+  bdm_input_files <- fmri.pipeline:::l1_bdm_input_files(bdm_args)
+  save(d_obj, bdm_args, bdm_input_files, file = path)
   expect_false(fmri.pipeline:::load_cached_l1_bdm(path, lg, bdm_args)$run_bdm)
-  bdm_args$events <- c(2, 4)
+  changed_args <- bdm_args
+  changed_args$events <- c(2, 4)
+  expect_true(fmri.pipeline:::load_cached_l1_bdm(path, lg, changed_args)$run_bdm)
+
+  writeLines(c("1", "2"), regressors)
   expect_true(fmri.pipeline:::load_cached_l1_bdm(path, lg, bdm_args)$run_bdm)
 })
 
