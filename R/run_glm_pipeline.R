@@ -10,17 +10,19 @@
 #' @param glm_software which GLM software should be used for model estimation (fsl, spm, or afni)
 #' @param level_backends optional per-level backend override list keyed by `l1`, `l2`, and/or `l3`
 #' @param backend_overrides optional model-specific backend override list
+#' @param run_fwe run configured FWE correction after the selected L3 models finish.
 #' @importFrom checkmate assert_string assert_class assert_subset assert_integerish
 #' @importFrom stats setNames
 #' @importFrom utils menu modifyList
 #' @export
 run_glm_pipeline <- function(gpa, l1_model_names = "prompt", l2_model_names = "prompt",
-l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_overrides = NULL) {
+l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_overrides = NULL, run_fwe = TRUE) {
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
   checkmate::assert_character(l1_model_names, null.ok = TRUE)
   checkmate::assert_character(l2_model_names, null.ok = TRUE)
   checkmate::assert_character(l3_model_names, null.ok = TRUE)
   checkmate::assert_character(glm_software, null.ok = TRUE)
+  checkmate::assert_flag(run_fwe)
 
   lg <- lgr::get_logger("glm_pipeline/run_glm_pipeline")
   lg$set_threshold(gpa$lgr_threshold)
@@ -180,6 +182,20 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
   )
   log_backend_preflight_report(gpa$backend_preflight_report, lg)
 
+  fwe_specs <- if (run_fwe) pipeline_fwe_specs(gpa, model_list$l3_model_names) else list()
+  # Restrict inference to this invocation's selected lower-level model inputs.
+  for (field in c("l1_model", "l2_model")) {
+    selected <- model_list[[paste0(field, "_names")]]
+    if (!length(selected)) next
+    fwe_specs <- lapply(fwe_specs, function(spec) {
+      current <- spec$targets[[field]]
+      spec$targets[[field]] <- if (is.null(current)) selected else intersect(current, selected)
+      spec
+    })
+    fwe_specs <- Filter(function(spec) length(spec$targets[[field]]) > 0L, fwe_specs)
+  }
+  validate_pipeline_fwe(gpa, fwe_specs, automatic = TRUE)
+
   batch_id <- uuid::UUIDgenerate()
   if (is.null(gpa$batch_run)) gpa$batch_run <- list()
 
@@ -190,8 +206,11 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
   if (!dir.exists(batch_directory)) dir.create(batch_directory, recursive = TRUE)
   gpa$batch_run <- modifyList(gpa$batch_run %||% list(), list(
     sequence_id = batch_id,
-    batch_directory = batch_directory
+    batch_directory = batch_directory,
+    fwe_specs = fwe_specs
   ))
+  # Replace the selected corrections; modifyList would retain older entries.
+  gpa$batch_run$fwe_specs <- fwe_specs
   gpa$output_locations$active_batch_directory <- batch_directory
   gpa_cache <- file.path(batch_directory, "run_pipeline_cache.RData")
   save(gpa, file=gpa_cache)
@@ -667,6 +686,30 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
   
   run_cleanup <- TRUE # always TRUE for now
 
+  fwe_batch <- NULL
+  if (length(fwe_specs)) {
+    fwe_batch <- f_batch$copy(
+      job_name = "run_fwe", n_cpus = 1,
+      wall_time = gpa$parallel$fwe_time %||% "1-00:00:00",
+      r_code = c(
+        "gpa <- fmri.pipeline:::run_pipeline_fwe_specs(gpa, gpa$batch_run$fwe_specs)",
+        "fwe_names <- names(gpa$batch_run$fwe_specs)",
+        "child_job_ids <- unique(unlist(lapply(gpa$fwe_runs[fwe_names], function(x) x$job_ids), use.names = FALSE))",
+        "if (is.null(child_job_ids)) child_job_ids <- character(0)",
+        "success <- TRUE"
+      ),
+      post_children_r_code = c(
+        "gpa <- refresh_fwe_correction(gpa, fwe_names, require_complete = TRUE)",
+        "if (!isTRUE(success)) stop('An FWE scheduler job failed; inspect the correction job logs.')"
+      )
+    )
+    fwe_batch$depends_on_parents <- "cleanup_glm"
+    fwe_batch$wait_for_children <- TRUE
+    # Refresh and persist inference status even when a child fails. The post-
+    # children checks then fail the parent on missing outputs or scheduler errors.
+    fwe_batch$all_children_successful <- FALSE
+  }
+
   if (isTRUE(run_finalize)) {
     glm_batch <- R_batch_sequence$new(
       joblist = c(
@@ -675,7 +718,7 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
         l2_execute_batches,
         sync_backend_caches_batches,
         l3_execute_batches,
-        list(cleanup_batch)
+        list(cleanup_batch, fwe_batch)
       ),
       sequence_id = batch_id
     )
@@ -687,7 +730,7 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
         l2_execute_batches,
         sync_backend_caches_batches,
         l3_execute_batches,
-        list(cleanup_batch)
+        list(cleanup_batch, fwe_batch)
       ),
       sequence_id = batch_id
     )
@@ -712,7 +755,8 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
       split_backend_caches = !is.null(split_cache_batch),
       l2 = run_l2,
       l3 = run_l3,
-      cleanup = run_cleanup
+      cleanup = run_cleanup,
+      fwe = !is.null(fwe_batch)
     ),
     l1_exec_flags,
     l3_exec_flags

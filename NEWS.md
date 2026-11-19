@@ -1,5 +1,22 @@
 # fmri.pipeline 0.5
 
+## FSL FEAT estimation
+
+* FEAT results now report the requested and actual higher-level estimator and
+  outlier deweighting, including the number of slices recovered with FLAME1.
+  These fields are available in refreshed status and `lookup_feat_outputs()`.
+
+* L1, L2 and L3 save the model specification beside the FSF. Changes to model inputs
+  or lower-level fits invalidate dependent results. Status checks require a validated
+  design and readable statistical images. Older fits with only a completion marker
+  need model setup and estimation again. Setup leaves their output directories in
+  place; execution archives stale fits unless the folder policy is `keep`.
+* FEAT setup checks retained volumes and requested confounds before estimation.
+  Configure fit destinations through `output_locations` so each FSF owns its output.
+* Submission reserves each FSF until the job finishes. If a scheduler cancels a job
+  before it starts or interrupts its workers, verify the job and descendants have
+  stopped before removing the corresponding `.fsf.lock` directory.
+
 ## AFNI estimation backend
 
 * Add subject/session AFNI GLMs using pipeline-convolved regressors, run-specific

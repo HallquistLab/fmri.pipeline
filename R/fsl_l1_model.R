@@ -29,7 +29,6 @@ fsl_l1_model <- function(
   checkmate::assert_class(d_obj, "bdm")
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
   checkmate::assert_string(model_name) # single string
-  if (is.null(nvoxels)) { nvoxels <- rep(5e4, length(run_nifti)) } #arbitrarily use 50k voxels in fsf
 
   lg <- lgr::get_logger("glm_pipeline/l1_setup")
   lg$set_threshold(gpa$lgr_threshold)
@@ -38,16 +37,19 @@ fsl_l1_model <- function(
     lg$debug("Using internal NIfTI files (run_nifti) within d_obj for Feat level 1 setup")
     run_nifti <- d_obj$run_nifti
   }
+  if (is.null(nvoxels)) nvoxels <- rep(5e4, length(run_nifti))
 
   if (!is.null(l1_confound_files)) {
     stopifnot(length(l1_confound_files) == length(run_nifti))
   } else {
-    l1_confound_files <- NA_character_ # to make data.frame() call work for empty input
+    l1_confound_files <- rep(NA_character_, length(run_nifti))
   }
 
   stopifnot(length(run_nifti) == length(d_obj$run_volumes)) #need these to align
   checkmate::assert_character(run_nifti, null.ok=FALSE)
   checkmate::assert_file_exists(run_nifti) #all exist
+  feat_validate_l1_inputs(run_nifti, d_obj$run_volumes, l1_confound_files,
+    length(gpa$confound_settings$l1_confound_regressors) > 0L)
 
   stopifnot(model_name %in% names(gpa$l1_models$models))
 
@@ -60,14 +62,6 @@ fsl_l1_model <- function(
 
   l1_contrasts <- gpa$l1_models$models[[model_name]]$contrasts #contrast matrix for this model
   regressor_names <- gpa$l1_models$models[[model_name]]$regressors #names of regressors in design matrix for this model
-
-  # TODO: this is not implemented and may not be necessary
-  if (dir.exists(fsl_l1_output_dir) &&
-    file.exists(file.path(fsl_l1_output_dir, "feat_l1_inputs.rds")) &&
-    isFALSE(gpa$glm_settings$fsl$force_l1_creation)) {
-    lg$info("%s exists. Skipping l1 fsf setup in fsl_l1_model().", fsl_l1_output_dir)
-    subj_l1_spec <- readRDS(file.path(fsl_l1_output_dir, "feat_l1_inputs.rds"))
-  }
 
   lg$info("Create l1 fsl_l1_output_dir: %s", fsl_l1_output_dir)
   dir.create(fsl_l1_output_dir, showWarnings=FALSE) #one directory up from a given run
@@ -87,32 +81,17 @@ fsl_l1_model <- function(
 
     l1_feat_fsf <- file.path(fsl_l1_output_dir, paste0("FEAT_LVL1_run", feat_l1_df$run_number[rr], ".fsf"))
     l1_feat_dir <- file.path(fsl_l1_output_dir, paste0("FEAT_LVL1_run", feat_l1_df$run_number[rr]))
-    feat_info[[rr]] <- get_feat_status(feat_dir = l1_feat_dir, feat_fsf = l1_feat_fsf, lg = lg)
+    timing_inputs <- character()
 
-    # skip re-creation of FSF and do not run below unless force_l1_creation==TRUE
-    if (file.exists(l1_feat_fsf) && isFALSE(gpa$glm_settings$fsl$force_l1_creation)) {
-      lg$info("Skipping existing feat fsf file: %s", l1_feat_fsf)
-      next
+    if (dir.exists(feat_lock_dir(l1_feat_fsf))) {
+      stop("FEAT model is queued or running; refusing to change setup: ", l1_feat_fsf)
+    }
+    disable_confounds <- is.na(l1_confound_files[rr]) || !nzchar(l1_confound_files[rr])
+    if (!disable_confounds) {
+      this_template <- gsub(".CONFOUNDS.", l1_confound_files[rr], this_template, fixed = TRUE)
     }
 
-    # handle inclusion of confound regressors
-    # turn off confounds if l1_confound_regressors is NULL, l1_confound_files[rr] is NA or does not exist
-    disable_confounds <- TRUE # default to TRUE
-    if (!is.null(gpa$confound_settings$l1_confound_regressors)) {
-      # TODO: consider treating confound regressors as a feature of a given l1 model, rather than enforcing across all models
-      l1_confound_file <- l1_confound_files[rr]
-      if (!file.exists(l1_confound_file)) {
-        lg$warn(
-          "Cannot find l1_confound_file for id: %s, session: %d, run_number: %d, file: %s",
-          id, session, feat_l1_df$run_number[rr], l1_confound_file
-        )
-      } else {
-        this_template <- gsub(".CONFOUNDS.", l1_confound_file, this_template, fixed = TRUE)
-        disable_confounds <- FALSE
-      }
-    }
-
-    # turn off confounds, if needed (missing l1 confounds file, or no confounds requested)
+    # Disable confounds only when none were requested or supplied.
     if (isTRUE(disable_confounds)) { # disable confounds
       this_template <- gsub("set fmri(confoundevs) 1", "set fmri(confoundevs) 0", this_template, fixed = TRUE) # disable
       l1 <- grep("# Confound EVs text file for analysis 1", this_template, fixed = TRUE)
@@ -130,11 +109,16 @@ fsl_l1_model <- function(
     this_template <- gsub(".OUTPUTDIR.", l1_feat_dir, this_template, fixed = TRUE)
     this_template <- gsub(".NVOL.", d_obj$run_volumes[rr], this_template, fixed=TRUE)
     this_template <- gsub(".FUNCTIONAL.", gsub(".nii(.gz)*$", "", run_nifti[rr]), this_template, fixed=TRUE)
-    this_template <- gsub(".TR.", d_obj$tr, this_template, fixed=TRUE)
+    this_template <- gsub(".TR.", rep(d_obj$tr, length.out = length(run_nifti))[rr], this_template, fixed=TRUE)
     this_template <- gsub(".NVOXELS.", nvoxels[rr], this_template, fixed=TRUE)
 
     # handle custom L1 FSF syntax
     this_template <- add_custom_feat_syntax(this_template, gpa$additional$feat_l1_args, lg)
+
+    if (!identical(feat_fsf_value(this_template, "fmri(ndelete)"), "0") ||
+        as.integer(feat_fsf_value(this_template, "fmri(npts)")) != d_obj$run_volumes[rr]) {
+      stop("Custom FEAT npts/ndelete settings conflict with the retained-volume design.")
+    }
 
     if (isTRUE(gpa$use_preconvolve)) {
       lg$info("Using preconvolved regressors in Feat level 1 analysis")
@@ -188,6 +172,10 @@ fsl_l1_model <- function(
           lg$error(msg)
           stop(msg)
         }
+        values <- scan(t_file, quiet = TRUE)
+        if (length(values) != d_obj$run_volumes[rr] || any(!is.finite(values))) {
+          stop("FEAT timing regressor must have one finite value per retained volume: ", t_file)
+        }
 
         list(
           name = rname, waveform = "custom_1", convolution = "none", tempfilt = 1,
@@ -196,6 +184,7 @@ fsl_l1_model <- function(
       })
 
       lg$debug("fsl_generate_fsf_lvl1_ev_syntax")
+      timing_inputs <- unlist(lapply(regressors, `[[`, "timing_file"), use.names = FALSE)
       ev_syn <- fsl_generate_fsf_lvl1_ev_syntax(regressors)
 
       # Zero any L1 contrast rows that depend on empty EVs or non-estimable formula combinations in this run
@@ -263,10 +252,13 @@ fsl_l1_model <- function(
       stop("cannot use FSL internal timing files right this moment...")
     }
 
-    lg$info("Writing l1 fsf file: %s", l1_feat_fsf)
-    cat(this_template, file=l1_feat_fsf, sep="\n")
+    feat_save_setup(l1_feat_fsf, this_template,
+      inputs = c(run_nifti[rr], timing_inputs, l1_confound_files[rr][!is.na(l1_confound_files[rr]) & nzchar(l1_confound_files[rr])]),
+      level = 1L, spec = list(contrasts = run_l1_contrasts, drops = d_obj$drop_volumes,
+        design = d_obj$design_convolved[[run_key]]), force = isTRUE(gpa$glm_settings$fsl$force_l1_creation))
+    feat_info[[rr]] <- get_feat_status(feat_dir = feat_output_directory(this_template), feat_fsf = l1_feat_fsf, lg = lg)
 
-    all_l1_feat_fsfs <- c(all_l1_feat_fsfs, l1_feat_fsf)
+    if (!isTRUE(feat_info[[rr]]$feat_complete)) all_l1_feat_fsfs <- c(all_l1_feat_fsfs, l1_feat_fsf)
   }
 
   # combined feat lookups with other columns
@@ -275,22 +267,13 @@ fsl_l1_model <- function(
   feat_l1_df <- dplyr::bind_cols(feat_l1_df, feat_info_df)
   feat_l1_df$to_run <- !feat_l1_df$feat_complete
 
-  # If execute_feat is TRUE, execute feat on each fsf files at this stage,
-  # using an 8-node socket cluster (since we have 8 runs).
-  # If execute_feat is FALSE, just create the fsf files but don't execute the analysis
+  # Immediate execution uses the same locking, cleanup, and validation as scheduled jobs.
   if (isTRUE(execute_feat) && length(all_l1_feat_fsfs) > 0L) {
-    nnodes <- min(length(all_l1_feat_fsfs), parallel::detectCores())
-    lg$info("Starting fork cluster with %d workers", nnodes)
-    cl_fork <- parallel::makeForkCluster(nnodes=nnodes)
-    runfeat <- function(fsf) {
-      runname <- basename(fsf)
-      run_fsl_command(paste("feat", fsf), stdout=file.path(dirname(fsf), paste0("feat_stdout_", runname)),
-        stderr=file.path(dirname(fsf), paste0("feat_stderr_", runname)))
-    }
-
-    lg$info("Executing all subject feat files with clusterApply")
-    parallel::clusterApply(cl_fork, all_l1_feat_fsfs, runfeat)
-    parallel::stopCluster(cl_fork)
+    for (fsf in all_l1_feat_fsfs) feat_execute_local(fsf, gpa)
+    refreshed <- lapply(seq_len(nrow(feat_l1_df)), function(i) get_feat_status(feat_l1_df$feat_dir[i], feat_l1_df$feat_fsf[i]))
+    status <- dplyr::bind_rows(refreshed)
+    feat_l1_df[, names(status)] <- status
+    feat_l1_df$to_run <- !feat_l1_df$feat_complete
   }
 
   return(feat_l1_df)

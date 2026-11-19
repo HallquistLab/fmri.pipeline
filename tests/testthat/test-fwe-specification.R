@@ -63,15 +63,13 @@ test_that("fwe_spec constructs and validates serializable method settings", {
     name = "age_ptfce",
     targets = list(l3_model = "l3_group", l3_cope_name = "age"),
     method = "ptfce",
-    fwe_alpha = c(0.05, 0.01),
-    min_cluster_voxels = 5L
+    fwe_alpha = c(0.05, 0.01)
   )
 
   expect_s3_class(spec, "fwe_spec")
   expect_identical(spec$schema_version, 1L)
   expect_identical(spec$level, 3L)
   expect_equal(spec$method$fwe_alpha, c(0.05, 0.01))
-  expect_identical(spec$method$min_cluster_voxels, 5L)
   expect_identical(spec$correction_mask, list(source = "model"))
   expect_invisible(validate_fwe_spec(spec))
 

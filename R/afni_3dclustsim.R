@@ -497,10 +497,12 @@ afni_3dclustsim <- R6::R6Class("afni_3dclustsim",
         return(invisible(NULL))
       }
 
-      if (min(athr - df$athr) > 1e-6) { stop("Specified athr: ", athr, " not found in 3dClustSim results") }
-      if (min(pthr - df$pthr) > 1e-6) { stop("Specified pthr: ", pthr, " not found in 3dClustSim results") }
+      if (!any(abs(athr - df$athr) <= abs(athr) * 1e-10)) { stop("Specified athr: ", athr, " not found in 3dClustSim results") }
+      if (!any(abs(pthr - df$pthr) <= abs(pthr) * 1e-10)) { stop("Specified pthr: ", pthr, " not found in 3dClustSim results") }
 
-      sim_calc <- df %>% dplyr::filter(nn == !!NN & sided == !!sided & athr == !!athr & pthr == !!pthr)
+      sim_calc <- df %>% dplyr::filter(nn == !!NN & sided == !!sided &
+        abs(.data$athr - !!athr) <= abs(!!athr) * 1e-10 &
+        abs(.data$pthr - !!pthr) <= abs(!!pthr) * 1e-10)
       if (nrow(sim_calc) == 0L) {
         stop("could not find")
       } else if (nrow(sim_calc) > 1L) {
@@ -560,6 +562,11 @@ afni_3dclustsim <- R6::R6Class("afni_3dclustsim",
           threshold_file = statistic_nifti, bisided = bisided, onesided = onesided, twosided = twosided,
           NN = NN, clust_nvox = clust_nvox, pref_map = clusters_file, pref_dat = thresholded_stat_file
       )
+      simulation_mask <- private$clustsim_mask %||% private$residuals_mask_file %||% self$insdat_mask_file
+      if (!is.null(simulation_mask)) {
+        ptfce_read_mask(simulation_mask, statistic_nifti)
+        arg_list$mask <- simulation_mask
+      }
 
       cat(glue("{clust_nvox} voxels needed for a whole-brain FWE cluster at voxelwise p = {pthr}, cluster p = {athr}\n\n", .trim=FALSE))
 

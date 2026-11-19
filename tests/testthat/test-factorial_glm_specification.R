@@ -672,6 +672,8 @@ test_that("respecify_l2_models_by_subject handles <2 surviving levels, missing r
 })
 
 test_that("single-run L2 passthrough allows pooling contrast, drops slope contrast, synthesizes masked tdof_t1, and rejects difference-only L2", {
+  # These fixtures exercise downstream model selection with synthetic completed fits.
+  testthat::local_mocked_bindings(feat_outputs_valid = function(...) TRUE, .package = "fmri.pipeline")
   skip_if_not_installed("RNifti")
 
   gpa <- create_mock_gpa(n_subjects = 1, n_runs = 2, include_l1_models = TRUE, include_l2_models = FALSE)

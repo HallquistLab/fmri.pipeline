@@ -21,7 +21,6 @@ fwe_method_defaults <- function(method_name) {
       name = "ptfce",
       fwe_alpha = 0.05,
       two_sided = TRUE,
-      min_cluster_voxels = 10L,
       write_threshold_images = TRUE
     ),
     afni_3dclustsim_permutation = list(
@@ -64,6 +63,12 @@ normalize_fwe_method <- function(method, options = list()) {
     method[names(options)] <- options
   }
 
+  if (identical(method_name, "ptfce") && "min_cluster_voxels" %in% names(method)) {
+    warning("min_cluster_voxels never filtered pTFCE inference outputs and is deprecated. ",
+      "Use ptfce_spec$get_clusters(clust_nvox = ...) for separate cluster reporting.", call. = FALSE)
+    method$min_cluster_voxels <- NULL
+  }
+
   defaults <- fwe_method_defaults(method_name)
   unknown <- setdiff(names(method), names(defaults))
   if (length(unknown) > 0L) {
@@ -91,7 +96,6 @@ validate_fwe_method <- function(method) {
   if (identical(method$name, "ptfce")) {
     probability_vector(method$fwe_alpha, "fwe_alpha")
     checkmate::assert_logical(method$two_sided, len = 1L)
-    checkmate::assert_integerish(method$min_cluster_voxels, len = 1L, lower = 1L)
     checkmate::assert_logical(method$write_threshold_images, len = 1L)
   } else if (identical(method$name, "afni_3dclustsim_permutation")) {
     checkmate::assert_integerish(method$iter, len = 1L, lower = 10L)
@@ -182,7 +186,8 @@ normalize_fwe_compute <- function(compute) {
   if (!is.list(compute) || (length(compute) > 0L && is.null(names(compute)))) {
     stop("compute must be a named list.", call. = FALSE)
   }
-  defaults <- list(scheduler = "inherit")
+  defaults <- list(scheduler = "inherit", memgb_per_command = 8,
+    time_per_command = "12:00", commands_per_cpu = 1L, cpus_per_job = 1L)
   unknown <- setdiff(names(compute), names(defaults))
   if (length(unknown) > 0L) {
     stop("Unknown compute field(s): ", paste(unknown, collapse = ", "), call. = FALSE)
@@ -194,6 +199,11 @@ normalize_fwe_compute <- function(compute) {
     c("inherit", "local", "sh", "slurm", "sbatch", "torque", "qsub"),
     empty.ok = FALSE
   )
+  checkmate::assert_number(compute$memgb_per_command, lower = 0.1, finite = TRUE)
+  checkmate::assert_string(compute$time_per_command)
+  validate_dhms(compute$time_per_command)
+  checkmate::assert_integerish(compute$commands_per_cpu, lower = 1, len = 1L)
+  checkmate::assert_integerish(compute$cpus_per_job, lower = 1, len = 1L)
   compute
 }
 
@@ -213,7 +223,8 @@ normalize_fwe_compute <- function(compute) {
 #'   \code{l3_cope_number}, and \code{l3_cope_name}. Values may be vectors.
 #' @param method correction method name or named method configuration. Currently
 #'   supported specifications are \code{"ptfce"} and
-#'   \code{"afni_3dclustsim_permutation"}.
+#'   \code{"afni_3dclustsim_permutation"}. Only pTFCE currently has a planning
+#'   and execution adapter; the AFNI specification can be saved for future use.
 #' @param level GLM level to correct. Only level 3 is currently supported.
 #' @param correction_mask \code{"model"} to use each analysis mask, a NIfTI
 #'   path, or a list with \code{source} equal to \code{"model"} or

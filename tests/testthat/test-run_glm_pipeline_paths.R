@@ -614,3 +614,40 @@ test_that("single-run AFNI groups with FSL producers schedule both L1 engines", 
   l3 <- jobs[[which(job_names == "setup_run_l3_afni")]]
   expect_true("sync_l1_backend_caches" %in% l3$depends_on_parents)
 })
+
+test_that("configured inference waits for collected L3 outputs and supports opt-out", {
+  gpa <- create_mock_gpa(include_l1_models = TRUE, include_l2_models = TRUE, include_l3_models = TRUE)
+  gpa$glm_software <- "fsl"
+  gpa$multi_run <- FALSE
+  gpa$output_locations$sqlite_db <- NULL
+  gpa$parallel <- modifyList(gpa$parallel, list(
+    finalize_time = "0:10:00", l1_setup_time = "0:10:00", l1_setup_memgb = "1G",
+    l2_setup_cores = 1L, l2_setup_run_time = "0:10:00", l3_setup_run_time = "0:10:00",
+    fsl = list(l1_feat_alljobs_time = "0:10:00")))
+  gpa$glm_backend_specs <- make_test_backend_specs()
+  gpa$l3_models$models$l3_model1$inference <- list(method = "ptfce")
+  gpa$batch_run <- list(fwe_specs = list(old_correction = list()))
+  store <- new.env(parent = emptyenv())
+  invoke <- function(enabled, l3 = "l3_model1") {
+    testthat::with_mocked_bindings(
+      run_glm_pipeline(gpa, l1_model_names = "none", l2_model_names = "none", l3_model_names = l3, run_fwe = enabled),
+      R_batch_job = list(new = make_mock_job_new()),
+      R_batch_sequence = list(new = make_mock_sequence_new(store)),
+      .package = "fmri.pipeline")
+    flatten_jobs(store$joblist)
+  }
+  jobs <- invoke(TRUE)
+  correction <- Filter(function(x) x$job_name == "run_fwe", jobs)
+  expect_length(correction, 1L)
+  expect_identical(correction[[1L]]$depends_on_parents, "cleanup_glm")
+  expect_true(correction[[1L]]$wait_for_children)
+  expect_false(correction[[1L]]$all_children_successful) # persist status before reporting a child failure
+  expect_match(correction[[1L]]$post_children_r_code[1L], "require_complete = TRUE", fixed = TRUE)
+  expect_match(correction[[1L]]$post_children_r_code[2L], "!isTRUE(success)", fixed = TRUE)
+  cache <- file.path(jobs[[1L]]$batch_directory, "run_pipeline_cache.RData")
+  env <- new.env()
+  load(cache, env)
+  expect_named(env$gpa$batch_run$fwe_specs, "l3_model1_ptfce")
+  expect_length(Filter(function(x) x$job_name == "run_fwe", invoke(FALSE)), 0L)
+  expect_length(Filter(function(x) x$job_name == "run_fwe", invoke(TRUE, "none")), 0L)
+})

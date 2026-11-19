@@ -37,7 +37,7 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
         if (is.null(fwe_p)) {
           return(file.path(z_dir, paste0(base, "_ptfce", ext)))
         } else if (!is.null(fwe_p)) {
-          fwe_p <- round(fwe_p, 3) # for consistency in file-naming
+          fwe_p <- format_fwe_probability(fwe_p)
           return(file.path(z_dir, paste0(base, "_ptfce_fwep_", fwe_p, ext)))
         }
       } else if (what == "csv") {
@@ -50,13 +50,12 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
         this_z <- private$z_files[ii]
         f_list[[ii]] <- list(
           # z_input = this_z,
-          # mask_input = private$mask_files[ii],
+          mask_input = private$mask_files[ii],
           z_ptfce = private$ptfce_outfile_from_zstat(this_z),
           z_csv = private$ptfce_outfile_from_zstat(this_z, what = "csv")
         )
         for (pp in private$pvt_fwe_p) {
-          pp <- round(pp, 3) # for consistency in file-naming
-          f_list[[ii]][[paste0("z_ptfce_fwep_", pp)]] <- private$ptfce_outfile_from_zstat(this_z, fwe_p = pp)
+          f_list[[ii]][[paste0("z_ptfce_fwep_", format_fwe_probability(pp))]] <- private$ptfce_outfile_from_zstat(this_z, fwe_p = pp)
         }
       }
       private$expect_list <- f_list
@@ -356,26 +355,13 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
       checkmate::assert_logical(add_whereami, len = 1L)
       checkmate::assert_character(whereami_atlases, null.ok = TRUE)
 
-      # TODO: doesn't really handle the one-sided versus two-sided issue if we have to calculate the z
-      bisided <- TRUE
-      onesided <- FALSE
       private$pvt_cluster_objs <- lapply(private$expect_list, function(input) {
         fwep_csv <- read.csv(input$z_csv)
-        if (!any((fwep - fwep_csv$p_value) < 1e-4)) {
-          # need to calculate the threshold internally
-          z_thresh <- pTFCE::fwe.p2z(fwep_csv$number_of_resels[1L], FWEP = fwep)
-        } else {
-          this_z <- fwep_csv %>%
-            dplyr::filter(p_value == !!fwep)
-
-          if (nrow(this_z) != 1L) {
-            stop(glue("Could not find FWEp threshold in pTFCE file: {input$z_csv}"))
-          } else {
-            bisided <- as.logical(this_z$two_sided)
-            onesided <- !bisided
-            z_thresh <- this_z$z_ptfce
-          }
-        }
+        threshold <- ptfce_threshold_from_table(fwep_csv, fwep)
+        bisided <- threshold$two_sided
+        onesided <- !bisided
+        z_thresh <- threshold$z
+        lower_thresh <- upper_thresh <- one_thresh <- NULL
 
         if (isTRUE(bisided)) {
           lower_thresh <- -1*z_thresh
@@ -385,7 +371,7 @@ ptfce_spec <- R6::R6Class("ptfce_spec",
         }
 
         cobj <- afni_3dclusterize$new(
-          threshold_file = input$z_ptfce, NN = NN, clust_nvox = clust_nvox,
+          threshold_file = input$z_ptfce, mask = input$mask_input, NN = NN, clust_nvox = clust_nvox,
           bisided = bisided, onesided = onesided, lower_thresh = lower_thresh,
           upper_thresh = upper_thresh, one_thresh = one_thresh
         )

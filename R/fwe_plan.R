@@ -86,9 +86,7 @@ fwe_nifti_parts <- function(path) {
 }
 
 format_fwe_probability <- function(x) {
-  text <- sprintf("%.10f", x)
-  text <- sub("0+$", "", text)
-  sub("\\.$", "", text)
+  format(x, digits = 15L, scientific = FALSE, trim = TRUE)
 }
 
 ptfce_artifact_table <- function(task_id, zstat_file, task_output_directory,
@@ -179,9 +177,9 @@ compile_fwe_method.fwe_method_ptfce <- function(
     tasks$correction_mask_file <- analyses$model_mask_file[analysis_rows]
   }
   tasks$smoothness_file <- analyses$smoothness_file[analysis_rows]
+  tasks$model_mask_file <- analyses$model_mask_file[analysis_rows]
   tasks$two_sided <- method$two_sided
   tasks$fwe_alpha <- rep(list(as.numeric(method$fwe_alpha)), nrow(tasks))
-  tasks$min_cluster_voxels <- as.integer(method$min_cluster_voxels)
   tasks$write_threshold_images <- method$write_threshold_images
   tasks$output_directory <- file.path(output_directory, "targets", tasks$target_id)
 
@@ -195,21 +193,10 @@ compile_fwe_method.fwe_method_ptfce <- function(
     )
   }))
 
-  missing_inputs <- lapply(seq_len(nrow(tasks)), function(ii) {
-    missing <- character(0)
-    if (!file.exists(tasks$zstat_file[ii])) missing <- c(missing, "zstat_file")
-    if (!file.exists(tasks$correction_mask_file[ii])) missing <- c(missing, "correction_mask_file")
-    if (!file.exists(tasks$smoothness_file[ii])) missing <- c(missing, "smoothness_file")
-    missing
-  })
-  tasks$missing_inputs <- vapply(missing_inputs, paste, collapse = ",", character(1L))
+  tasks$missing_inputs <- ptfce_missing_inputs(tasks)
   tasks$status <- ifelse(nzchar(tasks$missing_inputs), "blocked", "ready")
-  complete_by_task <- vapply(tasks$task_id, function(task_id) {
-    expected <- artifacts$required[artifacts$task_id == task_id]
-    present <- artifacts$exists[artifacts$task_id == task_id]
-    length(expected) > 0L && all(present[expected])
-  }, logical(1L))
-  tasks$status[complete_by_task] <- "complete"
+  tasks$input_fingerprint <- fwe_task_fingerprints(tasks)
+  tasks$status[fwe_complete_tasks(tasks, artifacts)] <- "complete"
 
   if (isTRUE(require_inputs) && any(tasks$status == "blocked")) {
     blocked <- tasks[tasks$status == "blocked", c("task_id", "l3_cope_name", "missing_inputs"), drop = FALSE]
@@ -257,6 +244,7 @@ plan_fwe_correction <- function(
     cache_dir = NULL, refresh_status = FALSE, lg = NULL) {
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
   spec <- as_fwe_spec(spec)
+  assert_fwe_executable(spec)
   checkmate::assert_logical(require_inputs, len = 1L, any.missing = FALSE)
   source <- match.arg(source)
 

@@ -30,7 +30,98 @@ options(digits=3)
 
 This vignette provides an overview of familywise error correction for voxelwise GLM analyses in fmri.pipeline.
 
-# Preferred workflow: declarative pTFCE planning and execution
+# Automatic correction at the end of L3
+
+FSL L3 models can request pTFCE when they are specified, before any images
+exist. The last step of the interactive `build_l3_models()` dialog offers
+group inference. The equivalent YAML configuration is:
+
+```yaml
+l3_models:
+  group:
+    model_formula: "~ age"
+    execution_backend: fsl
+    l3_input_mode: subject_rows
+    contrasts:
+      diagonal: true
+    inference:
+      method: ptfce
+      fwe_alpha: [0.05, 0.01]
+      two_sided: true
+      correction_mask: model
+      compute:
+        scheduler: inherit
+        memgb_per_command: 8
+        time_per_command: "00:30:00"
+```
+
+`inference` applies to all contrasts of its model unless `targets` selects a
+subset, for example `targets: {l3_cope_name: age}`. Correction controls FWE
+separately within each selected map, including both tails when `two_sided`
+is true. It does **not** jointly correct across contrasts or models.
+Omit `inference` or set it to `false` to leave correction disabled.
+
+For programmatic configuration, assign the same specification to the model:
+
+```{r automatic-fwe}
+gpa$l3_models$models$group$inference <- fwe_spec(
+  "group_ptfce", targets = list(l3_model = "group"),
+  fwe_alpha = c(0.05, 0.01), two_sided = TRUE
+)
+export_glm_config(gpa, "glm_config.yaml")
+run_glm_pipeline(gpa, l3_model_names = "group")
+```
+
+The pipeline waits for L3 estimation, collects its output metadata, then
+submits a separate `run_fwe` stage. That stage waits for correction workers
+and collects their results before completing. `run_glm_pipeline(...,
+run_fwe = FALSE)` skips correction for that invocation. Only implemented,
+compatible methods are offered; this release supports automatic pTFCE for
+FSL L3 outputs. Unsupported backend/method combinations fail before submission.
+Automatic correction uses the pipeline scheduler, or runs synchronously with
+`compute: {scheduler: local}`. Use the correction-only entry point to submit
+to a different scheduler.
+
+The main YAML export/import preserves model-level inference and any additional
+declarative specifications in `gpa$fwe_correction`. `build_fwe_correction()`
+can configure these additional specifications before estimation is complete.
+Older live R6 correction objects remain usable through their standalone APIs,
+but must be replaced with declarative specifications for automatic execution.
+
+To inspect or retry correction after estimation, reload the saved pipeline
+object and use the correction-only entry point:
+
+```{r automatic-fwe-retry}
+gpa <- readRDS(gpa$output_locations$object_cache)
+gpa <- run_fwe_correction(gpa, l3_model_names = "group")
+# After scheduler jobs finish:
+gpa <- refresh_fwe_correction(gpa, require_complete = TRUE)
+gpa$fwe_status
+gpa$fwe_runs$group_ptfce$result
+```
+
+This does not refit GLMs. Local execution completes synchronously; scheduler
+execution returns after submission. Correction status is stored separately
+from estimation status. A valid result with zero significant voxels is still
+complete; `significant_voxels` in the threshold table records that outcome.
+
+Completion requires a successful worker receipt, matching content hashes of
+inputs and inference settings, and intact validated outputs. Old results
+without receipts are unverified and will be recomputed. Changing a mask,
+statistic image, alpha, or sidedness invalidates completion even when filenames
+are unchanged. A forced or failed rerun cannot reuse an earlier success receipt.
+Use `collect_fwe_results()` to refresh a saved result snapshot before reuse.
+
+For a custom ROI, supply a nonempty binary mask aligned with and contained
+within the model mask. pTFCE reuses the model's stationary smoothness estimate
+but recalculates search volume and resel count for the correction region.
+The worker rejects incompatible geometry and non-finite values inside the
+mask. Install `pTFCE` and `fmri.pipeline` in the R environment used by compute
+jobs; workers do not install packages automatically. `min_cluster_voxels` is
+deprecated because it never filtered inference outputs; cluster-size filtering
+belongs to separate reporting with `ptfce_spec$get_clusters(clust_nvox = ...)`.
+
+# Standalone declarative pTFCE planning and execution
 
 For completed level-3 FSL/FEAT analyses, the preferred workflow is to describe
 the intended correction once, compile that description into an inspectable plan,

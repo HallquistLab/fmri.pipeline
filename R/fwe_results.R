@@ -113,7 +113,7 @@ build_fwe_artifact_manifest <- function(plan, execution = NULL,
     target_id, artifacts$artifact_role, alpha_id, sep = "::"
   )
   artifact_status <- ifelse(
-    artifacts$exists, "available",
+    artifacts$exists, ifelse(plan$tasks$status[task_rows] == "complete", "available", "unverified"),
     ifelse(artifacts$required, "missing_required", "missing_optional")
   )
 
@@ -133,7 +133,7 @@ build_fwe_artifact_manifest <- function(plan, execution = NULL,
     exists = artifacts$exists,
     artifact_status = artifact_status,
     task_status = plan$tasks$status[task_rows],
-    can_use_as_mask = artifacts$artifact_role == "thresholded_statistic",
+    can_use_as_mask = artifacts$artifact_role == "thresholded_statistic" & artifact_status == "available",
     source_statistic_file = fwe_manifest_value(
       plan$tasks, task_rows, "zstat_file"
     ),
@@ -222,7 +222,7 @@ validate_fwe_artifact_manifest <- function(x) {
   checkmate::assert_logical(x$can_use_as_mask, any.missing = FALSE)
   checkmate::assert_subset(
     x$artifact_status,
-    c("available", "missing_required", "missing_optional"),
+    c("available", "unverified", "missing_required", "missing_optional"),
     empty.ok = FALSE
   )
   invisible(x)
@@ -254,7 +254,7 @@ validate_fwe_result <- function(x) {
     stop("FWE result identity does not match its plan.", call. = FALSE)
   }
   manifest_complete <- all(
-    !x$manifest$required | x$manifest$exists
+    !x$manifest$required | (x$manifest$exists & x$manifest$task_status == "complete")
   )
   if (!identical(x$complete, manifest_complete)) {
     stop("FWE result completeness disagrees with its artifact manifest.",
@@ -301,13 +301,13 @@ collect_fwe_results <- function(x, output_directory = NULL,
   built <- build_fwe_artifact_manifest(
     plan, execution = context$execution, collected_at = collected_at
   )
-  complete <- all(!built$manifest$required | built$manifest$exists)
+  complete <- all(built$plan$tasks$status == "complete")
   if (isTRUE(require_complete) && !complete) {
     missing <- built$manifest$artifact_id[
-      built$manifest$required & !built$manifest$exists
+      built$manifest$required & built$manifest$artifact_status != "available"
     ]
     stop(
-      "Required FWE artifacts are missing: ", paste(missing, collapse = ", "),
+      "Required FWE artifacts are missing or unverified: ", paste(missing, collapse = ", "),
       call. = FALSE
     )
   }
@@ -432,7 +432,7 @@ fwe_result_artifacts <- function(
     checkmate::assert_character(l3_cope_name, any.missing = FALSE)
     keep <- keep & manifest$l3_cope_name %in% l3_cope_name
   }
-  if (isTRUE(require_existing)) keep <- keep & manifest$exists
+  if (isTRUE(require_existing)) keep <- keep & manifest$exists & manifest$artifact_status == "available"
   manifest[keep, , drop = FALSE]
 }
 

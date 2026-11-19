@@ -79,6 +79,10 @@ build_l2_models <- function(gpa, from_spec_file = NULL, regressor_cols = NULL) {
     }
 
     prompt_models <- FALSE
+    if (level == 3L) {
+      gpa$fwe_correction <- lapply(spec_list$fwe_correction %||% list(), as_fwe_spec)
+      spec_list$fwe_correction <- NULL
+    }
 
     # at present, l2 and l3 model specs don't necessarily have subsections -- each top-level section can be a model
     # given this, standardize the format so that if $l2_models or $l3_models are top-level sections, then
@@ -204,6 +208,9 @@ build_l2_models <- function(gpa, from_spec_file = NULL, regressor_cols = NULL) {
       cat("--------\nModel ", ii, "\n\n")
       cat("  Name:", this$name, "\n")
       cat("  Regressors:", paste(this$model_variables, collapse = ", "), "\n")
+      if (level == 3L) cat("  Final inference:", if (is.null(this$inference)) "none" else
+        paste0(this$inference$method$name, "; FWE alpha ", paste(this$inference$method$fwe_alpha, collapse = ", "),
+          "; each map separately"), "\n")
       if (ncol(this$contrasts) < 30) {
         cat("  Contrasts:\n\n")
         print(round(this$contrasts, 3))
@@ -225,6 +232,7 @@ build_l2_models <- function(gpa, from_spec_file = NULL, regressor_cols = NULL) {
 
     if (add_more == 1L) { # add
       mobj <- create_new_hi_model(data, level = level, cur_model_names = names(model_list), lg = lg)
+      if (level == 3L) mobj <- configure_l3_inference(gpa, mobj)
       if (mobj$name %in% names(model_set)) {
         warning("An model with the same name exists: ", mobj$name, ". Overwriting it.")
       }
@@ -238,6 +246,7 @@ build_l2_models <- function(gpa, from_spec_file = NULL, regressor_cols = NULL) {
           res <- menu(names(model_list), title = "Which model do you want to modify?")
         }
         model_list[[res]] <- create_new_hi_model(data, to_modify = model_list[[res]], cur_model_names = names(model_list), level = level, lg = lg)
+        if (level == 3L) model_list[[res]] <- configure_l3_inference(gpa, model_list[[res]])
       }
     } else if (add_more == 3L) { # delete
       which_del <- menu(names(model_list), title = "Which model would you like to delete?")
@@ -960,5 +969,10 @@ create_new_hi_model <- function(data, to_modify = NULL, level = NULL, cur_model_
       }
     }
 
+    if (!is.null(spec_list$inference) && level != 3L) stop("inference is supported only for L3 models.")
+    if (level == 3L) {
+      inference <- if (!is.null(spec_list)) spec_list$inference else mobj$inference
+      mobj$inference <- normalize_l3_inference(inference, mobj$name, rownames(mobj$contrasts))
+    }
     return(mobj)
   }

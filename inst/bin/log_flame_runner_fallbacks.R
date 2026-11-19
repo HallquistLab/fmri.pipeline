@@ -55,7 +55,8 @@ if (nullish(feat_dir)) {
   stop("--feat_dir is required")
 }
 
-fallback_file <- file.path(feat_dir, "flame_runner_fallbacks.tsv")
+fit_dir <- if (endsWith(feat_dir, ".gfeat")) file.path(feat_dir, "cope1.feat") else feat_dir
+fallback_file <- file.path(fit_dir, "flame_runner_fallbacks.tsv")
 if (!file.exists(fallback_file)) {
   quit(save = "no", status = 0L)
 }
@@ -102,15 +103,23 @@ if (!nullish(log_json)) {
 
 for (ii in seq_len(nrow(fallbacks))) {
   rec <- fallbacks[ii, , drop = FALSE]
+  outcome <- if (is.null(rec$fallback_status)) {
+    "rerunning it with FLAME1 (legacy record, outcome unknown)."
+  } else if (rec$fallback_status == 0L) {
+    "recovered by rerunning it with FLAME1."
+  } else {
+    sprintf("FLAME1 retry failed with status %s.", rec$fallback_status)
+  }
   lg$warn(
     paste(
       "FSL FLAME12 failed for slice output '%s' in '%s' with status %s;",
-      "model estimation recovered this slice by rerunning it with FLAME1.",
+      "%s",
       "Original failed log directory: '%s'. Fallback command: %s"
     ),
     rec$ld_dir,
     feat_dir,
     rec$flame12_status,
+    outcome,
     rec$failed_ld_dir,
     rec$fallback_command
   )
