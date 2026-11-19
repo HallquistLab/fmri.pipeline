@@ -50,6 +50,7 @@ harvest_l3_inputs <- function(gpa, l3_backend, l1_model_names = NULL, l2_model_n
         l3_model_names = l3_model_names,
         lg = lg
       ),
+      afni = harvest_l3_inputs_afni(gpa, l1_model_names, l3_model_names, lg),
       stop("harvest_l3_inputs does not support producer backend: '", producer_backend, "'")
     )
 

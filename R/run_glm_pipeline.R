@@ -7,7 +7,7 @@
 #' @param l1_model_names a character vector of level 1 model names (specified during build_l1_models) that should be executed
 #' @param l2_model_names a character vector of level 2 model names (specified during build_l2_models) that should be executed
 #' @param l3_model_names a character vector of level 3 model names (specified during build_l3_models) that should be executed
-#' @param glm_software which glm software should be used for model estimation (not implemented yet)
+#' @param glm_software which GLM software should be used for model estimation (fsl, spm, or afni)
 #' @param level_backends optional per-level backend override list keyed by `l1`, `l2`, and/or `l3`
 #' @param backend_overrides optional model-specific backend override list
 #' @param run_fwe run configured FWE correction after the selected L3 models finish.
@@ -33,7 +33,7 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
     gpa$level_backends <- list(l1 = glm_software, l2 = glm_software, l3 = glm_software)
   }
 
-  backend_specs <- gpa$glm_backend_specs
+  backend_specs <- upgrade_glm_backend_specs(gpa$glm_backend_specs)
   if (is.null(backend_specs)) backend_specs <- default_glm_backend_specs()
   gpa$glm_backend_specs <- backend_specs
   gpa$level_backends <- merge_level_backend_overrides(gpa, level_backends = level_backends, specs = backend_specs)
@@ -70,12 +70,12 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
 
   unsupported_producers <- setdiff(
     normalize_backend_strings(unlist(l3_producer_backend_map, use.names = FALSE)),
-    c("", "fsl")
+    c("", "fsl", "afni")
   )
   if (length(unsupported_producers) > 0L) {
     stop(
       sprintf(
-        "L3 producer backends are currently implemented only for FSL. Unsupported producer override(s): %s",
+        "L3 producer backends are currently implemented for FSL and AFNI. Unsupported producer override(s): %s",
         paste(unsupported_producers, collapse = ", ")
       ),
       call. = FALSE
@@ -90,7 +90,7 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
   requested_l2_backend_names <- names(l2_models_by_backend)
   requested_l3_backend_names <- names(l3_models_by_backend)
 
-  l3_dependency_backends <- if (!is.null(model_list$l3_model_names) && isTRUE(gpa$multi_run)) {
+  l3_dependency_backends <- if (!is.null(model_list$l3_model_names)) {
     get_requirement_producer_backends(l3_requirement_df)
   } else {
     character(0)
@@ -131,6 +131,15 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
 
   l1_model_backend_map <- reassign_unrunnable_models(l1_model_backend_map, level = 1L, fallback_backends = l3_dependency_backends)
   l2_model_backend_map <- reassign_unrunnable_models(l2_model_backend_map, level = 2L, fallback_backends = l3_dependency_backends)
+  # A runnable L1 backend may differ from an explicitly requested L3 producer.
+  # In that case estimate both, so the producer's L2/L3 jobs have actual parents.
+  for (producer in l3_dependency_backends) {
+    if (backend_runs_level(resolved_backends[[producer]], 1L)) {
+      for (model in names(l1_model_backend_map)) {
+        l1_model_backend_map[[model]] <- unique(c(l1_model_backend_map[[model]], producer))
+      }
+    }
+  }
   l1_models_by_backend <- group_models_by_backend(l1_model_backend_map)
   l2_models_by_backend <- group_models_by_backend(l2_model_backend_map)
   requested_l1_backend_names <- names(l1_models_by_backend)
@@ -314,6 +323,9 @@ l3_model_names = "prompt", glm_software = NULL, level_backends = NULL, backend_o
       }
       if (backend_name == "spm") {
         return(gpa$parallel$spm$l1_spm_alljobs_time)
+      }
+      if (backend_name == "afni") {
+        return(gpa$parallel$afni$l1_glm_alljobs_time %||% "24:00:00")
       }
       stop(sprintf("No L1 execution time configured for backend '%s'.", backend_name))
     }

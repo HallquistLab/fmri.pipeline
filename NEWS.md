@@ -17,6 +17,18 @@
   before it starts or interrupts its workers, verify the job and descendants have
   stopped before removing the corresponding `.fsf.lock` directory.
 
+## AFNI estimation backend
+
+* Add subject/session AFNI GLMs using pipeline-convolved regressors, run-specific
+  baselines and nuisance terms, censoring, and REML (default) or OLS estimation.
+* Export named contrast and t-statistic NIfTIs, residuals, design matrices, and
+  manifests; track completion only when all expected outputs are present.
+* Support AFNI-produced inputs for ordinary group OLS and existing longitudinal
+  `3dLMEr` models, while preserving explicitly selected FSL producer workflows.
+* Integrate AFNI setup, Slurm/TORQUE/local submission, dependencies, status refresh,
+  resource defaults, and upgrades of the previous serialized AFNI placeholder.
+  Runs are combined within L1; no standalone AFNI L2 model is estimated.
+
 ## Factorial GLM correctness
 
 * Automatic custom AFNI GLTs now reject non-unit quantitative coefficient weights

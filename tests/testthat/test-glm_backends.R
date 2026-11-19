@@ -12,7 +12,7 @@ test_that("get_glm_backends returns resolved backends from gpa", {
   expect_true(is.function(backends$spm$l1_setup))
 })
 
-test_that("producer requirement helpers capture AFNI->FSL stage resolution", {
+test_that("producer requirement helpers capture AFNI and SPM L1 producers", {
   gpa <- create_mock_gpa(include_l1_models = TRUE)
   gpa$glm_software <- c("afni", "spm", "fsl")
   gpa <- fmri.pipeline:::initialize_glm_backends(gpa)
@@ -30,18 +30,18 @@ test_that("producer requirement helpers capture AFNI->FSL stage resolution", {
   )
 
   expect_equal(nrow(afni_req), 1L)
-  expect_identical(afni_req$producer_backend, "fsl")
-  expect_identical(afni_req$producer_level, 2L)
+  expect_identical(afni_req$producer_backend, "afni")
+  expect_identical(afni_req$producer_level, 1L)
   expect_equal(nrow(spm_req), 1L)
   expect_identical(spm_req$producer_backend, "spm")
   expect_identical(spm_req$producer_level, 1L)
   expect_identical(
     fmri.pipeline:::get_requirement_producer_backends(afni_req),
-    "fsl"
+    "afni"
   )
   expect_identical(
-    fmri.pipeline:::get_requirement_producer_backends(afni_req, producer_level = 2L),
-    "fsl"
+    fmri.pipeline:::get_requirement_producer_backends(afni_req, producer_level = 1L),
+    "afni"
   )
 })
 
@@ -59,7 +59,7 @@ test_that("backend capability metadata describes per-level execution strategy", 
   expect_false(fmri.pipeline:::backend_runs_level(backends$spm, 2L))
   expect_true(fmri.pipeline:::backend_runs_level(backends$spm, 3L))
 
-  expect_false(fmri.pipeline:::backend_runs_level(backends$afni, 1L))
+  expect_true(fmri.pipeline:::backend_runs_level(backends$afni, 1L))
   expect_false(fmri.pipeline:::backend_runs_level(backends$afni, 2L))
   expect_true(fmri.pipeline:::backend_runs_level(backends$afni, 3L))
 
@@ -76,7 +76,7 @@ test_that("artifact helpers expose current producers and AFNI 3dLMEr inputs", {
 
   expect_true(fmri.pipeline:::backend_produces_artifact(backends$fsl, "subject_session_contrasts"))
   expect_true(fmri.pipeline:::backend_produces_artifact(backends$spm, "subject_session_contrasts"))
-  expect_false(fmri.pipeline:::backend_produces_artifact(backends$afni, "subject_session_contrasts"))
+  expect_true(fmri.pipeline:::backend_produces_artifact(backends$afni, "subject_session_contrasts"))
 
   expect_identical(
     fmri.pipeline:::backend_l3_required_artifacts(backends$afni),
@@ -84,15 +84,15 @@ test_that("artifact helpers expose current producers and AFNI 3dLMEr inputs", {
   )
   expect_identical(
     fmri.pipeline:::backend_l3_input_provider_backends(backends$afni),
-    "fsl"
+    "afni"
   )
   expect_identical(
     fmri.pipeline:::get_backends_producing_artifact(backends, "subject_session_contrasts"),
-    c("fsl", "spm")
+    c("fsl", "spm", "afni")
   )
   expect_identical(
     fmri.pipeline:::resolve_l3_input_producers(backends, backends$afni),
-    "fsl"
+    "afni"
   )
 })
 
@@ -323,7 +323,7 @@ test_that("validate_l3_backend_resolution rejects invalid 3dlmer execution backe
   )
 })
 
-test_that("validate_l3_backend_resolution rejects AFNI execution for non-3dlmer models", {
+test_that("validate_l3_backend_resolution accepts ordinary AFNI GLMs", {
   gpa <- create_mock_gpa(include_l1_models = TRUE, include_l2_models = TRUE, include_l3_models = TRUE)
   gpa$l3_models$models$l3_model1$l3_input_mode <- "per_session"
   gpa$l3_models$models$l3_model1$execution_backend <- "afni"
@@ -332,18 +332,17 @@ test_that("validate_l3_backend_resolution rejects AFNI execution for non-3dlmer 
   execution_map <- fmri.pipeline:::get_effective_model_backends(gpa, level = 3L, model_names = "l3_model1")
   producer_map <- fmri.pipeline:::get_effective_model_backends(gpa, level = 3L, model_names = "l3_model1", type = "producer")
 
-  expect_error(
+  expect_no_error(
     fmri.pipeline:::validate_l3_backend_resolution(
       gpa = gpa,
       l3_model_names = "l3_model1",
       execution_backend_map = execution_map,
       producer_backend_map = producer_map
-    ),
-    "AFNI L3 execution currently supports only l3_input_mode='3dlmer'"
+    )
   )
 })
 
-test_that("validate_l3_backend_resolution rejects non-FSL producer backends for 3dlmer", {
+test_that("validate_l3_backend_resolution rejects unsupported producer backends for 3dlmer", {
   gpa <- create_mock_gpa(include_l1_models = TRUE, include_l2_models = TRUE, include_l3_models = TRUE)
   gpa$l3_models$models$l3_model1$l3_input_mode <- "3dlmer"
   gpa$l3_models$models$l3_model1$execution_backend <- "afni"
@@ -360,7 +359,7 @@ test_that("validate_l3_backend_resolution rejects non-FSL producer backends for 
       execution_backend_map = execution_map,
       producer_backend_map = producer_map
     ),
-    "supports only producer_backend='fsl'"
+    "supports producer_backend='fsl' or 'afni'"
   )
 })
 

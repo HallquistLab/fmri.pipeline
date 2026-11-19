@@ -92,28 +92,39 @@ default_glm_backend_specs <- function() {
     ),
     afni = list(
       name = "afni",
-      runs_l1 = FALSE,
+      runs_l1 = TRUE,
       runs_l2 = FALSE,
       runs_l3 = TRUE,
       multi_run_strategy = "concat_in_l1",
-      produced_artifacts = c("group_level_stats"),
+      produced_artifacts = c("subject_session_contrasts", "group_level_stats"),
       l3_required_artifacts = c("subject_session_contrasts"),
-      l3_input_provider_backends = c("fsl"),
-      l1_setup = "__not_implemented__",
-      l2_setup = "__not_implemented__",
-      l3_setup = "afni_3dlmer_setup",
-      l1_status = "__not_implemented__",
-      l2_status = "__not_implemented__",
-      l3_status = "get_3dlmer_status",
-      l1_status_inputs = character(0),
+      l3_input_provider_backends = c("afni"),
+      l1_setup = "afni_l1_model",
+      l2_setup = NULL,
+      l3_setup = "setup_l3_backend_afni",
+      l1_status = "get_afni_glm_status",
+      l2_status = NULL,
+      l3_status = "get_afni_l3_status",
+      l1_status_inputs = c("afni_dir"),
       l2_status_inputs = character(0),
       l3_status_inputs = c("output_file"),
       output_dir = "get_output_directory",
-      l1_run = "__not_implemented__",
-      l2_run = "__not_implemented__",
-      l3_run = "run_3dlmer_sepjobs"
+      l1_run = "run_afni_sepjobs",
+      l2_run = NULL,
+      l3_run = "run_afni_sepjobs"
     )
   )
+}
+
+# Upgrade the previous built-in AFNI placeholder in serialized pipeline objects.
+# Custom backend implementations stay intact.
+upgrade_glm_backend_specs <- function(specs) {
+  if (is.null(specs)) return(default_glm_backend_specs())
+  if (identical(specs$afni$l1_setup, "__not_implemented__") &&
+      identical(specs$afni$l3_setup, "afni_3dlmer_setup")) {
+    specs$afni <- default_glm_backend_specs()$afni
+  }
+  specs
 }
 
 backend_name <- function(backend) {
@@ -278,7 +289,7 @@ backend_l3_input_provider_backends <- function(backend) {
   bname <- backend_name(backend)
   if (bname == "fsl") return("fsl")
   if (bname == "spm") return("spm")
-  if (bname == "afni") return("fsl")
+  if (bname == "afni") return("afni")
   character(0)
 }
 
@@ -379,7 +390,7 @@ resolve_model_l3_requirements <- function(gpa, l3_model_names = NULL, execution_
   checkmate::assert_list(specs, null.ok = TRUE)
   checkmate::assert_flag(multi_run)
 
-  if (is.null(specs)) specs <- gpa$glm_backend_specs
+  if (is.null(specs)) specs <- upgrade_glm_backend_specs(gpa$glm_backend_specs)
   if (is.null(specs)) specs <- default_glm_backend_specs()
   resolved_backends <- resolve_glm_backends(specs)
 
@@ -609,7 +620,7 @@ get_l3_dependency_backends <- function(backends, multi_run = TRUE) {
 
 normalize_level_backend_config <- function(gpa, specs = NULL) {
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
-  if (is.null(specs)) specs <- gpa$glm_backend_specs
+  if (is.null(specs)) specs <- upgrade_glm_backend_specs(gpa$glm_backend_specs)
   if (is.null(specs)) specs <- default_glm_backend_specs()
 
   legacy_backends <- normalize_backend_strings(gpa$glm_software)
@@ -635,7 +646,7 @@ normalize_level_backend_config <- function(gpa, specs = NULL) {
 
 merge_level_backend_overrides <- function(gpa, level_backends = NULL, specs = NULL) {
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
-  if (is.null(specs)) specs <- gpa$glm_backend_specs
+  if (is.null(specs)) specs <- upgrade_glm_backend_specs(gpa$glm_backend_specs)
   if (is.null(specs)) specs <- default_glm_backend_specs()
 
   out <- normalize_level_backend_config(gpa, specs = specs)
@@ -712,6 +723,18 @@ validate_l3_backend_resolution <- function(gpa, l3_model_names, execution_backen
       )
     }
 
+    for (execution in execution_backends) {
+      allowed <- if (execution == "afni") c("fsl", "afni") else execution
+      if (length(producer_backends) && any(!producer_backends %in% allowed)) {
+        stop(sprintf("L3 backend '%s' supports producer_backend=%s; requested: %s",
+          execution, paste(sprintf("'%s'", allowed), collapse = " or "),
+          paste(producer_backends, collapse = ", ")), call. = FALSE)
+      }
+    }
+    if ("afni" %in% execution_backends && length(producer_backends) > 1L) {
+      stop("Each AFNI L3 model must select one producer backend.", call. = FALSE)
+    }
+
     if (identical(l3_input_mode, "3dlmer")) {
       if (length(execution_backends) == 0L || any(execution_backends != "afni")) {
         stop(
@@ -724,25 +747,7 @@ validate_l3_backend_resolution <- function(gpa, l3_model_names, execution_backen
         )
       }
 
-      if (length(producer_backends) > 0L && any(producer_backends != "fsl")) {
-        stop(
-          sprintf(
-            "L3 model '%s' uses l3_input_mode='3dlmer' and currently supports only producer_backend='fsl'. Resolved producer backend(s): %s",
-            model_name,
-            paste(producer_backends, collapse = ", ")
-          ),
-          call. = FALSE
-        )
-      }
-    } else if ("afni" %in% execution_backends) {
-      stop(
-        sprintf(
-          "L3 model '%s' resolves to execution_backend='afni' but uses l3_input_mode='%s'. AFNI L3 execution currently supports only l3_input_mode='3dlmer'.",
-          model_name,
-          l3_input_mode
-        ),
-        call. = FALSE
-      )
+
     }
   }
 
@@ -779,7 +784,11 @@ get_effective_model_backends <- function(gpa, level, model_names = NULL, type = 
       out[[model_name]] <- model_override
     } else if (isTRUE(level == 3L) && !is.null(model_spec) &&
                identical(normalize_l3_input_mode(model_spec$l3_input_mode), "3dlmer")) {
-      out[[model_name]] <- if (identical(type, "execution")) "afni" else "fsl"
+      out[[model_name]] <- if (identical(type, "execution")) "afni" else {
+        # Preserve the established FSL -> 3dLMEr default for mixed pipelines.
+        l1_backends <- merged_level_backends$l1
+        if ("fsl" %in% l1_backends) "fsl" else "afni"
+      }
     } else {
       out[[model_name]] <- default_backends
     }
@@ -803,7 +812,7 @@ get_level_backend_names <- function(gpa, level = NULL, must_exist = TRUE, specs 
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
   checkmate::assert_flag(must_exist)
   checkmate::assert_integerish(level, lower = 1L, upper = 3L, len = 1L, null.ok = TRUE)
-  if (is.null(specs)) specs <- gpa$glm_backend_specs
+  if (is.null(specs)) specs <- upgrade_glm_backend_specs(gpa$glm_backend_specs)
   if (is.null(specs)) specs <- default_glm_backend_specs()
 
   level_backends <- normalize_level_backend_config(gpa, specs = specs)
@@ -869,7 +878,7 @@ get_glm_backends <- function(gpa, must_exist = TRUE, level = NULL) {
   checkmate::assert_flag(must_exist)
   checkmate::assert_integerish(level, lower = 1L, upper = 3L, len = 1L, null.ok = TRUE)
 
-  specs <- gpa$glm_backend_specs
+  specs <- upgrade_glm_backend_specs(gpa$glm_backend_specs)
   if (is.null(specs)) specs <- default_glm_backend_specs()
   backend_names <- get_level_backend_names(gpa, level = level, must_exist = must_exist, specs = specs)
 
@@ -892,9 +901,7 @@ get_glm_backends <- function(gpa, must_exist = TRUE, level = NULL) {
 
 initialize_glm_backends <- function(gpa) {
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
-  if (is.null(gpa$glm_backend_specs)) {
-    gpa$glm_backend_specs <- default_glm_backend_specs()
-  }
+  gpa$glm_backend_specs <- upgrade_glm_backend_specs(gpa$glm_backend_specs)
   gpa$level_backends <- normalize_level_backend_config(gpa, specs = gpa$glm_backend_specs)
   gpa$glm_software <- get_level_backend_names(gpa, must_exist = FALSE, specs = gpa$glm_backend_specs)
   # Do not persist function handles in the gpa object

@@ -280,7 +280,13 @@ build_l2_models <- function(gpa, from_spec_file = NULL, regressor_cols = NULL) {
     !is.null(gpa$l3_models$models) &&
     length(gpa$l3_models$models) > 0L
 
-  if (fname == "build_l3_models" && !isTRUE(has_l2_models)) {
+  afni_direct_inputs <- FALSE
+  if (fname == "build_l3_models" && has_l3_models &&
+      identical(normalize_backend_strings(gpa$glm_software), "afni")) {
+    requirements <- resolve_model_l3_requirements(gpa)
+    afni_direct_inputs <- nrow(requirements) > 0L && all(requirements$producer_backend == "afni")
+  }
+  if (fname == "build_l3_models" && !isTRUE(has_l2_models) && !afni_direct_inputs) {
     msg <- paste0(
       "L3 models were built before any L2 models were defined. ",
       "L2/L3 signature compatibility cannot be fully validated yet; ",

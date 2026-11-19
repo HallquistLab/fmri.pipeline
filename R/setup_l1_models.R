@@ -113,7 +113,7 @@ init_l1_setup_context <- function(gpa, l1_model_names) {
     l1_model_names <- names(gpa$l1_models$models)
   }
 
-  backend_specs <- gpa$glm_backend_specs
+  backend_specs <- upgrade_glm_backend_specs(gpa$glm_backend_specs)
   if (is.null(backend_specs)) backend_specs <- default_glm_backend_specs()
   gpa$glm_backend_specs <- backend_specs
   l1_model_backend_map <- get_effective_model_backends(gpa, level = 1L, model_names = l1_model_names)
@@ -246,6 +246,23 @@ setup_l1_subject <- function(subj_df, gpa, ctx) {
     )
     if (!is.null(spm_l1_df)) {
       l1_file_setup$spm <- rbind(l1_file_setup$spm, spm_l1_df)
+    }
+    if ("afni" %in% model_ctx$model_backend_names) {
+      # BDM can retain a subset/reordering of the available runs.
+      run_idx <- match(d_obj$runs_to_output, subject_ctx$run_df$run_number)
+      if (anyNA(run_idx)) stop("AFNI BDM runs do not match subject run metadata.")
+      confounds <- subject_ctx$run_df$l1_confound_file[run_idx]
+      censor_col <- afni_glm_settings(gpa)$censor_column
+      censor_files <- NULL
+      if (censor_col %in% names(subject_ctx$rdata)) {
+        censor_files <- subject_ctx$rdata[[censor_col]][match(d_obj$runs_to_output, subject_ctx$rdata$run_number)]
+      }
+      afni_df <- ctx$glm_backends$afni$l1_setup(
+        id = subject_ctx$subj_id, session = subject_ctx$subj_session,
+        l1_confound_files = confounds, censor_files = censor_files,
+        d_obj = d_obj, gpa = gpa, model_name = this_model
+      )
+      l1_file_setup$afni <- dplyr::bind_rows(l1_file_setup$afni, afni_df)
     }
   }
 
@@ -525,7 +542,8 @@ prepare_l1_model_inputs <- function(gpa, model_name, subj_id, subj_session = NUL
 ensure_l1_output_dir <- function(gpa, subj_id, subj_session, model_name, lg) {
   l1_output_dir <- get_output_directory(
     id = subj_id, session = subj_session,
-    l1_model = model_name, gpa = gpa, what = "l1"
+    l1_model = model_name, gpa = gpa, what = "l1",
+    glm_software = get_effective_model_backends(gpa, 1L, model_name)[[model_name]][1L]
   )
   if (!dir.exists(l1_output_dir)) {
     lg$info("Creating subject output directory: %s", l1_output_dir)
@@ -1109,6 +1127,7 @@ combine_l1_subject_results <- function(all_subj_l1_list) {
   all_subj_l1_combined <- list(
     fsl = fsl_combined,
     spm = spm_combined,
+    afni = as.data.frame(dplyr::bind_rows(lapply(all_subj_l1_list, "[[", "afni"))),
     metadata = metadata_combined
   )
   class(all_subj_l1_combined) <- c("l1_setup", "list")

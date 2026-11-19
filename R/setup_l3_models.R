@@ -52,7 +52,7 @@ setup_l3_models <- function(gpa, l3_model_names = NULL, l2_model_names = NULL, l
   if (is.null(l3_model_names)) l3_model_names <- names(gpa$l3_models$models)
   if (is.null(l1_model_names)) l1_model_names <- names(gpa$l1_models$models)
 
-  backend_specs <- gpa$glm_backend_specs
+  backend_specs <- upgrade_glm_backend_specs(gpa$glm_backend_specs)
   if (is.null(backend_specs)) backend_specs <- default_glm_backend_specs()
   gpa$glm_backend_specs <- backend_specs
   l3_model_backend_map <- get_effective_model_backends(gpa, level = 3L, model_names = l3_model_names)
@@ -403,7 +403,7 @@ get_l3_backend_helper <- function(backend_name) {
     backend_name,
     fsl = setup_l3_backend_fsl,
     spm = setup_l3_backend_spm,
-    afni = afni_3dlmer_setup,
+    afni = setup_l3_backend_afni,
     NULL
   )
 }
@@ -629,10 +629,10 @@ afni_3dlmer_setup <- function(gpa, backend, lg, l1_model_names, l2_model_names, 
   producer_backend_map <- get_effective_model_backends(gpa, level = 3L, model_names = l3_model_names, type = "producer")
   for (l3_name in l3_model_names) {
     provider_backends <- normalize_backend_strings(producer_backend_map[[l3_name]])
-    if (length(provider_backends) > 0L && any(provider_backends != "fsl")) {
+    if (length(provider_backends) > 0L && any(!provider_backends %in% c("fsl", "afni"))) {
       stop(
         sprintf(
-          "AFNI 3dLMEr currently supports only FSL as an upstream producer backend. Model '%s' requested: %s",
+          "AFNI 3dLMEr currently supports FSL and AFNI upstream producer backends. Model '%s' requested: %s",
           l3_name, paste(provider_backends, collapse = ", ")
         ),
         call. = FALSE
@@ -765,7 +765,7 @@ afni_3dlmer_setup <- function(gpa, backend, lg, l1_model_names, l2_model_names, 
       mask_file <- resolve_3dlmer_mask(
         target_dir = target_dir,
         harvested_inputs = dt,
-        explicit_mask = l3_obj$lmer_mask %||% gpa$mask_file,
+        explicit_mask = l3_obj$lmer_mask %||% gpa$glm_settings$afni$mask %||% gpa$mask_file,
         requires_l2 = requires_l2,
         lg = lg
       )
