@@ -10,7 +10,8 @@ pathways in `fmri.pipeline`, highlights specific statistical and
 computational considerations for FSL users, and shows when a hybrid
 **FSL L1/L2 + AFNI `3dLMEr` L3** workflow is preferable.
 
-The package now supports two practically important longitudinal routes:
+The worked examples below start with FSL run-level fits and compare two
+group analyses:
 
 - FSL-native longitudinal analysis, where session-level maps are modeled
   at Level 3 with subject explanatory variables
@@ -19,19 +20,22 @@ The package now supports two practically important longitudinal routes:
   and AFNI `3dLMEr` fits the longitudinal mixed-effects model at Level 3
   (`l3_input_mode = "3dlmer"`).
 
-This distinction matters. AFNI’s current `3dLMEr` documentation
-describes it as the more flexible successor to `3dLME`, especially for
-complex random-effects structures. In `fmri.pipeline`, however, `3dLMEr`
-is used as a **session-level longitudinal modeler** on top of
-FSL-derived L2 inputs rather than as a single end-to-end replacement for
-all lower-level FSL estimation.
+A third route fits both stages in AFNI. AFNI L1 estimates a shared task
+effect across the retained runs of each participant and visit. Those
+visit-specific contrast images feed `3dLMEr` directly. Choose
+`glm_software = "afni"`, skip the L2 model, and use
+`execution_backend: afni` and `producer_backend: afni` on the mixed
+model. SPM can also preserve one first-level design per visit for native
+SPM group analyses. See [Choosing a GLM
+engine](https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.md)
+for both workflows.
 
 ### Recommended Defaults at a Glance
 
 For most longitudinal studies, the practical decision is:
 
-- **Separate Sessions:** Use `l2_scope = "id_session"` rather than
-  pooling all runs for a subject across visits.
+- **Separate Sessions in FSL:** Use `l2_scope = "id_session"` rather
+  than pooling all runs for a subject across visits.
 - **FSL Categorical Comparison:** Use
   `l3_input_mode = "pooled_sessions_subject_ev"` when the visit
   structure is balanced and the main goal is an FSL-native categorical
@@ -378,7 +382,7 @@ l3_models:
     fsl_outlier_deweighting: false
 ```
 
-For AFNI `3dLMEr`, keep FSL as the L1/L2 producer and use AFNI only for
+For the hybrid example, keep FSL as the L1/L2 producer and use AFNI for
 the L3 model:
 
 ``` yaml
@@ -445,9 +449,11 @@ gpa <- setup_glm_pipeline(
   subject_data = subject_data,
   run_data = run_data,
   trial_data = trial_data,
-  glm_software = c("fsl", "afni"),  # use "fsl" only for the FSL-native route
+  glm_software = c("fsl", "afni"),
+  l1_models = NULL, l2_models = NULL, l3_models = NULL,
   n_expected_runs = 2L
 )
+gpa$level_backends <- list(l1 = "fsl", l2 = "fsl", l3 = "afni")
 
 gpa <- build_l1_models(gpa, from_spec_file = "l1_models.yaml")
 gpa <- build_l2_models(gpa, from_spec_file = "l2_models.yaml")
@@ -461,10 +467,10 @@ run_glm_pipeline(
 )
 ```
 
-For a FSL-native L3 model, set `glm_software = "fsl"` and pass the FSL
-L3 model name, for example `l3_model_names = "visit_effect_fsl"`. For an
-AFNI `3dLMEr` model, the L1 and L2 stages still run through FSL; AFNI
-begins only after the FSL L2 subject-session COPEs exist.
+For the FSL-native route, set `glm_software = "fsl"` at setup, omit the
+per-level assignment, and select `l3_model_names = "visit_effect_fsl"`.
+In the hybrid example above, AFNI begins after the FSL L2
+subject-session COPEs exist.
 
 For a setup preview or debugging session, run the setup functions
 explicitly and inspect the generated setup tables. In this explicit
@@ -520,7 +526,7 @@ For `l3_input_mode = "pooled_sessions_subject_ev"`, FSL L3 writes pooled
 multi-session FEAT setup and output under `feat_l3/`, with the L1/L2/L3
 model names and contrast names embedded in the path.
 
-For `l3_input_mode = "3dlmer"`, setup writes one AFNI directory per
+For the hybrid `3dlmer` model above, setup writes one AFNI directory per
 L1/L2 contrast:
 
 ``` text
@@ -838,9 +844,9 @@ from raw L1 outputs.
 
 #### Package-specific implementation details
 
-- `3dlmer` is only compatible with `l2_scope = "id_session"`.
-- The AFNI backend currently consumes **FSL-produced subject-session
-  contrasts** at L3.
+- When FSL supplies the multi-run inputs, use `l2_scope = "id_session"`
+  to produce one contrast per visit. With AFNI inputs, each L1 contrast
+  already represents a subject-session.
 - Numeric predictors in the refit L3 model are automatically written
   under AFNI’s `-qVars`.
 - Random effects are specified with `random_effects`, then appended to

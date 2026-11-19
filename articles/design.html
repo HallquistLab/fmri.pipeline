@@ -29,17 +29,7 @@
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
 <li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
-<li class="active nav-item dropdown">
-  <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="../articles/design.html">fmri.pipeline overview and design</a></li>
-    <li><a class="dropdown-item" href="../articles/diagnosis.html">Diagnosing a run of fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/quickstart.html">fmri.pipeline quick start guide</a></li>
-  </ul>
-</li>
+<li class="active nav-item"><a class="nav-link" href="../articles/index.html">Articles</a></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul>
 <ul class="navbar-nav">
@@ -276,10 +266,8 @@ the model objects is a bit unintuitive. That said, you can specify the
 models in advance (before <code>setup_glm_pipeline</code>) or you can
 call <code>build_l1_models</code>, <code>build_l2_models</code>, or
 <code>build_l3_models</code> after <code>setup_glm_pipeline</code>.</p>
-<p>A major asset of using <code>fmri.pipeline</code> is that it handles
-model estimation for any combination of models across levels. The
-pipeline is built to fit all combination of level 1, level 2, and level
-3 models for a given dataset.</p>
+<p>For a multi-run FSL analysis, the pipeline can fit every compatible
+combination of L1, L2, and L3 models.</p>
 <p>For example, consider a scenario where one level 1 model includes a
 parametric modulator for working memory load, while another model only
 includes onsets for the encoding and retrieval phases of the task.
@@ -295,193 +283,56 @@ outputs for each.</p>
 <div class="section level3">
 <h3 id="choosing-model-backends">Choosing model backends<a class="anchor" aria-label="anchor" href="#choosing-model-backends"></a>
 </h3>
-<p><code>fmri.pipeline</code> now supports backend selection at multiple
-levels of specificity. The simplest workflow is still to choose one
-software package globally:</p>
+<p>Choose <code>glm_software</code> when calling
+<code><a href="../reference/setup_glm_pipeline.html">setup_glm_pipeline()</a></code>. A single engine supplies defaults for
+all levels it implements. Multiple engines can run at the same level.
+For example, to use FSL at L1 and L2 and select between FSL and AFNI
+group fits, configure <code>glm_software = c("fsl", "afni")</code> at
+setup and then set:</p>
 <div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">glm_software</span> <span class="op">&lt;-</span> <span class="st">"fsl"</span></span></code></pre></div>
-<p>This means “use FSL everywhere unless something more specific
-overrides it.”</p>
-<p>For more complex workflows, users can override backend choice at
-three additional levels:</p>
-<ul>
-<li>Per level of analysis using <code>gpa$level_backends</code>
-</li>
-<li>Per model using <code>execution_backend</code>
-</li>
-<li>At run time using arguments to <code><a href="../reference/run_glm_pipeline.html">run_glm_pipeline()</a></code>
-</li>
-</ul>
-<p>The intended precedence order is:</p>
+<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">level_backends</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l1 <span class="op">=</span> <span class="st">"fsl"</span>, l2 <span class="op">=</span> <span class="st">"fsl"</span>, l3 <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"fsl"</span>, <span class="st">"afni"</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
+<p>For ordinary models, execution settings take precedence in this
+order, highest first:</p>
 <ol style="list-style-type: decimal">
-<li>Run-time model override</li>
-<li>Model-specific backend field</li>
-<li>Run-time level override</li>
-<li><code>gpa$level_backends</code></li>
-<li><code>gpa$glm_software</code></li>
+<li>A model named in
+<code>run_glm_pipeline(backend_overrides = ...)</code>.</li>
+<li>The model’s <code>execution_backend</code> in its YAML specification
+or model object.</li>
+<li>A level named in
+<code>run_glm_pipeline(level_backends = ...)</code>.</li>
+<li>The corresponding entry in <code>gpa$level_backends</code>.</li>
+<li>The global <code>glm_software</code> default (initially
+<code>"fsl"</code>).</li>
 </ol>
-<p>In other words, broad defaults are allowed, but more specific
-settings win.</p>
-<div class="section level4">
-<h4 id="global-default">Global default<a class="anchor" aria-label="anchor" href="#global-default"></a>
-</h4>
-<p>If you want one backend for all model setup and estimation, continue
-using <code>gpa$glm_software</code>:</p>
+<p>Passing <code>glm_software</code> to
+<strong>run_glm_pipeline()</strong> resets the level defaults for that
+call. Use <code>level_backends</code> to change just one level. For an
+individual L3 model, <code>execution_backend</code> selects the
+estimator and <code>producer_backend</code> selects the source of the
+contrast images. For example, to run a group model named
+<code>group_mean</code> in AFNI using FSL estimates for this
+submission:</p>
 <div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">glm_software</span> <span class="op">&lt;-</span> <span class="st">"fsl"</span></span></code></pre></div>
-<p>This remains the easiest option and is fully backward compatible.</p>
-</div>
-<div class="section level4">
-<h4 id="per-level-overrides">Per-level overrides<a class="anchor" aria-label="anchor" href="#per-level-overrides"></a>
-</h4>
-<p>If you want different software at different levels, use
-<code>gpa$level_backends</code>:</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">glm_software</span> <span class="op">&lt;-</span> <span class="st">"fsl"</span></span>
-<span><span class="va">gpa</span><span class="op">$</span><span class="va">level_backends</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span></span>
-<span>  l1 <span class="op">=</span> <span class="st">"fsl"</span>,</span>
-<span>  l2 <span class="op">=</span> <span class="st">"fsl"</span>,</span>
-<span>  l3 <span class="op">=</span> <span class="st">"afni"</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-<p>This says:</p>
-<ul>
-<li>Level 1 setup and execution should use FSL</li>
-<li>Level 2 setup and execution should use FSL</li>
-<li>Level 3 setup and execution should use AFNI</li>
-</ul>
-<p>This is the most useful configuration for longitudinal
-<code>3dLMEr</code> analyses at present.</p>
-</div>
-<div class="section level4">
-<h4 id="per-model-overrides">Per-model overrides<a class="anchor" aria-label="anchor" href="#per-model-overrides"></a>
-</h4>
-<p>If only some models should use a different backend, set a backend
-field on the model specification itself.</p>
-<p>For any model level, <code>execution_backend</code> controls where
-that model is estimated:</p>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_models</span><span class="op">$</span><span class="va">models</span><span class="op">$</span><span class="va">longitudinal_main</span><span class="op">$</span><span class="va">execution_backend</span> <span class="op">&lt;-</span> <span class="st">"afni"</span></span></code></pre></div>
-<p>For Level 3 models that consume lower-level inputs, a separate
-<code>producer_backend</code> field can be used to indicate which
-upstream backend should provide those inputs:</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_models</span><span class="op">$</span><span class="va">models</span><span class="op">$</span><span class="va">longitudinal_main</span><span class="op">$</span><span class="va">execution_backend</span> <span class="op">&lt;-</span> <span class="st">"afni"</span></span>
-<span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_models</span><span class="op">$</span><span class="va">models</span><span class="op">$</span><span class="va">longitudinal_main</span><span class="op">$</span><span class="va">producer_backend</span> <span class="op">&lt;-</span> <span class="st">"fsl"</span></span></code></pre></div>
-<p>The distinction matters because the backend that estimates a model is
-not always the same as the backend that produces the inputs it needs.
-For example, an AFNI <code>3dLMEr</code> model may currently be
-estimated by AFNI while consuming lower-level contrast images produced
-by FSL.</p>
-<p>Model-level backend fields can also be included in YAML model
-specifications:</p>
-<ul>
-<li>
-<code>execution_backend</code> for L1, L2, or L3 models</li>
-<li>
-<code>producer_backend</code> for L3 models</li>
-</ul>
-</div>
-<div class="section level4">
-<h4 id="run-time-overrides">Run-time overrides<a class="anchor" aria-label="anchor" href="#run-time-overrides"></a>
-</h4>
-<p>If you want to override backend selection without changing the saved
-<code>gpa</code> object, pass overrides directly to
-<code><a href="../reference/run_glm_pipeline.html">run_glm_pipeline()</a></code>:</p>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/run_glm_pipeline.html">run_glm_pipeline</a></span><span class="op">(</span></span>
-<span>  <span class="va">gpa</span>,</span>
-<span>  l3_model_names <span class="op">=</span> <span class="st">"longitudinal_main"</span>,</span>
-<span>  level_backends <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l3 <span class="op">=</span> <span class="st">"afni"</span><span class="op">)</span></span>
+<span>  <span class="va">gpa</span>, l1_model_names <span class="op">=</span> <span class="st">"task"</span>, l2_model_names <span class="op">=</span> <span class="st">"run_average"</span>,</span>
+<span>  l3_model_names <span class="op">=</span> <span class="st">"group_mean"</span>,</span>
+<span>  backend_overrides <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l3 <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span></span>
+<span>    execution <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span>group_mean <span class="op">=</span> <span class="st">"afni"</span><span class="op">)</span>,</span>
+<span>    producer <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span>group_mean <span class="op">=</span> <span class="st">"fsl"</span><span class="op">)</span></span>
+<span>  <span class="op">)</span><span class="op">)</span></span>
 <span><span class="op">)</span></span></code></pre></div>
-<p>For model-specific run-time overrides, use
-<code>backend_overrides</code>:</p>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="../reference/run_glm_pipeline.html">run_glm_pipeline</a></span><span class="op">(</span></span>
-<span>  <span class="va">gpa</span>,</span>
-<span>  l3_model_names <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"longitudinal_main"</span>, <span class="st">"cross_sectional_main"</span><span class="op">)</span>,</span>
-<span>  backend_overrides <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span></span>
-<span>    l3 <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span>longitudinal_main <span class="op">=</span> <span class="st">"afni"</span>, cross_sectional_main <span class="op">=</span> <span class="st">"fsl"</span><span class="op">)</span></span>
-<span>  <span class="op">)</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-<p>This is useful when you want to try a different backend for a subset
-of models without permanently modifying the model specification.</p>
-</div>
-<div class="section level4">
-<h4 id="how-backend-resolution-works-in-practice">How backend resolution works in practice<a class="anchor" aria-label="anchor" href="#how-backend-resolution-works-in-practice"></a>
-</h4>
-<p>The current behavior is intentionally flexible but conservative:</p>
-<ul>
-<li>If you only set <code>gpa$glm_software</code>, that backend is used
-as the default everywhere.</li>
-<li>If you also set <code>gpa$level_backends</code>, those values
-override the global default for the specified levels.</li>
-<li>If a model has <code>execution_backend</code>, that model uses that
-backend even if the level default is different.</li>
-<li>If <code><a href="../reference/run_glm_pipeline.html">run_glm_pipeline()</a></code> receives
-<code>level_backends</code> or <code>backend_overrides</code>, those
-run-time values override the object.</li>
-</ul>
-<p>This allows workflows such as:</p>
-<ul>
-<li>Mostly-FSL analyses with one AFNI <code>3dLMEr</code> Level 3
-model</li>
-<li>SPM Level 1 with AFNI Level 3 for selected longitudinal models</li>
-<li>Temporary run-time backend experiments without rewriting saved model
-objects</li>
-</ul>
-</div>
-<div class="section level4">
-<h4 id="how-backends-declare-artifacts-and-dependencies">How backends declare artifacts and dependencies<a class="anchor" aria-label="anchor" href="#how-backends-declare-artifacts-and-dependencies"></a>
-</h4>
-<p>Under the hood, the backend system is organized around
-<strong>artifacts</strong> and <strong>producer requirements</strong>.
-Each backend declares which artifacts it produces (e.g.,
-<code>cope</code>, <code>varcope</code>, <code>dof</code>) and at which
-analysis levels it operates. When a Level 3 backend needs lower-level
-inputs—such as an AFNI <code>3dLMEr</code> model consuming FSL-derived
-COPEs—it declares the required artifacts via its specification. The
-pipeline resolves these requirements at submission time by matching each
-L3 backend’s declared needs against the artifacts produced by the
-upstream (producer) backend. This resolution step is what makes the
-<code>producer_backend</code> field meaningful: it tells the pipeline
-which earlier backend’s outputs to harvest.</p>
-<p>The pipeline also logs a <strong>preflight report</strong> at
-submission time that shows, for every analysis level, which backends
-will execute, which will produce inputs for downstream levels, and
-whether all artifact requirements are satisfied. If you see unexpected
-“unsupported producer” errors, the preflight report (visible in the
-pipeline log at <code>info</code> level) is the first place to look.</p>
-</div>
-<div class="section level4">
-<h4 id="current-limitations">Current limitations<a class="anchor" aria-label="anchor" href="#current-limitations"></a>
-</h4>
-<p>The backend-selection interface is more general than the currently
-implemented producer backends.</p>
-<p>At present:</p>
-<ul>
-<li>FSL supports distinct Level 1, Level 2, and Level 3 execution</li>
-<li>SPM concatenates runs/sessions at Level 1 and does not run a
-standalone Level 2 estimation step</li>
-<li>AFNI <code>3dLMEr</code> is supported as a Level 3 execution
-backend</li>
-<li>
-<code>producer_backend</code> for Level 3 models is currently
-implemented only for <code>fsl</code>
-</li>
-</ul>
-<p>So, while you can now declare producer backends explicitly, only FSL
-is presently supported as the upstream producer for Level 3 input
-harvesting. If a different producer backend is requested for Level 3
-inputs, <code>fmri.pipeline</code> will stop with an explicit error
-rather than silently guessing.</p>
-<p>For longitudinal AFNI analyses, the recommended current pattern
-is:</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">glm_software</span> <span class="op">&lt;-</span> <span class="st">"fsl"</span></span>
-<span><span class="va">gpa</span><span class="op">$</span><span class="va">level_backends</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l3 <span class="op">=</span> <span class="st">"afni"</span><span class="op">)</span></span>
-<span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_models</span><span class="op">$</span><span class="va">models</span><span class="op">$</span><span class="va">longitudinal_main</span><span class="op">$</span><span class="va">execution_backend</span> <span class="op">&lt;-</span> <span class="st">"afni"</span></span>
-<span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_models</span><span class="op">$</span><span class="va">models</span><span class="op">$</span><span class="va">longitudinal_main</span><span class="op">$</span><span class="va">producer_backend</span> <span class="op">&lt;-</span> <span class="st">"fsl"</span></span></code></pre></div>
-</div>
+<p>An ordinary group model defaults to inputs from its own engine. For
+native SPM, leave <code>producer_backend</code> unset so SPM can match
+its L1 contrasts by name. AFNI accepts either AFNI or FSL inputs. The
+longitudinal mode <code>3dlmer</code> selects AFNI execution
+automatically and defaults to FSL inputs when FSL is configured at L1,
+otherwise to AFNI inputs. Set both fields explicitly when the origin of
+a mixed model’s maps matters.</p>
+<p>The submission log’s backend preflight report identifies the
+execution engine for each selected model and the producer and level
+supplying the group inputs. See <a href="glm-engines.html">Choosing a
+GLM engine</a> for the models, native files, and statistical
+implications of each route.</p>
 </div>
 </div>
 <div class="section level2">
@@ -509,23 +360,12 @@ includes the L1 model, L1 contrast, and L2 model in the path:</p>
 <code>feat_l2/sub-123/ses-1/L1m-basic/l1c-01_EV_face/L2m-runavg.fsf</code>
 and
 <code>feat_l2/sub-123/ses-1/L1m-basic/l1c-01_EV_face/L2m-runavg.gfeat</code>.</p>
-<p>TODO: Create a helper function like
-<code>gpa &lt;- setup_output_locations(gpa)</code> that conducts a
-simple walkthrough like <code>build_l1_models</code>.</p>
-<p>Here is a description of the fields in this list:</p>
-<ul>
-<li>feat_sub_directory: The location of FEAT outputs for a single
-subject [Is this a good idea if the user can provide anything for
-feat_l1?]</li>
-<li>feat_ses_directory: The location of FEAT outputs for a single
-session (of one subject)</li>
-<li>feat_l2_directory: The location of FEAT outputs for level 2
-(subject-level) analyses. Defaults to a <code>feat_l2</code> folder and
-includes <code>{l1_model}</code>, <code>{l1_cope_label}</code>, and
-<code>{l2_model}</code> to avoid collisions across model and contrast
-combinations.</li>
-</ul>
-<p>[Use of glue etc.]</p>
+<p>For SPM and AFNI, the corresponding first-level templates are
+<code>spm_l1_directory</code> and <code>afni_l1_directory</code>. Group
+models use <code>spm_l3_directory</code>, <code>afni_l3_directory</code>
+(ordinary GLM), or <code>afni_3dlmer_directory</code> (longitudinal
+mixed model). To inspect the actual path for a particular fit, use its
+setup table described below.</p>
 </div>
 <div class="section level2">
 <h2 id="overview-of-glm-levels-used-in-fmri-analysis">Overview of GLM levels used in fMRI analysis<a class="anchor" aria-label="anchor" href="#overview-of-glm-levels-used-in-fmri-analysis"></a>
@@ -553,14 +393,8 @@ subject, and sample levels. Ideally, such an approach should propagate
 uncertainty estimates (usually, standard errors) from one level of the
 model to the next. This is analogous to meta-analyses where pooled
 estimates of an effect (e.g., the mean effect size for a
-cognitive-behavioral therapy) are weighted (inversely) by the standard
-error from each individual study.</p>
-<p>At present (July 2021), <code>fmri.pipeline</code> is designed with a
-general structure to support GLM analyses using any software, including
-AFNI, FSL, SPM, and R. However, the machinery is built out for FSL FEAT,
-which I think has some of the best features in terms of parameter
-estimation (e.g., Tukey tapering for prewhitening and Bayesian
-incorporation of lower-level standard errors in group analyses).</p>
+cognitive-behavioral therapy) are weighted by the inverse variance from
+each individual study.</p>
 <p>FSL adopts the approach of analyzing each run of fMRI data in a
 separate GLM model. This is called a ‘first-level’ analysis (aka Level
 1) and, fundamentally, is a time series analysis in which design
@@ -568,9 +402,9 @@ regressors are convolved with a hemodynamic response function (HRF) and
 associations between these regressors and the BOLD are estimated for
 each voxel. If a subject has multiple runs of the same task, these are
 integrated by combining parameter estimates using a fixed-effects
-weighted (by standard errors) estimation approach. This yields a
-voxelwise estimate for each level 1 regressor (e.g., occurrence of a
-stimulus type) that can be carried forward for group analysis.</p>
+approach weighted by inverse variance. This yields a voxelwise estimate
+for each level 1 regressor (e.g., occurrence of a stimulus type) that
+can be carried forward for group analysis.</p>
 <p>The combination of runs for a single subject is called a
 ‘second-level’ (aka Level 2) analysis. In addition to simply averaging
 first-level regressors, level 2 analyses can incorporate between-run
@@ -589,25 +423,11 @@ estimates for each contrast estimated at level 1. If there are no
 between-run predictors of interest, the intercept-only model is
 sufficient to prepare the data for ‘third-level’ (aka Level 3) analysis,
 which estimates effects in the overall sample.</p>
-<p>For comparison, some software packages (e.g., AFNI), concatenate all
-runs together and include run-specific baseline regressors to control
-for intensity and drift differences from one run to the next. In a
-concatenated approach, there are only two levels: a subject-level
-analysis and a sample-level analysis. Throughout fmri.pipeline, we adopt
-the nomenclature of a three-level perspective on fMRI data.</p>
-<p>To sum up:</p>
-<ul>
-<li>Level 1 is a <em>run-level</em> analysis of the BOLD time series.
-The design matrix typically includes convolved regressors that represent
-task-related events. Parameters are estimated for each run
-separately.</li>
-<li>Level 2 is a <em>subject-level</em> analysis that integrates Level 1
-effects across all runs. Level 2 design matrices can also include
-regressors that capture between-run manipulations or covariates.</li>
-<li>Level 3 is a <em>sample-level</em> analysis that estimates effects
-across all subjects. The design matrix includes between-subjects
-predictors (e.g., Age or trait anxiety) of task-related activation.</li>
-</ul>
+<p>AFNI estimates shared task effects across runs with separate run
+baselines. SPM’s default gives each run a separate set of columns in the
+first-level design and combines their effects through contrasts. Both
+engines produce inputs for the group model at L1. The pipeline calls
+that group model L3 even when there is no intervening L2 job.</p>
 <div class="section level3">
 <h3 id="distinction-between-two-level-and-three-level-analyses">Distinction between two-level and three-level analyses<a class="anchor" aria-label="anchor" href="#distinction-between-two-level-and-three-level-analyses"></a>
 </h3>
@@ -624,8 +444,8 @@ for consistency, I have adopted a fixed nomenclature: level 1 is for
 runs, level 2 is for combining runs within subject, and level 3 is for
 sample analysis. For single-run analyses, the user simply skips the
 level 2 model specification step.</p>
-<p>For multi-run data, the user will specify level 1, level 2, and level
-3 models.</p>
+<p>For multi-run FSL data, specify L1, L2, and L3 models. For native
+AFNI or SPM group analyses, select L1 and L3.</p>
 </div>
 </div>
 <div class="section level2">
@@ -720,16 +540,6 @@ evaluated and added to the confounds:</p>
 </div>
 </div>
 <div class="section level2">
-<h2 id="overview-of-gpa-structure">Overview of GPA structure<a class="anchor" aria-label="anchor" href="#overview-of-gpa-structure"></a>
-</h2>
-</div>
-<div class="section level2">
-<h2 id="providing-file-inputs-to-fmri-pipeline">Providing file inputs to fmri.pipeline<a class="anchor" aria-label="anchor" href="#providing-file-inputs-to-fmri-pipeline"></a>
-</h2>
-<p>TODO: Cover the direct <code>$run_data</code> approach versus the
-regex approach.</p>
-</div>
-<div class="section level2">
 <h2 id="output-structure-for-feat-group-analysis">Output structure for FEAT group analysis<a class="anchor" aria-label="anchor" href="#output-structure-for-feat-group-analysis"></a>
 </h2>
 <p>The folder and file naming scheme for FEAT group analysis outputs is
@@ -751,28 +561,54 @@ this:</p>
 <code>abspe</code>.</p>
 <p>If you have a single-run analysis, you will not have a level 2 model,
 so that part of the naming scheme will be omitted.</p>
+</div>
+<div class="section level2">
+<h2 id="inspecting-first-level-setup">Inspecting first-level setup<a class="anchor" aria-label="anchor" href="#inspecting-first-level-setup"></a>
+</h2>
+<p>After <code>gpa &lt;- setup_l1_models(gpa)</code>,
+<code>gpa$l1_model_setup$metadata</code> records run inputs, volume
+counts, confounds, and exclusions. The engine tables describe the fits
+prepared from those runs.</p>
+<table class="table">
+<colgroup>
+<col width="33%">
+<col width="33%">
+<col width="33%">
+</colgroup>
+<thead><tr class="header">
+<th>Setup table</th>
+<th>What one row represents</th>
+<th>Where to find the fit</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td><code>gpa$l1_model_setup$fsl</code></td>
+<td>One run for one L1 model</td>
+<td>
+<code>feat_fsf</code> points to the FEAT specification and
+<code>feat_dir</code> to the fit.</td>
+</tr>
+<tr class="even">
+<td><code>gpa$l1_model_setup$afni</code></td>
+<td>One participant and visit for one L1 model</td>
+<td>
+<code>afni_script</code> points to the generated command and
+<code>afni_dir</code> to the design and contrast maps.</td>
+</tr>
+<tr class="odd">
+<td><code>gpa$l1_model_setup$spm</code></td>
+<td>One participant and visit for one L1 model by default, or one
+participant when visits are pooled</td>
+<td>
+<code>spm_dir</code> holds the first-level analysis.
+<code>n_runs</code> and <code>source_run_numbers</code> identify the
+contributing runs.</td>
+</tr>
+</tbody>
+</table>
 <div class="section level3">
-<h3 id="l1_model_setup">l1_model_setup<a class="anchor" aria-label="anchor" href="#l1_model_setup"></a>
+<h3 id="run-metadata">Run metadata<a class="anchor" aria-label="anchor" href="#run-metadata"></a>
 </h3>
-<p>After running setup_l1_models, the gpa object will now have a new
-element called $l1_model_setup. This contains the following
-sub-elements:</p>
-<ul>
-<li>
-<code>metadata</code>: A data.frame containing information about the
-imaging file inputs and confounds for level 1 analysis.</li>
-<li>
-<code>fsl</code>: A data.frame with one row for every run that is
-analyzed with a given level 1 model using FSL. This will usually be
-something like n_l1_models x n_runs in length.</li>
-<li>
-<code>spm</code>: Not implemented yet</li>
-<li>
-<code>afni</code>: Not implemented yet</li>
-</ul>
-<div class="section level4">
-<h4 id="metadata">metadata<a class="anchor" aria-label="anchor" href="#metadata"></a>
-</h4>
 <p>The structure of this data.frame is:</p>
 <ul>
 <li>
@@ -812,82 +648,64 @@ higher-level analysis</li>
 </ul>
 </div>
 </div>
-</div>
 <div class="section level2">
-<h2 id="parallel-compute-settings">parallel compute settings<a class="anchor" aria-label="anchor" href="#parallel-compute-settings"></a>
+<h2 id="scheduler-resources-by-engine">Scheduler resources by engine<a class="anchor" aria-label="anchor" href="#scheduler-resources-by-engine"></a>
 </h2>
-<p>The pipeline uses parallel processing at various points to reduce the
-total time needed to complete all analyses. That said, the steps vary in
-the number of total jobs that are required. For example, in FSL, a
-single run of data is analyzed by a single FEAT job. Thus, if you have
-100 subjects who have 5 runs and are analyzed using 4 different level 1
-models, you have 100<em>5</em>4 = 2000 jobs that need to be completed.
-By comparison, the number of level 3 analyses is much smaller since you
-have only a few jobs for each group model of interest.</p>
-<p>There are two ways to parallelize computation: 1. use multiple cores
-within a single compute job, and 2. distribute computations to a set of
-independent jobs on the scheduler. These are not mutually exclusive
-approaches. For example, if you have 1000 models that you need to
-estimate with Markov Chain Monte Carlo (MCMC) sampling, the number of
-samples can be increased for a single model by having multiple chains
-for each model, and each chain can be parked on a separate core on a
-single computer. So, if I use 4 cores per model to increase my samples,
-but I have 1000 models to run, I would likely submit 1000 jobs to the
-HPC scheduler (using sbatch on SLURM or qsub on TORQUE), and each job
-would request 4 compute cores. My additional details about these
-considerations are here: <a href="https://psu-psychology.github.io/r-bootcamp-2018/talks/parallel_r.html" class="external-link uri">https://psu-psychology.github.io/r-bootcamp-2018/talks/parallel_r.html</a>.</p>
-<p>In order to accommodate these different parallelization needs and to
-handle differences in compute times and wait times across
-high-performance cluster environments, the
-<code>$parallel_settings</code> field of the <code>$gpa</code> object
-allows the user to specify how much time and how many cores are needed
-for each step of the pipeline. There are defaults (noted below), but you
-are encouraged to adjust these values if you find your models are taking
-much longer or shorter to run.</p>
-<div class="section level3">
-<h3 id="compute-time-settings">Compute time settings<a class="anchor" aria-label="anchor" href="#compute-time-settings"></a>
-</h3>
-<p>These settings control how much time is requested on the scheduler
-for a given step. These are all elements within the
-<code>gpa$parallel</code> structure.</p>
-<div class="section level4">
-<h4 id="fsl">FSL<a class="anchor" aria-label="anchor" href="#fsl"></a>
-</h4>
-<ul>
-<li><p><code>$fsl$l1_feat_time</code>: The compute time requested for a
-FEAT level 1 analysis of one run. Default: 10 hours</p></li>
-<li><p><code>$fsl$l2_feat_time</code>: The compute time requested for a
-FEAT level 2 analysis of one subject. Default: 2 hours</p></li>
-<li><p><code>$fsl$l3_feat_time</code>: The compute time requested for a
-FEAT level 3 analysis of one group model. Default: 24 hours</p></li>
-<li><p><code>$fsl$l1_feat_alljobs_time</code>: The total time requested
-for the scheduler to run all level 1 FEAT jobs. Default: 72
-hours</p></li>
-<li><p><code>$fsl$l2_setup_run_time</code>: The total time for all FEAT
-level 2 jobs to be setup and run. Default: 14 hours</p></li>
-<li><p><code>$fsl$l3_setup_run_time</code>: The total time for all FEAT
-level 3 jobs to be setup and run. Default: 80 hours</p></li>
-</ul>
-</div>
-</div>
-<div class="section level3">
-<h3 id="memory-settings">Memory settings<a class="anchor" aria-label="anchor" href="#memory-settings"></a>
-</h3>
-<ul>
-<li>
-<code>$fsl$l1_feat_memgb</code>: The number of gigabytes of memory
-requested for each</li>
-</ul>
-<p>```</p>
-</div>
-<div class="section level3">
-<h3 id="self-notes">SELF NOTES<a class="anchor" aria-label="anchor" href="#self-notes"></a>
-</h3>
-<ol style="list-style-type: decimal">
-<li>Finalize pipeline configuration now enforces that l1, l2, and l3
-models are in place. This is necessary to handle run truncation.</li>
-</ol>
-</div>
+<p>With 100 participants, one visit, five retained runs, and four L1
+models, FSL prepares 2,000 run fits. AFNI and the default SPM
+configuration each prepare 400 participant-visit fits. The number of
+scheduler jobs can differ from the number of fits because a job can
+process several fits.</p>
+<p>Set the resource request in the engine’s list under
+<code>gpa$parallel</code>. These are the settings for an individual fit
+or worker job:</p>
+<table class="table">
+<colgroup>
+<col width="33%">
+<col width="33%">
+<col width="33%">
+</colgroup>
+<thead><tr class="header">
+<th>Engine settings</th>
+<th>L1 wall time and memory</th>
+<th>Group wall time and memory</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td><code>gpa$parallel$fsl</code></td>
+<td>
+<code>l1_feat_time</code>, <code>l1_feat_memgb</code>
+</td>
+<td>
+<code>l3_feat_time</code>, <code>l3_feat_memgb</code>
+</td>
+</tr>
+<tr class="even">
+<td><code>gpa$parallel$afni</code></td>
+<td>
+<code>l1_glm_time</code>, <code>l1_glm_memgb</code>
+</td>
+<td>
+<code>l3_glm_time</code>, <code>l3_glm_memgb</code> for ordinary
+GLMs. Use <code>l3_lmer_time</code>, <code>l3_lmer_memgb</code> for
+mixed models.</td>
+</tr>
+<tr class="odd">
+<td><code>gpa$parallel$spm</code></td>
+<td>
+<code>l1_spm_time</code>, <code>l1_spm_memgb</code>
+</td>
+<td>
+<code>l3_spm_time</code>, <code>l3_spm_memgb</code>
+</td>
+</tr>
+</tbody>
+</table>
+<p>For multi-run FSL, <code>gpa$parallel$fsl$l2_feat_time</code>
+controls the L2 fit. The enclosing pipeline stage has its own wall time
+in <code>gpa$parallel$l2_setup_run_time</code>. Use
+<code>parallel$compute_environment</code> for shell commands that make R
+and the selected suite available to scheduled jobs.</p>
 </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside>

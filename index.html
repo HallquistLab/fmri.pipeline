@@ -4,14 +4,14 @@
 <meta charset="UTF-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-<title>Analysis of fMRI Data on HPC clusters • fmri.pipeline</title>
+<title>Hierarchical fMRI GLMs with FSL, AFNI, and SPM • fmri.pipeline</title>
 <script src="deps/jquery-3.6.0/jquery-3.6.0.min.js"></script><meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
 <link href="deps/bootstrap-5.3.8/bootstrap.min.css" rel="stylesheet">
 <script src="deps/bootstrap-5.3.8/bootstrap.bundle.min.js"></script><link href="deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
-<script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="Analysis of fMRI Data on HPC clusters">
-<meta name="description" content="Setup, submission, and tracking of hierarchical fMRI GLM analyses on high-performance computing clusters.">
-<meta property="og:description" content="Setup, submission, and tracking of hierarchical fMRI GLM analyses on high-performance computing clusters.">
+<script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="Hierarchical fMRI GLMs with FSL, AFNI, and SPM">
+<meta name="description" content="Specify, run, and track hierarchical general linear models (GLMs) for task fMRI data with FSL, AFNI, and SPM. Generate suite-specific designs and contrasts from shared trial, run, and participant tables, and submit time-series and group analyses locally or through a cluster scheduler.">
+<meta property="og:description" content="Specify, run, and track hierarchical general linear models (GLMs) for task fMRI data with FSL, AFNI, and SPM. Generate suite-specific designs and contrasts from shared trial, run, and participant tables, and submit time-series and group analyses locally or through a cluster scheduler.">
 </head>
 <body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
@@ -31,17 +31,7 @@
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
 <li class="nav-item"><a class="nav-link" href="reference/index.html">Reference</a></li>
-<li class="nav-item dropdown">
-  <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="articles/design.html">fmri.pipeline overview and design</a></li>
-    <li><a class="dropdown-item" href="articles/diagnosis.html">Diagnosing a run of fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="articles/quickstart.html">fmri.pipeline quick start guide</a></li>
-  </ul>
-</li>
+<li class="nav-item"><a class="nav-link" href="articles/index.html">Articles</a></li>
 <li class="nav-item"><a class="nav-link" href="news/index.html">Changelog</a></li>
       </ul>
 <ul class="navbar-nav">
@@ -59,22 +49,22 @@
   <main id="main" class="col-md-9"><div class="section level1">
 <div class="page-header"><h1 id="fmripipeline">fmri.pipeline<a class="anchor" aria-label="anchor" href="#fmripipeline"></a>
 </h1></div>
-<p><code>fmri.pipeline</code> is an R package for setting up, submitting, and tracking hierarchical fMRI GLM analyses on high-performance computing systems. It is designed for studies where the scientifically interesting model is larger than a single FEAT or SPM job: many subjects, many runs, multiple model variants, longitudinal visits, and downstream group models that need to be reproducible months or years later.</p>
+<p><code>fmri.pipeline</code> is an R package for specifying, running, and tracking task fMRI general linear models with FSL, AFNI, and SPM. Use the same trial, run, and participant tables to generate suite-specific designs and contrasts, then run them locally or on a cluster.</p>
 <p>The package is built around a single analysis object, usually called <code>gpa</code>, that stores the input tables, model specifications, output locations, backend choices, scheduler settings, and job-tracking state for one analysis.</p>
-<p>Current package version: <code>0.4</code> (May 2026).</p>
+<p>Current package version: <code>0.5</code>.</p>
 <div class="section level2">
 <h2 id="why-this-package-exists">Why this package exists<a class="anchor" aria-label="anchor" href="#why-this-package-exists"></a>
 </h2>
 <p>Large fMRI GLM projects have a familiar failure mode: the actual analysis is a constellation of design files, shell scripts, scheduler jobs, and partially remembered choices. <code>fmri.pipeline</code> tries to make that constellation explicit. The package helps you:</p>
 <ul>
 <li>define run-level, subject/session-level, and group-level models in one place;</li>
-<li>generate backend-specific analysis files for FSL, AFNI, and selected SPM workflows;</li>
+<li>generate backend-specific analysis files for FSL, AFNI, and SPM;</li>
 <li>submit staged analyses through Slurm, TORQUE, or local execution;</li>
 <li>keep track of job dependencies, logs, and analysis status;</li>
 <li>reuse the same input tables and YAML model specification across model revisions;</li>
 <li>support longitudinal analyses where runs are nested within sessions and sessions are nested within subjects.</li>
 </ul>
-<p>FSL FEAT/FLAME, SPM, and AFNI have backend-specific estimation paths. AFNI combines runs within each subject/session using <code>3dDeconvolve</code> and <code>3dREMLfit</code>, then supplies contrast maps to ordinary group GLMs or longitudinal <code>3dLMEr</code> models. Hybrid FSL Levels 1–2 → AFNI <code>3dLMEr</code> workflows remain supported.</p>
+<p>Choose an engine with <code>glm_software = "fsl"</code>, <code>"afni"</code>, or <code>"spm"</code> in <code><a href="reference/setup_glm_pipeline.html">setup_glm_pipeline()</a></code>. FSL fits runs separately and can carry their variances into higher-level models. AFNI estimates shared task effects across runs. SPM models runs as separate SPM sessions by default and can contrast their coefficients within one first-level model. The <a href="https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.html">GLM engine guide</a> follows a two-run task through each suite and shows where to inspect its design and contrast maps.</p>
 <p><code>fmri.pipeline</code> is not a preprocessing pipeline. It expects preprocessed 4D BOLD NIfTI files, event timing, and optional confound files from tools such as fMRIPrep, custom preprocessing workflows, or lab-specific derivatives.</p>
 </div>
 <div class="section level2">
@@ -83,13 +73,13 @@
 <p>The package uses a stable three-level vocabulary:</p>
 <ul>
 <li>
-<strong>Level 1</strong>: run-level time-series GLM. Events and parametric modulators are converted into design matrices or timing files and estimated separately for each run.</li>
+<strong>Level 1</strong> fits the BOLD time series using trial events, signals, and nuisance regressors.</li>
 <li>
-<strong>Level 2</strong>: within-subject or within-subject-session run combination. Multiple Level 1 COPEs are combined into subject-level or session-level estimates.</li>
+<strong>Level 2</strong> combines run-level contrasts in multi-run FSL analyses. SPM and AFNI handle the runs within L1.</li>
 <li>
-<strong>Level 3</strong>: sample-level, group-level, or longitudinal model. Subject or subject-session maps are modeled across participants.</li>
+<strong>Level 3</strong> models subject or subject-session contrast maps across participants.</li>
 </ul>
-<p>Model definitions are organized as sets at each level. If you define two L1 models, two L2 models, and two L3 models, the pipeline can run the full grid of eight model combinations. This makes systematic model comparison possible, but it also means you should start small, verify the analysis path, and then expand.</p>
+<p>Models are organized as sets at each level. For a multi-run FSL analysis, two compatible models at each of the three levels yield eight combinations. For native AFNI or SPM, select the L1 and L3 models to run.</p>
 </div>
 <div class="section level2">
 <h2 id="input-data">Input data<a class="anchor" aria-label="anchor" href="#input-data"></a>
@@ -165,12 +155,14 @@
 <span>  trial_data <span class="op">=</span> <span class="va">trial_df</span>,</span>
 <span>  glm_software <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"fsl"</span>, <span class="st">"afni"</span><span class="op">)</span>,</span>
 <span>  n_expected_runs <span class="op">=</span> <span class="fl">4L</span>,</span>
+<span>  l1_models <span class="op">=</span> <span class="cn">NULL</span>, l2_models <span class="op">=</span> <span class="cn">NULL</span>, l3_models <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  confound_settings <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span></span>
 <span>    motion_params_file <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>    confound_input_file <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>    spike_volumes <span class="op">=</span> <span class="cn">NULL</span></span>
 <span>  <span class="op">)</span></span>
-<span><span class="op">)</span></span></code></pre></div>
+<span><span class="op">)</span></span>
+<span><span class="va">gpa</span><span class="op">$</span><span class="va">level_backends</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l1 <span class="op">=</span> <span class="st">"fsl"</span>, l2 <span class="op">=</span> <span class="st">"fsl"</span>, l3 <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"fsl"</span>, <span class="st">"afni"</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
 <p>Define models interactively:</p>
 <div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">gpa</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/build_l1_models.html">build_l1_models</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">)</span></span>
@@ -197,8 +189,16 @@
 <span><span class="fu"><a href="reference/view_log.html">view_log</a></span><span class="op">(</span><span class="va">gpa</span>, level <span class="op">=</span> <span class="fl">1</span>, id <span class="op">=</span> <span class="st">"01"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
-<h2 id="afni-estimation">AFNI estimation<a class="anchor" aria-label="anchor" href="#afni-estimation"></a>
+<h2 id="estimation-by-engine">Estimation by engine<a class="anchor" aria-label="anchor" href="#estimation-by-engine"></a>
 </h2>
+<div class="section level3">
+<h3 id="fsl">FSL<a class="anchor" aria-label="anchor" href="#fsl"></a>
+</h3>
+<p><code>glm_software = "fsl"</code> is the default. FEAT fits one time-series model per run. For a multi-run analysis, build an L2 model to combine the run COPEs and their VARCOPEs. Set <code>l2_scope = "id_session"</code> when the group model needs one estimate per visit. With a single run, L1 feeds L3 directly. Inspect the generated <code>.fsf</code> files, the run’s <code>.feat/stats/</code> directory, and the higher-level <code>.gfeat</code> outputs.</p>
+</div>
+<div class="section level3">
+<h3 id="afni">AFNI<a class="anchor" aria-label="anchor" href="#afni"></a>
+</h3>
 <p>Select <code>glm_software = "afni"</code> in <code><a href="reference/setup_glm_pipeline.html">setup_glm_pipeline()</a></code> to use AFNI throughout the analysis. Build L1 and L3 models with the usual YAML specification, then submit them with:</p>
 <div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/run_glm_pipeline.html">run_glm_pipeline</a></span><span class="op">(</span></span>
@@ -220,16 +220,25 @@
 <span>  force_l1_creation <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  force_l3_creation <span class="op">=</span> <span class="cn">FALSE</span></span>
 <span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
-<p>When <code>run_data$afni_censor_file</code> is supplied, each path points to a single-column binary vector (<code>1 = keep</code>, <code>0 = censor</code>). Censor files and nuisance files may contain either retained volumes or original volumes with the specified leading drops. Length mismatches fail setup. Existing spike regressors remain nuisance regressors. Without an explicit mask, L1 intersects masks derived from the retained runs. Image geometry must match; AFNI estimation does not perform registration or intensity normalization. Supply preprocessed images in a common space and on a comparable intensity scale.</p>
+<p>When <code>run_data$afni_censor_file</code> is supplied, each path points to a single-column binary vector (<code>1 = keep</code>, <code>0 = censor</code>). Censor files and nuisance files may contain either retained volumes or original volumes with the specified leading drops. Length mismatches fail setup. Spikes on retained volumes remain nuisance regressors. The AFNI design drops spike columns that become empty after censoring. Without an explicit mask, L1 intersects masks derived from the retained runs. Image geometry must match; AFNI estimation does not perform registration or intensity normalization. Supply preprocessed images in a common space and on a comparable intensity scale.</p>
 <p>L3 uses ordinary least squares for the pipeline’s group design and contrasts, through <code>3dDeconvolve</code> with no temporal baseline or prewhitening. <code>per_session</code> analyses stay separate by session; <code>pooled_sessions_subject_ev</code> retains the pipeline’s subject effects. For longitudinal mixed models, specify <code>l3_input_mode: 3dlmer</code>. AFNI-only analyses use AFNI contrasts as group inputs. To retain a hybrid workflow, set <code>execution_backend: afni</code> and <code>producer_backend: fsl</code> on the L3 model and select FSL at L1/L2. Existing mixed FSL/AFNI <code>3dlmer</code> configurations continue to default to FSL inputs.</p>
 <p>Outputs live under <code>afni_l1/</code> and <code>afni_l3/</code> (mixed models use <code>afni_3dlmer/</code>). Each ordinary GLM directory contains <code>run_afni_glm.sh</code>, <code>afni_glm.log</code>, <code>design.xmat.1D</code>, <code>stats.nii.gz</code>, a mask, and optional residuals. <code>contrasts.tsv</code> maps original contrast names to <code>con_####.nii.gz</code> and <code>tstat_####.nii.gz</code>; <code>regressors.tsv</code> maps names to AFNI labels. Completion requires both the success marker and every expected output. Failed jobs return a nonzero status to the scheduler. After changing event/model specifications, set <code>force_l1_creation = TRUE</code> to rebuild the cached design, then rerun setup and estimation.</p>
 <p>Resource settings are under <code>gpa$parallel$afni</code>: <code>l1_glm_time</code>, <code>l1_glm_memgb</code>, <code>l1_glm_cpus</code>, <code>l1_glm_alljobs_time</code>, and the corresponding <code>l3_glm_time</code>, <code>l3_glm_memgb</code>, <code>l3_glm_cpus</code>. Existing <code>l3_lmer_*</code> settings continue to control mixed models. Configure AFNI modules or PATH through <code>parallel$compute_environment$afni</code>.</p>
 <p>AFNI’s <a href="https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dDeconvolve.html" class="external-link">3dDeconvolve documentation</a> and <a href="https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dREMLfit.html" class="external-link">3dREMLfit documentation</a> describe the OLS and REML estimators.</p>
 </div>
+<div class="section level3">
+<h3 id="spm">SPM<a class="anchor" aria-label="anchor" href="#spm"></a>
+</h3>
+<p>Set <code>glm_software = "spm"</code> and give <code>glm_settings$spm$spm_path</code> the path to your SPM installation. The default first-level design treats each run as an SPM session and creates one <code>SPM.mat</code> per participant, study visit, and task model. Build the L1 and L3 models and submit with <code>l2_model_names = "none"</code>. Pipeline L3 is the SPM second-level analysis.</p>
+<p>SPM L1 contrasts are matched to the fitted design by regressor name. A missing required regressor or a non-estimable contrast stops the job. Group inputs are selected using the actual <code>SPM.xCon</code> names recorded in <code>spm_contrasts.tsv</code>, so a change in contrast order cannot silently select a different effect.</p>
+<p>SPM setup checks retained scan counts and nuisance rows against each run’s <code>run_volumes</code> and <code>drop_volumes</code>. Original images use the appropriate leading scan offset; already-trimmed images start at scan 1. Nuisance files may contain original or retained rows. Missing files and inconsistent lengths are errors. Compressed images use separate temporary paths for each analysis and run.</p>
+<p>A complete SPM fit needs a successful full run and validated, nonempty model, beta, contrast, statistic, and requested residual files. Setup records the model specification and input signatures in <code>spm_setup.rds</code>; images use path, size, and modification time, while nuisance files are content-hashed. Rerun <code><a href="reference/setup_l1_models.html">setup_l1_models()</a></code> or <code><a href="reference/setup_l3_models.html">setup_l3_models()</a></code> after changing inputs or model settings. Existing fits without the new validation metadata require setup and estimation once before they can be reused. Runs with disabled setup, estimation, or contrast stages receive a stage-completion marker and remain incomplete for group input selection.</p>
+</div>
+</div>
 <div class="section level2">
 <h2 id="yaml-model-specifications">YAML model specifications<a class="anchor" aria-label="anchor" href="#yaml-model-specifications"></a>
 </h2>
-<p>YAML specifications are the recommended way to make analysis decisions reviewable and repeatable. A compact face/house example looks like this:</p>
+<p>The model builders read the model sections of the YAML file. Set the analysis-wide <code>glm_software</code> and <code>level_backends</code> in R as shown above. The <code>analysis</code> block below records those choices alongside the face/house model definitions:</p>
 <div class="sourceCode" id="cb10"><pre class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb10-1"><a href="#cb10-1" tabindex="-1"></a><span class="fu">analysis</span><span class="kw">:</span></span>
 <span id="cb10-2"><a href="#cb10-2" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> facehouse_longitudinal_demo</span></span>
 <span id="cb10-3"><a href="#cb10-3" tabindex="-1"></a><span class="at">  </span><span class="fu">scheduler</span><span class="kw">:</span><span class="at"> slurm</span></span>
@@ -334,6 +343,10 @@
 <span>  <span class="va">feat_l1</span><span class="op">/</span>                 <span class="co"># FSL Level 1 setup and outputs</span></span>
 <span>  <span class="va">feat_l2</span><span class="op">/</span>                 <span class="co"># FSL Level 2 setup and outputs</span></span>
 <span>  <span class="va">feat_l3</span><span class="op">/</span>                 <span class="co"># FSL Level 3 setup and outputs</span></span>
+<span>  <span class="va">spm_l1</span><span class="op">/</span>                  <span class="co"># SPM first-level analyses</span></span>
+<span>  <span class="va">spm_l3</span><span class="op">/</span>                  <span class="co"># SPM group models</span></span>
+<span>  <span class="va">afni_l1</span><span class="op">/</span>                 <span class="co"># AFNI subject/session fits</span></span>
+<span>  <span class="va">afni_l3</span><span class="op">/</span>                 <span class="co"># AFNI ordinary group GLMs</span></span>
 <span>  <span class="va">afni_3dlmer</span><span class="op">/</span>             <span class="co"># AFNI 3dLMEr data tables, scripts, and outputs</span></span>
 <span>  <span class="va">logs</span><span class="op">/</span>                    <span class="co"># text and JSON logs</span></span>
 <span>  <span class="va">glm_pipeline.sqlite</span>      <span class="co"># job tracking database</span></span></code></pre>
@@ -348,23 +361,16 @@
 <p>The L3 model builder offers the same settings, and <code><a href="reference/export_glm_config.html">export_glm_config()</a></code> preserves them in YAML. FWE is controlled separately within each selected map. Use <code>run_fwe_correction(gpa)</code> to retry correction without fitting models again, and <code>refresh_fwe_correction(gpa)</code> to collect scheduled results. See the FWE vignette for custom masks, resource settings, and the standalone planning workflow.</p>
 </div>
 <div class="section level2">
-<h2 id="spm-execution-and-reuse">SPM execution and reuse<a class="anchor" aria-label="anchor" href="#spm-execution-and-reuse"></a>
-</h2>
-<p>SPM L1 contrasts are matched to the fitted design by regressor name. A missing required regressor or a non-estimable contrast stops the job. Group inputs are selected using the actual <code>SPM.xCon</code> names recorded in <code>spm_contrasts.tsv</code>, so a change in contrast order cannot silently select a different effect.</p>
-<p>SPM setup checks retained scan counts and nuisance rows against each run’s <code>run_volumes</code> and <code>drop_volumes</code>. Original images use the appropriate leading scan offset; already-trimmed images start at scan 1. Nuisance files may contain original or retained rows. Missing files and inconsistent lengths are errors. Compressed images use separate temporary paths for each analysis and run.</p>
-<p>A complete SPM fit needs a successful full run and validated, nonempty model, beta, contrast, statistic, and requested residual files. Setup records the model specification and input signatures in <code>spm_setup.rds</code>; images use path, size, and modification time, while nuisance files are content-hashed. Rerun <code><a href="reference/setup_l1_models.html">setup_l1_models()</a></code> or <code><a href="reference/setup_l3_models.html">setup_l3_models()</a></code> after changing inputs or model settings. Existing fits without the new validation metadata require setup and estimation once before they can be reused. Runs with disabled setup, estimation, or contrast stages receive a stage-completion marker and remain incomplete for group input selection.</p>
-</div>
-<div class="section level2">
 <h2 id="longitudinal-workflows">Longitudinal workflows<a class="anchor" aria-label="anchor" href="#longitudinal-workflows"></a>
 </h2>
 <p>Longitudinal fMRI analyses require special care because runs, sessions, and subjects represent distinct sources of variation. The current recommended patterns are:</p>
 <ul>
-<li>Use <code>l2_scope = "id_session"</code> for most longitudinal studies. This creates one Level 2 output per subject-session.</li>
+<li>For multi-run FSL, use <code>l2_scope = "id_session"</code> to keep one L2 estimate per visit. Native AFNI L1 already produces one fit per visit. SPM preserves that distinction with its default <code>l1_session_mode = "separate"</code>.</li>
 <li>Use <code>l3_input_mode = "pooled_sessions_subject_ev"</code> for balanced categorical visit comparisons that should remain inside FSL.</li>
 <li>Use <code>l3_input_mode = "3dlmer"</code> for irregular visits, incomplete follow-up, continuous time effects, treatment-by-time interactions, or random-effects structures that are better handled by AFNI <code>3dLMEr</code>.</li>
-<li>Reserve <code>l2_scope = "id"</code> for cases where sessions are essentially pseudo-runs and longitudinal change is not the target.</li>
+<li>In FSL, reserve <code>l2_scope = "id"</code> for cases where sessions are essentially pseudo-runs and longitudinal change is not the target.</li>
 </ul>
-<p>The repository includes a worked face/house demonstration in <code>longitudinal_fmri_demo_jun2026/</code>, including a walkthrough script and YAML model file.</p>
+<p>The <a href="https://hallquistlab.github.io/fmri.pipeline/articles/longitudinal.html">longitudinal vignette</a> walks through a face/house study with repeated visits.</p>
 </div>
 <div class="section level2">
 <h2 id="documentation">Documentation<a class="anchor" aria-label="anchor" href="#documentation"></a>
@@ -374,6 +380,8 @@
 <li>Package website: <a href="https://hallquistlab.github.io/fmri.pipeline/" class="uri">https://hallquistlab.github.io/fmri.pipeline/</a>
 </li>
 <li>Quick start: <a href="https://hallquistlab.github.io/fmri.pipeline/articles/quickstart.html" class="uri">https://hallquistlab.github.io/fmri.pipeline/articles/quickstart.html</a>
+</li>
+<li>Choosing a GLM engine: <a href="https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.html" class="uri">https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.html</a>
 </li>
 <li>Design concepts: <a href="https://hallquistlab.github.io/fmri.pipeline/articles/design.html" class="uri">https://hallquistlab.github.io/fmri.pipeline/articles/design.html</a>
 </li>
@@ -389,7 +397,7 @@
 <div class="section level2">
 <h2 id="development-status">Development status<a class="anchor" aria-label="anchor" href="#development-status"></a>
 </h2>
-<p><code>fmri.pipeline</code> is under active development. FSL-centered analyses are the most established path. Backend resolution, SPM support, AFNI Level 3 workflows, longitudinal model specification, and diagnostic tooling are current areas of active work. For new projects, prefer YAML model specifications, explicit <code>subject_data</code>/<code>run_data</code>/<code>trial_data</code> tables, and small test runs before launching the full model grid.</p>
+<p><code>fmri.pipeline</code> is under active development. For new projects, prefer YAML model specifications, explicit <code>subject_data</code>/<code>run_data</code>/<code>trial_data</code> tables, and small test runs before launching the full model grid.</p>
 <p>Issues and feature requests are tracked at <a href="https://github.com/HallquistLab/fmri.pipeline/issues" class="external-link uri">https://github.com/HallquistLab/fmri.pipeline/issues</a>.</p>
 </div>
 </div>

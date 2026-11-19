@@ -16,15 +16,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto"><li class="active nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
-<li class="nav-item dropdown">
-  <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/design.html">fmri.pipeline overview and design</a></li>
-    <li><a class="dropdown-item" href="../articles/diagnosis.html">Diagnosing a run of fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/quickstart.html">fmri.pipeline quick start guide</a></li>
-  </ul></li>
+<li class="nav-item"><a class="nav-link" href="../articles/index.html">Articles</a></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
  <input class="form-control" type="search" name="search-input" id="search-input" autocomplete="off" aria-label="Search site" placeholder="Search for" data-search-index="../search.json"></form></li>
@@ -73,7 +65,8 @@
 
 
 <dt id="arg-l-model-names">l2_model_names<a class="anchor" aria-label="anchor" href="#arg-l-model-names"></a></dt>
-<dd><p>a character vector of level 2 model names (specified during build_l2_models) that should be executed</p></dd>
+<dd><p>Names of standalone L2 models to run for multi-run FSL.
+Use <code>"none"</code> for a native AFNI or SPM L1-to-L3 analysis.</p></dd>
 
 
 <dt id="arg-l-model-names">l3_model_names<a class="anchor" aria-label="anchor" href="#arg-l-model-names"></a></dt>
@@ -81,21 +74,30 @@
 
 
 <dt id="arg-glm-software">glm_software<a class="anchor" aria-label="anchor" href="#arg-glm-software"></a></dt>
-<dd><p>which GLM software should be used for model estimation (fsl, spm, or afni)</p></dd>
+<dd><p>Optional global engine override for this submission. A non-NULL value
+resets the level defaults to the supplied engine(s): <code>"fsl"</code>, <code>"afni"</code>, or <code>"spm"</code>.</p></dd>
 
 
 <dt id="arg-level-backends">level_backends<a class="anchor" aria-label="anchor" href="#arg-level-backends"></a></dt>
-<dd><p>optional per-level backend override list keyed by `l1`, `l2`, and/or `l3`</p></dd>
+<dd><p>Optional list overriding specific level defaults for this run, e.g.,
+<code>list(l1 = "fsl", l2 = "fsl", l3 = "afni")</code>. Model-specific settings take precedence.</p></dd>
 
 
 <dt id="arg-backend-overrides">backend_overrides<a class="anchor" aria-label="anchor" href="#arg-backend-overrides"></a></dt>
-<dd><p>optional model-specific backend override list</p></dd>
+<dd><p>Optional overrides keyed by level and model name. For example,
+<code>list(l3 = list(execution = c(group = "afni"), producer = c(group = "fsl")))</code>
+fits the named group model with AFNI using FSL contrast maps. These overrides take
+precedence over the model's <code>execution_backend</code> and <code>producer_backend</code>.</p></dd>
 
 
 <dt id="arg-run-fwe">run_fwe<a class="anchor" aria-label="anchor" href="#arg-run-fwe"></a></dt>
 <dd><p>run configured FWE correction after the selected L3 models finish.</p></dd>
 
 </dl></div>
+    <div class="section level2">
+    <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
+    <div class="dont-index"><p><code><a href="setup_glm_pipeline.html">setup_glm_pipeline</a></code>, <code><a href="../articles/glm-engines.html">vignette("glm-engines", package = "fmri.pipeline")</a></code></p></div>
+    </div>
 
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

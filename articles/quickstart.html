@@ -29,17 +29,7 @@
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
 <li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
-<li class="active nav-item dropdown">
-  <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="../articles/design.html">fmri.pipeline overview and design</a></li>
-    <li><a class="dropdown-item" href="../articles/diagnosis.html">Diagnosing a run of fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/quickstart.html">fmri.pipeline quick start guide</a></li>
-  </ul>
-</li>
+<li class="active nav-item"><a class="nav-link" href="../articles/index.html">Articles</a></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul>
 <ul class="navbar-nav">
@@ -81,12 +71,9 @@ is built around a single analysis object, usually called
 <code>gpa</code>, that stores the input data, model specifications,
 output locations, compute settings, and job-tracking state for one task
 analysis.</p>
-<p>The most mature end-to-end backend is FSL FEAT/FLAME. Current
-pipeline engineering also supports backend selection, including hybrid
-workflows such as FSL at Levels 1-2 and AFNI <code>3dLMEr</code> at
-Level 3 for longitudinal models. The backend system performs a preflight
-check before submission so that model/back-end combinations and upstream
-artifact requirements are resolved before jobs are launched.</p>
+<p>This walkthrough uses FSL for a two-run task. AFNI and SPM can each
+fit both the time-series and group models. To run this task with either
+suite, see <a href="glm-engines.html">Choosing a GLM engine</a>.</p>
 <p>This guide is meant to get a new user from input tables to a
 submitted pipeline run. More detailed conceptual material is in
 <code><a href="../articles/design.html">vignette("design")</a></code>, longitudinal guidance is in
@@ -96,8 +83,9 @@ submitted pipeline run. More detailed conceptual material is in
 <div class="section level2">
 <h2 id="model-combinations">Model Combinations<a class="anchor" aria-label="anchor" href="#model-combinations"></a>
 </h2>
-<p>The pipeline treats Level 1, Level 2, and Level 3 model sets as a
-grid of model combinations. For example, suppose you define:</p>
+<p>For multi-run FSL analyses, the pipeline treats compatible Level 1,
+Level 2, and Level 3 models as a grid of combinations. For example,
+suppose you define:</p>
 <ul>
 <li>two Level 1 models: one with a prediction-error modulator and one
 with only event onsets</li>
@@ -118,15 +106,15 @@ pipeline runs cleanly, and then add additional model variants.</p>
 <p><code>fmri.pipeline</code> uses a fixed three-level vocabulary:</p>
 <ul>
 <li>
-<strong>Level 1</strong>: Run-level time-series GLM. Events and
-parametric modulators are convolved with the HRF and estimated
-separately for each run.</li>
+<strong>Level 1</strong> fits the time-series GLM. FSL fits one
+model per run. AFNI and SPM handle multiple runs in one model per
+subject and visit by default.</li>
 <li>
-<strong>Level 2</strong>: Within-subject run combination. Multiple
-Level 1 COPEs are combined within a subject or subject-session.</li>
+<strong>Level 2</strong> combines run-level contrast estimates for
+multi-run FSL analyses.</li>
 <li>
-<strong>Level 3</strong>: Sample-level or group-level model.
-Subject/session maps are modeled across participants.</li>
+<strong>Level 3</strong> fits the sample or group model to subject
+or subject-session maps.</li>
 </ul>
 <p>For a single-run task, there is no standalone Level 2 run-combination
 step. The pipeline still calls the group model Level 3 so the
@@ -717,69 +705,59 @@ usually makes the intercept and condition means easier to interpret.</p>
 <div class="section level2">
 <h2 id="backend-selection">Backend Selection<a class="anchor" aria-label="anchor" href="#backend-selection"></a>
 </h2>
-<p>For a standard FSL analysis, no special backend configuration is
-needed:</p>
+<p>Set <code>glm_software</code> in the setup call above. Choose
+<code>"fsl"</code> for the run-wise FEAT example, <code>"afni"</code>
+for a joint fit with shared task coefficients, or <code>"spm"</code> for
+a first-level SPM design. For native AFNI and SPM, submit the task and
+group models with <code>l2_model_names = "none"</code>. SPM users should
+also set <code>glm_settings$spm$spm_path</code> to their
+installation.</p>
+<p>For FSL run and session estimates followed by an AFNI group analysis,
+pass <code>glm_software = c("fsl", "afni")</code> at setup, then assign
+the stages:</p>
 <div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">glm_software</span> <span class="op">&lt;-</span> <span class="st">"fsl"</span></span></code></pre></div>
-<p>For different software at different levels, use
-<code>gpa$level_backends</code>:</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">glm_software</span> <span class="op">&lt;-</span> <span class="st">"fsl"</span></span>
-<span><span class="va">gpa</span><span class="op">$</span><span class="va">level_backends</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span></span>
-<span>  l1 <span class="op">=</span> <span class="st">"fsl"</span>,</span>
-<span>  l2 <span class="op">=</span> <span class="st">"fsl"</span>,</span>
-<span>  l3 <span class="op">=</span> <span class="st">"afni"</span></span>
-<span><span class="op">)</span></span></code></pre></div>
+<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">level_backends</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l1 <span class="op">=</span> <span class="st">"fsl"</span>, l2 <span class="op">=</span> <span class="st">"fsl"</span>, l3 <span class="op">=</span> <span class="st">"afni"</span><span class="op">)</span></span></code></pre></div>
 <p>For model-specific control, set backend fields on the model object or
 in YAML. This is the current recommended pattern for AFNI
 <code>3dLMEr</code> Level 3 models that consume FSL-produced Level 2
 inputs:</p>
-<div class="sourceCode" id="cb15"><pre class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb15-1"><a href="#cb15-1" tabindex="-1"></a><span class="fu">l2_models</span><span class="kw">:</span></span>
-<span id="cb15-2"><a href="#cb15-2" tabindex="-1"></a><span class="at">  </span><span class="fu">session_average</span><span class="kw">:</span></span>
-<span id="cb15-3"><a href="#cb15-3" tabindex="-1"></a><span class="at">    </span><span class="fu">level</span><span class="kw">:</span><span class="at"> </span><span class="dv">2</span></span>
-<span id="cb15-4"><a href="#cb15-4" tabindex="-1"></a><span class="at">    </span><span class="fu">model_formula</span><span class="kw">:</span><span class="at"> ~ 1</span></span>
-<span id="cb15-5"><a href="#cb15-5" tabindex="-1"></a><span class="at">    </span><span class="fu">l2_scope</span><span class="kw">:</span><span class="at"> id_session</span></span>
-<span id="cb15-6"><a href="#cb15-6" tabindex="-1"></a><span class="at">    </span><span class="fu">contrasts</span><span class="kw">:</span></span>
-<span id="cb15-7"><a href="#cb15-7" tabindex="-1"></a><span class="at">      </span><span class="fu">diagonal</span><span class="kw">:</span><span class="at"> </span><span class="ch">yes</span></span>
-<span id="cb15-8"><a href="#cb15-8" tabindex="-1"></a><span class="at">      </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">yes</span></span>
-<span id="cb15-9"><a href="#cb15-9" tabindex="-1"></a></span>
-<span id="cb15-10"><a href="#cb15-10" tabindex="-1"></a><span class="fu">l3_models</span><span class="kw">:</span></span>
-<span id="cb15-11"><a href="#cb15-11" tabindex="-1"></a><span class="at">  </span><span class="fu">longitudinal_lmer</span><span class="kw">:</span></span>
-<span id="cb15-12"><a href="#cb15-12" tabindex="-1"></a><span class="at">    </span><span class="fu">level</span><span class="kw">:</span><span class="at"> </span><span class="dv">3</span></span>
-<span id="cb15-13"><a href="#cb15-13" tabindex="-1"></a><span class="at">    </span><span class="fu">model_formula</span><span class="kw">:</span><span class="at"> ~ session_label</span></span>
-<span id="cb15-14"><a href="#cb15-14" tabindex="-1"></a><span class="at">    </span><span class="fu">l3_input_mode</span><span class="kw">:</span><span class="at"> 3dlmer</span></span>
-<span id="cb15-15"><a href="#cb15-15" tabindex="-1"></a><span class="at">    </span><span class="fu">execution_backend</span><span class="kw">:</span><span class="at"> afni</span></span>
-<span id="cb15-16"><a href="#cb15-16" tabindex="-1"></a><span class="at">    </span><span class="fu">producer_backend</span><span class="kw">:</span><span class="at"> fsl</span></span>
-<span id="cb15-17"><a href="#cb15-17" tabindex="-1"></a><span class="at">    </span><span class="fu">random_effects</span><span class="kw">:</span><span class="at"> </span><span class="st">"(1 | Subj)"</span></span>
-<span id="cb15-18"><a href="#cb15-18" tabindex="-1"></a><span class="at">    </span><span class="fu">contrasts</span><span class="kw">:</span></span>
-<span id="cb15-19"><a href="#cb15-19" tabindex="-1"></a><span class="at">      </span><span class="fu">cond_means</span><span class="kw">:</span><span class="at"> session_label</span></span>
-<span id="cb15-20"><a href="#cb15-20" tabindex="-1"></a><span class="at">      </span><span class="fu">pairwise_diffs</span><span class="kw">:</span><span class="at"> session_label</span></span>
-<span id="cb15-21"><a href="#cb15-21" tabindex="-1"></a><span class="at">      </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">yes</span></span></code></pre></div>
-<p>Current limitations are important:</p>
-<ul>
-<li>FSL supports separate Level 1, Level 2, and Level 3 execution.</li>
-<li>SPM support uses SPM-style run/session handling and does not run a
-standalone Level 2 FEAT-style step.</li>
-<li>AFNI <code>3dLMEr</code> is currently supported as a Level 3
-execution backend.</li>
-<li>Level 3 producer inputs are currently implemented only for FSL. In
-practice, AFNI Level 3 should usually specify
-<code>producer_backend: fsl</code>.</li>
-</ul>
-<p>When <code><a href="../reference/run_glm_pipeline.html">run_glm_pipeline()</a></code> starts, it resolves backend
-selection, validates producer requirements, and logs a backend preflight
-report. If you see a backend or producer error, read that report
-first.</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb14-1"><a href="#cb14-1" tabindex="-1"></a><span class="fu">l2_models</span><span class="kw">:</span></span>
+<span id="cb14-2"><a href="#cb14-2" tabindex="-1"></a><span class="at">  </span><span class="fu">session_average</span><span class="kw">:</span></span>
+<span id="cb14-3"><a href="#cb14-3" tabindex="-1"></a><span class="at">    </span><span class="fu">level</span><span class="kw">:</span><span class="at"> </span><span class="dv">2</span></span>
+<span id="cb14-4"><a href="#cb14-4" tabindex="-1"></a><span class="at">    </span><span class="fu">model_formula</span><span class="kw">:</span><span class="at"> ~ 1</span></span>
+<span id="cb14-5"><a href="#cb14-5" tabindex="-1"></a><span class="at">    </span><span class="fu">l2_scope</span><span class="kw">:</span><span class="at"> id_session</span></span>
+<span id="cb14-6"><a href="#cb14-6" tabindex="-1"></a><span class="at">    </span><span class="fu">contrasts</span><span class="kw">:</span></span>
+<span id="cb14-7"><a href="#cb14-7" tabindex="-1"></a><span class="at">      </span><span class="fu">diagonal</span><span class="kw">:</span><span class="at"> </span><span class="ch">yes</span></span>
+<span id="cb14-8"><a href="#cb14-8" tabindex="-1"></a><span class="at">      </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">yes</span></span>
+<span id="cb14-9"><a href="#cb14-9" tabindex="-1"></a></span>
+<span id="cb14-10"><a href="#cb14-10" tabindex="-1"></a><span class="fu">l3_models</span><span class="kw">:</span></span>
+<span id="cb14-11"><a href="#cb14-11" tabindex="-1"></a><span class="at">  </span><span class="fu">longitudinal_lmer</span><span class="kw">:</span></span>
+<span id="cb14-12"><a href="#cb14-12" tabindex="-1"></a><span class="at">    </span><span class="fu">level</span><span class="kw">:</span><span class="at"> </span><span class="dv">3</span></span>
+<span id="cb14-13"><a href="#cb14-13" tabindex="-1"></a><span class="at">    </span><span class="fu">model_formula</span><span class="kw">:</span><span class="at"> ~ session_label</span></span>
+<span id="cb14-14"><a href="#cb14-14" tabindex="-1"></a><span class="at">    </span><span class="fu">l3_input_mode</span><span class="kw">:</span><span class="at"> 3dlmer</span></span>
+<span id="cb14-15"><a href="#cb14-15" tabindex="-1"></a><span class="at">    </span><span class="fu">execution_backend</span><span class="kw">:</span><span class="at"> afni</span></span>
+<span id="cb14-16"><a href="#cb14-16" tabindex="-1"></a><span class="at">    </span><span class="fu">producer_backend</span><span class="kw">:</span><span class="at"> fsl</span></span>
+<span id="cb14-17"><a href="#cb14-17" tabindex="-1"></a><span class="at">    </span><span class="fu">random_effects</span><span class="kw">:</span><span class="at"> </span><span class="st">"(1 | Subj)"</span></span>
+<span id="cb14-18"><a href="#cb14-18" tabindex="-1"></a><span class="at">    </span><span class="fu">contrasts</span><span class="kw">:</span></span>
+<span id="cb14-19"><a href="#cb14-19" tabindex="-1"></a><span class="at">      </span><span class="fu">cond_means</span><span class="kw">:</span><span class="at"> session_label</span></span>
+<span id="cb14-20"><a href="#cb14-20" tabindex="-1"></a><span class="at">      </span><span class="fu">pairwise_diffs</span><span class="kw">:</span><span class="at"> session_label</span></span>
+<span id="cb14-21"><a href="#cb14-21" tabindex="-1"></a><span class="at">      </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">yes</span></span></code></pre></div>
+<p>For native AFNI ordinary group models, leave the producer unset to
+use AFNI L1 contrasts. Native SPM group models also use their own L1
+contrasts with the producer unset.</p>
+<p>When <code><a href="../reference/run_glm_pipeline.html">run_glm_pipeline()</a></code> starts, it validates the engine
+choices and logs the resolved plan before submission. Check the L3 line
+for the execution engine, producer, and input level.</p>
 </div>
 <div class="section level2">
 <h2 id="run-the-pipeline">Run the Pipeline<a class="anchor" aria-label="anchor" href="#run-the-pipeline"></a>
 </h2>
 <p>Submit the full selected analysis with:</p>
-<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/run_glm_pipeline.html">run_glm_pipeline</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">)</span></span></code></pre></div>
 <p>By default, <code><a href="../reference/run_glm_pipeline.html">run_glm_pipeline()</a></code> prompts you to choose L1,
 L2, and L3 models. For scripted runs, pass model names explicitly:</p>
-<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/run_glm_pipeline.html">run_glm_pipeline</a></span><span class="op">(</span></span>
 <span>  <span class="va">gpa</span>,</span>
 <span>  l1_model_names <span class="op">=</span> <span class="st">"task"</span>,</span>
@@ -787,7 +765,7 @@ L2, and L3 models. For scripted runs, pass model names explicitly:</p>
 <span>  l3_model_names <span class="op">=</span> <span class="st">"group_mean"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 <p>You can also apply temporary backend overrides at run time:</p>
-<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/run_glm_pipeline.html">run_glm_pipeline</a></span><span class="op">(</span></span>
 <span>  <span class="va">gpa</span>,</span>
 <span>  l1_model_names <span class="op">=</span> <span class="st">"task"</span>,</span>
@@ -830,7 +808,11 @@ single-run or multi-run, and which backends are requested.</p>
 <pre class="text"><code>feat_l1/                 # FSL Level 1 setup files and .feat outputs
 feat_l2/                 # FSL Level 2 .fsf files and .gfeat outputs
 feat_l3/                 # FSL Level 3 .fsf files and .gfeat outputs
-afni_3dlmer/             # AFNI 3dLMEr scripts and outputs, when AFNI is used
+spm_l1/                  # SPM first-level analyses
+spm_l3/                  # SPM group models
+afni_l1/                 # AFNI subject/session fits
+afni_l3/                 # AFNI ordinary group GLMs
+afni_3dlmer/             # AFNI mixed models
 logs/                    # text and JSON logs from setup functions
 scheduler_scripts/       # one batch_&lt;uuid&gt;/ directory per run_glm_pipeline() call
 project_config.json      # analysis metadata and batch history
@@ -849,11 +831,11 @@ defaults.</p>
 <h2 id="check-status">Check Status<a class="anchor" aria-label="anchor" href="#check-status"></a>
 </h2>
 <p>The easiest interactive route is:</p>
-<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/diagnose_pipeline.html">diagnose_pipeline</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">)</span></span></code></pre></div>
 <p>For scripted checks, inspect the latest batch directory and SQLite
 job tracker.</p>
-<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">batch_dirs</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/list.files.html" class="external-link">list.dirs</a></span><span class="op">(</span></span>
 <span>  <span class="va">gpa</span><span class="op">$</span><span class="va">output_locations</span><span class="op">$</span><span class="va">scheduler_scripts</span>,</span>
 <span>  recursive <span class="op">=</span> <span class="cn">FALSE</span>,</span>
@@ -861,51 +843,61 @@ job tracker.</p>
 <span><span class="op">)</span></span>
 <span><span class="va">latest_batch</span> <span class="op">&lt;-</span> <span class="va">batch_dirs</span><span class="op">[</span><span class="fu"><a href="https://rdrr.io/r/base/which.min.html" class="external-link">which.max</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/file.info.html" class="external-link">file.info</a></span><span class="op">(</span><span class="va">batch_dirs</span><span class="op">)</span><span class="op">$</span><span class="va">mtime</span><span class="op">)</span><span class="op">]</span></span>
 <span><span class="va">latest_batch</span></span></code></pre></div>
-<p>Load the run cache to inspect model status:</p>
-<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
+<p>Load the batch’s saved pipeline object. Each populated table is named
+for the engine that produced the fit:</p>
+<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/load.html" class="external-link">load</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/file.path.html" class="external-link">file.path</a></span><span class="op">(</span><span class="va">latest_batch</span>, <span class="st">"run_pipeline_cache.RData"</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
-<span><span class="kw">if</span> <span class="op">(</span><span class="op">!</span><span class="fu"><a href="https://rdrr.io/r/base/NULL.html" class="external-link">is.null</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">$</span><span class="va">l1_model_setup</span><span class="op">$</span><span class="va">fsl</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
+<span><span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">NROW</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">$</span><span class="va">l1_model_setup</span><span class="op">$</span><span class="va">fsl</span><span class="op">)</span> <span class="op">&gt;</span> <span class="fl">0L</span><span class="op">)</span> <span class="op">{</span></span>
 <span>  <span class="va">gpa</span><span class="op">$</span><span class="va">l1_model_setup</span><span class="op">$</span><span class="va">fsl</span> <span class="op">|&gt;</span></span>
 <span>    <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/count.html" class="external-link">count</a></span><span class="op">(</span><span class="va">feat_complete</span>, <span class="va">feat_failed</span>, <span class="va">to_run</span><span class="op">)</span></span>
 <span><span class="op">}</span></span>
 <span></span>
-<span><span class="kw">if</span> <span class="op">(</span><span class="op">!</span><span class="fu"><a href="https://rdrr.io/r/base/NULL.html" class="external-link">is.null</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">$</span><span class="va">l2_model_setup</span><span class="op">$</span><span class="va">fsl</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
+<span><span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">NROW</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">$</span><span class="va">l2_model_setup</span><span class="op">$</span><span class="va">fsl</span><span class="op">)</span> <span class="op">&gt;</span> <span class="fl">0L</span><span class="op">)</span> <span class="op">{</span></span>
 <span>  <span class="va">gpa</span><span class="op">$</span><span class="va">l2_model_setup</span><span class="op">$</span><span class="va">fsl</span> <span class="op">|&gt;</span></span>
 <span>    <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="va">feat_failed</span> <span class="op">|</span> <span class="op">!</span><span class="va">feat_complete</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>    <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/select.html" class="external-link">select</a></span><span class="op">(</span><span class="va">id</span>, <span class="va">session</span>, <span class="va">l1_model</span>, <span class="va">l1_cope_name</span>, <span class="va">l2_model</span>, <span class="va">feat_dir</span>, <span class="va">feat_fsf</span><span class="op">)</span></span>
 <span><span class="op">}</span></span>
 <span></span>
-<span><span class="kw">if</span> <span class="op">(</span><span class="op">!</span><span class="fu"><a href="https://rdrr.io/r/base/NULL.html" class="external-link">is.null</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_model_setup</span><span class="op">$</span><span class="va">fsl</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
+<span><span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">NROW</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_model_setup</span><span class="op">$</span><span class="va">fsl</span><span class="op">)</span> <span class="op">&gt;</span> <span class="fl">0L</span><span class="op">)</span> <span class="op">{</span></span>
 <span>  <span class="va">gpa</span><span class="op">$</span><span class="va">l3_model_setup</span><span class="op">$</span><span class="va">fsl</span> <span class="op">|&gt;</span></span>
 <span>    <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="va">feat_failed</span> <span class="op">|</span> <span class="op">!</span><span class="va">feat_complete</span><span class="op">)</span> <span class="op">|&gt;</span></span>
 <span>    <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/select.html" class="external-link">select</a></span><span class="op">(</span><span class="va">l1_model</span>, <span class="va">l2_model</span>, <span class="va">l3_model</span>, <span class="va">feat_dir</span>, <span class="va">feat_fsf</span><span class="op">)</span></span>
 <span><span class="op">}</span></span>
 <span></span>
-<span><span class="kw">if</span> <span class="op">(</span><span class="op">!</span><span class="fu"><a href="https://rdrr.io/r/base/NULL.html" class="external-link">is.null</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_model_setup</span><span class="op">$</span><span class="va">afni</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
+<span><span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">NROW</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_model_setup</span><span class="op">$</span><span class="va">spm</span><span class="op">)</span> <span class="op">&gt;</span> <span class="fl">0L</span><span class="op">)</span> <span class="op">{</span></span>
+<span>  <span class="va">gpa</span><span class="op">$</span><span class="va">l3_model_setup</span><span class="op">$</span><span class="va">spm</span> <span class="op">|&gt;</span></span>
+<span>    <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="va">spm_failed</span> <span class="op">|</span> <span class="op">!</span><span class="va">spm_complete</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>    <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/select.html" class="external-link">select</a></span><span class="op">(</span><span class="va">l3_model</span>, <span class="va">l1_cope_name</span>, <span class="va">spm_dir</span><span class="op">)</span></span>
+<span><span class="op">}</span></span>
+<span></span>
+<span><span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/nrow.html" class="external-link">NROW</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_model_setup</span><span class="op">$</span><span class="va">afni</span><span class="op">)</span> <span class="op">&gt;</span> <span class="fl">0L</span><span class="op">)</span> <span class="op">{</span></span>
 <span>  <span class="va">gpa</span><span class="op">$</span><span class="va">l3_model_setup</span><span class="op">$</span><span class="va">afni</span> <span class="op">|&gt;</span></span>
 <span>    <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="va">afni_failed</span> <span class="op">|</span> <span class="op">!</span><span class="va">afni_complete</span><span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>    <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/select.html" class="external-link">select</a></span><span class="op">(</span><span class="va">l3_model</span>, <span class="va">l1_cope_name</span>, <span class="va">l2_cope_name</span>, <span class="va">output_file</span>, <span class="va">afni_script</span><span class="op">)</span></span>
+<span>    <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/select.html" class="external-link">select</a></span><span class="op">(</span><span class="va">l3_model</span>, <span class="va">l1_cope_name</span>, <span class="va">output_file</span>, <span class="va">afni_script</span><span class="op">)</span></span>
 <span><span class="op">}</span></span></code></pre></div>
-<p>Backend-specific caches, such as
-<code>run_pipeline_cache_fsl.RData</code> or
-<code>run_pipeline_cache_afni.RData</code>, can be more informative
-because they are saved immediately after backend-specific jobs
-finish:</p>
-<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
+<p>Each engine also saves its own cache in the batch directory
+(<code>run_pipeline_cache_fsl.RData</code>,
+<code>run_pipeline_cache_afni.RData</code>, or
+<code>run_pipeline_cache_spm.RData</code>). To investigate a multi-run
+FSL job before the final cache has been collected:</p>
+<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/load.html" class="external-link">load</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/file.path.html" class="external-link">file.path</a></span><span class="op">(</span><span class="va">latest_batch</span>, <span class="st">"run_pipeline_cache_fsl.RData"</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="va">gpa</span><span class="op">$</span><span class="va">l2_model_setup</span><span class="op">$</span><span class="va">fsl</span> <span class="op">|&gt;</span></span>
 <span>  <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="va">feat_failed</span> <span class="op">|</span> <span class="op">!</span><span class="va">feat_complete</span><span class="op">)</span></span></code></pre></div>
+<p>For first-level status columns and log locations in each suite, see
+the <a href="diagnosis.html#check-the-fit-behind-a-scheduler-job">diagnosis
+guide</a>.</p>
 <p>On SLURM, scheduler exit codes are often the fastest way to
 distinguish model errors from time or memory kills:</p>
-<div class="sourceCode" id="cb26"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb26-1"><a href="#cb26-1" tabindex="-1"></a><span class="ex">sacct</span> <span class="at">-j</span> 49616891,49616892 <span class="at">--format</span><span class="op">=</span>JobID,JobName%45,State,ExitCode,Elapsed,MaxRSS</span></code></pre></div>
+<div class="sourceCode" id="cb25"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb25-1"><a href="#cb25-1" tabindex="-1"></a><span class="ex">sacct</span> <span class="at">-j</span> 49616891,49616892 <span class="at">--format</span><span class="op">=</span>JobID,JobName%45,State,ExitCode,Elapsed,MaxRSS</span></code></pre></div>
 <p>For FSL outputs, successful artifacts should contain
 <code>.feat_complete</code> and should not contain
 <code>.feat_fail</code>. Current pipeline runs also write
 <code>job_manifest.tsv</code> into artifact directories, linking each
 result back to the scheduler job, batch script, and scheduler log that
 produced it:</p>
-<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">manifest</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/utils/read.table.html" class="external-link">read.delim</a></span><span class="op">(</span></span>
 <span>  <span class="st">"/path/to/analysis/feat_l2/sub-10637/ses-1/L1m-task/l1c-EV_feedback/L2m-run_average.gfeat/job_manifest.tsv"</span>,</span>
 <span>  stringsAsFactors <span class="op">=</span> <span class="cn">FALSE</span></span>
@@ -945,15 +937,16 @@ header, set <code>confound_input_colnames</code>. If they use
 fMRIPrep-style missing values, set <code>na_strings</code> inside
 <code>confound_settings</code>.</li>
 <li>
-<strong>Backend mismatch</strong>: AFNI Level 3 currently expects
-<code>l3_input_mode: 3dlmer</code> and FSL-produced upstream
-inputs.</li>
+<strong>Backend mismatch</strong>: check which suite produced the
+requested contrast. AFNI group models consume AFNI or FSL estimates.
+Native SPM group models look up contrast names in completed SPM
+fits.</li>
 </ul>
 </div>
 <div class="section level2">
 <h2 id="minimal-end-to-end-skeleton">Minimal End-to-End Skeleton<a class="anchor" aria-label="anchor" href="#minimal-end-to-end-skeleton"></a>
 </h2>
-<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://hallquistlab.github.io/fmri.pipeline/">fmri.pipeline</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">trial_df</span> <span class="op">&lt;-</span> <span class="fu">readr</span><span class="fu">::</span><span class="fu"><a href="https://readr.tidyverse.org/reference/read_delim.html" class="external-link">read_csv</a></span><span class="op">(</span><span class="st">"inputs/trials.csv"</span><span class="op">)</span></span>
@@ -990,10 +983,10 @@ inputs.</li>
 <span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/diagnose_pipeline.html">diagnose_pipeline</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">)</span></span></code></pre></div>
-<p>For a first real project, start with one L1 model, one L2 model, and
-one intercept-only L3 model. Once that path submits and status checks
-are clean, add scientific contrasts, covariates, and alternate backend
-models.</p>
+<p>For a first project, start with one task model and one intercept-only
+group model. Include a run-combination model for multi-run FSL analyses.
+Once that path submits and status checks are clean, add scientific
+contrasts, covariates, and alternate backend models.</p>
 </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside>

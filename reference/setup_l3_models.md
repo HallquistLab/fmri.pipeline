@@ -1,7 +1,6 @@
-# This function generates the inputs for level 3 analyses, where multi-subject data are analyzed in group analyses.
+# Prepare group models from completed lower-level contrast maps
 
-This function generates the inputs for level 3 analyses, where
-multi-subject data are analyzed in group analyses.
+Prepare group models from completed lower-level contrast maps
 
 ## Usage
 
@@ -19,47 +18,44 @@ setup_l3_models(
 
 - gpa:
 
-  a `glm_pipeline_arguments` object containing analysis speecification
+  A `glm_pipeline_arguments` object containing the model specifications.
 
 - l3_model_names:
 
-  a subset of L3 models to be setup by this function. If not specified,
-  all models in gpa\$l2_models will be included
+  Names of the group models to prepare. Defaults to all defined L3
+  models.
 
 - l2_model_names:
 
-  a subset of L2 models to be setup by this function. If not specified,
-  all models in gpa\$l2_models will be included
+  Names of upstream FSL run-combination models when inputs come from L2.
+  Defaults to all defined L2 models in that case.
 
 - l1_model_names:
 
-  a subset of L1 models to be passed to L2 by this function. If not
-  specified, all models in gpa\$l1_models will be included
+  Names of the upstream task models. Defaults to all defined L1 models.
 
 - backend:
 
-  optional backend filter (e.g., "spm"). If supplied, only those
-  backends will be processed.
+  Optional filter on the resolved group engines: `"fsl"`, `"afni"`, or
+  `"spm"`.
+
+## Value
+
+The updated `gpa`. Group setup records for the selected engines are
+stored under `l3_model_setup`.
 
 ## Details
 
-This function will setup FSL level 2 (subject) .fsf files for all
-combinations of `l2_model_names` and `l1_model_names`.
+FSL uses FEAT contrasts from L1 for single-run analyses and from L2 for
+multi-run analyses. SPM uses named contrast images from its first-level
+models. AFNI ordinary group GLMs and longitudinal `3dLMEr` models accept
+AFNI subject-session contrast estimates or FSL COPEs, according to the
+L3 model's producer setting.
 
-FSL 2-level versus 3-level setup
+## See also
 
-2-level setup (one run per subject) - Pass L1 .feat folders as input to
-L3 .fsf setup - In this approach, the copes in the .fsf pertain to the
-L1 cope numbers - Requires one .fsf per L3 model
-
-3-level setup (multiple runs per subject, combined at L2) - Pass
-individual cope\*.feat folders within subject .gfeat folders - The
-folder cope numbers pertain to L1 copes - The cope\*.nii.gz in the
-cope\*.feat subfolders pertain to the L2 contrasts - Requires one .fsf
-per L1 cope x L3 model combination - Example:
-FSL_L2.gfeat/cope3.feat/stats/cope1.nii.gz ==\> cope3 is the third
-contrast in the L1 feat model ==\> cope1 is the first contrast in the L2
-feat model
+[`setup_l1_models`](https://hallquistlab.github.io/fmri.pipeline/reference/setup_l1_models.md),
+[`refresh_glm_status`](https://hallquistlab.github.io/fmri.pipeline/reference/refresh_glm_status.md)
 
 ## Author
 

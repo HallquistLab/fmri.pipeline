@@ -11,7 +11,8 @@ will later export to YAML.
 The recommended workflow is:
 
 1.  Create a `gpa` object with
-    [`setup_glm_pipeline()`](https://hallquistlab.github.io/fmri.pipeline/reference/setup_glm_pipeline.md).
+    [`setup_glm_pipeline()`](https://hallquistlab.github.io/fmri.pipeline/reference/setup_glm_pipeline.md)
+    and choose the GLM engine.
 2.  Run the interactive builders once.
 3.  Export the resulting model specification with
     [`export_glm_config()`](https://hallquistlab.github.io/fmri.pipeline/reference/export_glm_config.md).
@@ -869,8 +870,12 @@ column order.
 
 ## Level 2 Builder
 
-Level 2 models combine run-level estimates within subject or within
-subject-session.
+For multi-run FSL analyses, the L2 builder defines how to combine
+run-level estimates within subject or subject-session. AFNI users can go
+directly to the L3 builder after defining L1. SPM users need the L2
+builder only when projecting run-level predictors into L1. See [Choosing
+a GLM
+engine](https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.md).
 
 Run it with:
 
@@ -995,7 +1000,8 @@ Decision points:
   session-level outputs for Level 3.
 - Use `id` only when pooling sessions within subject is scientifically
   intended.
-- If you need AFNI `3dLMEr` at Level 3, use `id_session`.
+- If this FSL L2 model supplies AFNI `3dLMEr` at Level 3, use
+  `id_session`.
 - Between-session contrasts at L2 require `id`, but that choice pools
   sessions in a way that is not appropriate for many longitudinal
   designs.
@@ -1073,12 +1079,13 @@ If there are multiple sessions, the builder asks:
 How should this L3 model use sessions?
 ```
 
-Options:
+For multi-run FSL inputs, pair the L3 mode with the indicated L2 scope.
+With native AFNI inputs, the session maps come directly from L1.
 
 - `per_session`: fit separate per-session L3 inputs. Requires
   `l2_scope = "id_session"`.
-- `pooled_sessions_subject_ev`: pool sessions in FSL with subject
-  indicator EVs. Requires `l2_scope = "id_session"`.
+- `pooled_sessions_subject_ev`: pool sessions with subject indicator
+  EVs. Requires `l2_scope = "id_session"`.
 - `subject_rows`: use one row per subject input. Requires
   `l2_scope = "id"`.
 - `3dlmer`: use AFNI `3dLMEr` for a longitudinal mixed-effects L3 model.

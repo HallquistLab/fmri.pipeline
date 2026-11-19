@@ -1,7 +1,6 @@
-# Estimate a level 2 (subject) model using FSL FEAT with fixed effects integration of runs
+# Prepare a level 3 FSL FEAT group model from lower-level COPEs
 
-Estimate a level 2 (subject) model using FSL FEAT with fixed effects
-integration of runs
+Prepare a level 3 FSL FEAT group model from lower-level COPEs
 
 ## Usage
 

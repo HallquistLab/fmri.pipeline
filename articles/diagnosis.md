@@ -34,9 +34,10 @@ error and cancel automatically.
 ### Submission History
 
 The diagnosis function will first print a history of the submissions of
-the current analysis including date/time, user, and steps submitted. For
-example, in the analysis below, the analysis has been submitted one time
-with all five possible steps included.
+the current analysis including date/time, user, and steps submitted. The
+example below is a multi-run FSL submission with a separate L2 step. An
+AFNI or SPM submission using its own first-level contrasts goes directly
+from L1 to L3.
 
 *Example*:
 
@@ -150,6 +151,35 @@ These actions could include some or all of the following:
   specifying the ID.
 - `Exit diagnosis and return full tracking tree`: This will end the
   diagnosis function and return the full tracking tree (see below)
+
+### Check the fit behind a scheduler job
+
+The job tree records what the scheduler ran. To check whether a fit
+produced the contrast needed downstream, load the batch’s saved `gpa`
+after setup and refresh its status from disk. For example, for an SPM
+first-level job:
+
+``` r
+
+gpa <- refresh_glm_status(gpa, level = 1L, glm_software = "spm")
+gpa$l1_model_setup$spm[, c("id", "session", "spm_dir", "spm_complete", "spm_failed")]
+```
+
+Use the same call with `glm_software = "fsl"` or `"afni"` for those
+engines. A failed or incomplete row points to the fit to investigate:
+
+| Engine | Status columns in its L1 setup table | What to check |
+|----|----|----|
+| FSL | `feat_complete`, `feat_failed` | Open the `.fsf` at `feat_fsf` and inspect the FEAT report and `stats/` under `feat_dir`. |
+| AFNI | `afni_complete`, `afni_failed` | Read `afni_glm.log` in `afni_dir` for the failing command. Check `contrasts.tsv` for the expected coefficient image. For a group mixed model, use `3dLMEr.log` in the mixed-model directory. |
+| SPM | `spm_complete`, `spm_failed` | Check the job output for MATLAB errors, then inspect `SPM.mat` and `spm_contrasts.tsv` in `spm_dir` for the requested contrast. |
+
+For a group job, refresh `level = 3L` and inspect the engine’s table in
+`gpa$l3_model_setup`. If group setup finds no inputs, check the producer
+in the submission preflight report and refresh the level that supplied
+its contrast images. The [engine
+guide](https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.md)
+describes the supported combinations.
 
 ## Function Output/Tracking Tree
 

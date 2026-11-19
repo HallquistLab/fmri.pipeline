@@ -29,17 +29,7 @@
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
 <li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
-<li class="active nav-item dropdown">
-  <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="../articles/design.html">fmri.pipeline overview and design</a></li>
-    <li><a class="dropdown-item" href="../articles/diagnosis.html">Diagnosing a run of fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/quickstart.html">fmri.pipeline quick start guide</a></li>
-  </ul>
-</li>
+<li class="active nav-item"><a class="nav-link" href="../articles/index.html">Articles</a></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul>
 <ul class="navbar-nav">
@@ -83,8 +73,8 @@ pathways in <code>fmri.pipeline</code>, highlights specific statistical
 and computational considerations for FSL users, and shows when a hybrid
 <strong>FSL L1/L2 + AFNI <code>3dLMEr</code> L3</strong> workflow is
 preferable.</p>
-<p>The package now supports two practically important longitudinal
-routes:</p>
+<p>The worked examples below start with FSL run-level fits and compare
+two group analyses:</p>
 <ul>
 <li>FSL-native longitudinal analysis, where session-level maps are
 modeled at Level 3 with subject explanatory variables
@@ -93,20 +83,22 @@ modeled at Level 3 with subject explanatory variables
 2 and AFNI <code>3dLMEr</code> fits the longitudinal mixed-effects model
 at Level 3 (<code>l3_input_mode = "3dlmer"</code>).</li>
 </ul>
-<p>This distinction matters. AFNI’s current <code>3dLMEr</code>
-documentation describes it as the more flexible successor to
-<code>3dLME</code>, especially for complex random-effects structures. In
-<code>fmri.pipeline</code>, however, <code>3dLMEr</code> is used as a
-<strong>session-level longitudinal modeler</strong> on top of
-FSL-derived L2 inputs rather than as a single end-to-end replacement for
-all lower-level FSL estimation.</p>
+<p>A third route fits both stages in AFNI. AFNI L1 estimates a shared
+task effect across the retained runs of each participant and visit.
+Those visit-specific contrast images feed <code>3dLMEr</code> directly.
+Choose <code>glm_software = "afni"</code>, skip the L2 model, and use
+<code>execution_backend: afni</code> and
+<code>producer_backend: afni</code> on the mixed model. SPM can also
+preserve one first-level design per visit for native SPM group analyses.
+See <a href="glm-engines.html">Choosing a GLM engine</a> for both
+workflows.</p>
 <div class="section level3">
 <h3 id="recommended-defaults-at-a-glance">Recommended Defaults at a Glance<a class="anchor" aria-label="anchor" href="#recommended-defaults-at-a-glance"></a>
 </h3>
 <p>For most longitudinal studies, the practical decision is:</p>
 <ul>
 <li>
-<strong>Separate Sessions:</strong> Use
+<strong>Separate Sessions in FSL:</strong> Use
 <code>l2_scope = "id_session"</code> rather than pooling all runs for a
 subject across visits.</li>
 <li>
@@ -597,8 +589,8 @@ balanced FSL-native visit comparison:</p>
 <span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a><span class="at">        </span><span class="kw">-</span><span class="at"> session_label</span></span>
 <span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a><span class="at">      </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
 <span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a><span class="at">    </span><span class="fu">fsl_outlier_deweighting</span><span class="kw">:</span><span class="at"> </span><span class="ch">false</span></span></code></pre></div>
-<p>For AFNI <code>3dLMEr</code>, keep FSL as the L1/L2 producer and use
-AFNI only for the L3 model:</p>
+<p>For the hybrid example, keep FSL as the L1/L2 producer and use AFNI
+for the L3 model:</p>
 <div class="sourceCode" id="cb6"><pre class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a><span class="fu">glm_software</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">fsl</span><span class="kw">,</span><span class="at"> afni</span><span class="kw">]</span></span>
 <span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a></span>
 <span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a><span class="fu">l3_models</span><span class="kw">:</span></span>
@@ -655,9 +647,11 @@ execution:</p>
 <span>  subject_data <span class="op">=</span> <span class="va">subject_data</span>,</span>
 <span>  run_data <span class="op">=</span> <span class="va">run_data</span>,</span>
 <span>  trial_data <span class="op">=</span> <span class="va">trial_data</span>,</span>
-<span>  glm_software <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"fsl"</span>, <span class="st">"afni"</span><span class="op">)</span>,  <span class="co"># use "fsl" only for the FSL-native route</span></span>
+<span>  glm_software <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"fsl"</span>, <span class="st">"afni"</span><span class="op">)</span>,</span>
+<span>  l1_models <span class="op">=</span> <span class="cn">NULL</span>, l2_models <span class="op">=</span> <span class="cn">NULL</span>, l3_models <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  n_expected_runs <span class="op">=</span> <span class="fl">2L</span></span>
 <span><span class="op">)</span></span>
+<span><span class="va">gpa</span><span class="op">$</span><span class="va">level_backends</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l1 <span class="op">=</span> <span class="st">"fsl"</span>, l2 <span class="op">=</span> <span class="st">"fsl"</span>, l3 <span class="op">=</span> <span class="st">"afni"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">gpa</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/build_l1_models.html">build_l1_models</a></span><span class="op">(</span><span class="va">gpa</span>, from_spec_file <span class="op">=</span> <span class="st">"l1_models.yaml"</span><span class="op">)</span></span>
 <span><span class="va">gpa</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/build_l2_models.html">build_l2_models</a></span><span class="op">(</span><span class="va">gpa</span>, from_spec_file <span class="op">=</span> <span class="st">"l2_models.yaml"</span><span class="op">)</span></span>
@@ -669,11 +663,10 @@ execution:</p>
 <span>  l2_model_names <span class="op">=</span> <span class="st">"session_summary"</span>,</span>
 <span>  l3_model_names <span class="op">=</span> <span class="st">"visit_effect_3dlmer"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
-<p>For a FSL-native L3 model, set <code>glm_software = "fsl"</code> and
-pass the FSL L3 model name, for example
-<code>l3_model_names = "visit_effect_fsl"</code>. For an AFNI
-<code>3dLMEr</code> model, the L1 and L2 stages still run through FSL;
-AFNI begins only after the FSL L2 subject-session COPEs exist.</p>
+<p>For the FSL-native route, set <code>glm_software = "fsl"</code> at
+setup, omit the per-level assignment, and select
+<code>l3_model_names = "visit_effect_fsl"</code>. In the hybrid example
+above, AFNI begins after the FSL L2 subject-session COPEs exist.</p>
 <p>For a setup preview or debugging session, run the setup functions
 explicitly and inspect the generated setup tables. In this explicit
 workflow, each level depends on outputs from the previous level: L3
@@ -721,7 +714,7 @@ the subject/session split visible:</p>
 writes pooled multi-session FEAT setup and output under
 <code>feat_l3/</code>, with the L1/L2/L3 model names and contrast names
 embedded in the path.</p>
-<p>For <code>l3_input_mode = "3dlmer"</code>, setup writes one AFNI
+<p>For the hybrid <code>3dlmer</code> model above, setup writes one AFNI
 directory per L1/L2 contrast:</p>
 <pre class="text"><code>&lt;output_directory&gt;/
   afni_3dlmer/
@@ -1191,11 +1184,10 @@ variance from raw L1 outputs.</p>
 <h4 id="package-specific-implementation-details">Package-specific implementation details<a class="anchor" aria-label="anchor" href="#package-specific-implementation-details"></a>
 </h4>
 <ul>
-<li>
-<code>3dlmer</code> is only compatible with
-<code>l2_scope = "id_session"</code>.</li>
-<li>The AFNI backend currently consumes <strong>FSL-produced
-subject-session contrasts</strong> at L3.</li>
+<li>When FSL supplies the multi-run inputs, use
+<code>l2_scope = "id_session"</code> to produce one contrast per visit.
+With AFNI inputs, each L1 contrast already represents a
+subject-session.</li>
 <li>Numeric predictors in the refit L3 model are automatically written
 under AFNI’s <code>-qVars</code>.</li>
 <li>Random effects are specified with <code>random_effects</code>, then

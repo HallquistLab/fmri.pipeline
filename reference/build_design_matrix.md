@@ -1,7 +1,9 @@
-# Creates an fmri design matrix, including timing files for for AFNI or FSL.
+# Build a task fMRI design from events and signals
 
-Creates an fmri design matrix, including timing files for for AFNI or
-FSL.
+Builds run-level timing and convolved regressors used by the FSL, AFNI,
+and SPM model writers. FSL and AFNI timing-file exports are also
+available. The SPM writer reads events and modulators directly from the
+returned design object.
 
 ## Usage
 

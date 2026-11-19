@@ -29,17 +29,7 @@
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
 <li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
-<li class="active nav-item dropdown">
-  <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="../articles/design.html">fmri.pipeline overview and design</a></li>
-    <li><a class="dropdown-item" href="../articles/diagnosis.html">Diagnosing a run of fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/quickstart.html">fmri.pipeline quick start guide</a></li>
-  </ul>
-</li>
+<li class="active nav-item"><a class="nav-link" href="../articles/index.html">Articles</a></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul>
 <ul class="navbar-nav">
@@ -101,8 +91,9 @@ error and cancel automatically.</p>
 </h3>
 <p>The diagnosis function will first print a history of the submissions
 of the current analysis including date/time, user, and steps submitted.
-For example, in the analysis below, the analysis has been submitted one
-time with all five possible steps included.</p>
+The example below is a multi-run FSL submission with a separate L2 step.
+An AFNI or SPM submission using its own first-level contrasts goes
+directly from L1 to L3.</p>
 <p><em>Example</em>:</p>
 <pre><code>── Analysis: 23june2025 ───────────────────────────────────────────
 • Output directory: /proj/23june2025
@@ -219,6 +210,66 @@ individual-level logs by specifying the ID.</li>
 end the diagnosis function and return the full tracking tree (see
 below)</li>
 </ul>
+</div>
+<div class="section level3">
+<h3 id="check-the-fit-behind-a-scheduler-job">Check the fit behind a scheduler job<a class="anchor" aria-label="anchor" href="#check-the-fit-behind-a-scheduler-job"></a>
+</h3>
+<p>The job tree records what the scheduler ran. To check whether a fit
+produced the contrast needed downstream, load the batch’s saved
+<code>gpa</code> after setup and refresh its status from disk. For
+example, for an SPM first-level job:</p>
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">gpa</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/refresh_glm_status.html">refresh_glm_status</a></span><span class="op">(</span><span class="va">gpa</span>, level <span class="op">=</span> <span class="fl">1L</span>, glm_software <span class="op">=</span> <span class="st">"spm"</span><span class="op">)</span></span>
+<span><span class="va">gpa</span><span class="op">$</span><span class="va">l1_model_setup</span><span class="op">$</span><span class="va">spm</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"id"</span>, <span class="st">"session"</span>, <span class="st">"spm_dir"</span>, <span class="st">"spm_complete"</span>, <span class="st">"spm_failed"</span><span class="op">)</span><span class="op">]</span></span></code></pre></div>
+<p>Use the same call with <code>glm_software = "fsl"</code> or
+<code>"afni"</code> for those engines. A failed or incomplete row points
+to the fit to investigate:</p>
+<table class="table">
+<colgroup>
+<col width="33%">
+<col width="33%">
+<col width="33%">
+</colgroup>
+<thead><tr class="header">
+<th>Engine</th>
+<th>Status columns in its L1 setup table</th>
+<th>What to check</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td>FSL</td>
+<td>
+<code>feat_complete</code>, <code>feat_failed</code>
+</td>
+<td>Open the <code>.fsf</code> at <code>feat_fsf</code> and inspect the
+FEAT report and <code>stats/</code> under <code>feat_dir</code>.</td>
+</tr>
+<tr class="even">
+<td>AFNI</td>
+<td>
+<code>afni_complete</code>, <code>afni_failed</code>
+</td>
+<td>Read <code>afni_glm.log</code> in <code>afni_dir</code> for the
+failing command. Check <code>contrasts.tsv</code> for the expected
+coefficient image. For a group mixed model, use <code>3dLMEr.log</code>
+in the mixed-model directory.</td>
+</tr>
+<tr class="odd">
+<td>SPM</td>
+<td>
+<code>spm_complete</code>, <code>spm_failed</code>
+</td>
+<td>Check the job output for MATLAB errors, then inspect
+<code>SPM.mat</code> and <code>spm_contrasts.tsv</code> in
+<code>spm_dir</code> for the requested contrast.</td>
+</tr>
+</tbody>
+</table>
+<p>For a group job, refresh <code>level = 3L</code> and inspect the
+engine’s table in <code>gpa$l3_model_setup</code>. If group setup finds
+no inputs, check the producer in the submission preflight report and
+refresh the level that supplied its contrast images. The <a href="glm-engines.html">engine guide</a> describes the supported
+combinations.</p>
 </div>
 </div>
 <div class="section level2">

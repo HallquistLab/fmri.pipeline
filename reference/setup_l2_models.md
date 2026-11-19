@@ -18,7 +18,8 @@ setup_l2_models(
 
 - gpa:
 
-  a `glm_pipeline_arguments` object containing analysis speecification
+  a `glm_pipeline_arguments` object containing the analysis
+  specification
 
 - l1_model_names:
 
@@ -38,7 +39,8 @@ setup_l2_models(
 ## Details
 
 This function will setup FSL level 2 (subject) .fsf files for all
-combinations of `l2_model_names` and `l1_model_names`.
+combinations of `l2_model_names` and `l1_model_names`. Native AFNI and
+SPM analyses combine runs within L1 and proceed directly to group setup.
 
 ## Author
 

@@ -29,17 +29,7 @@
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
 <li class="nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
-<li class="active nav-item dropdown">
-  <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="../articles/design.html">fmri.pipeline overview and design</a></li>
-    <li><a class="dropdown-item" href="../articles/diagnosis.html">Diagnosing a run of fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/fwe.html">Familywise error correction for voxelwise GLMs in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/interactive-model-builder.html">Interactive model builder in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/longitudinal.html">Considerations for Longitudinal fMRI Analysis in fmri.pipeline</a></li>
-    <li><a class="dropdown-item" href="../articles/quickstart.html">fmri.pipeline quick start guide</a></li>
-  </ul>
-</li>
+<li class="active nav-item"><a class="nav-link" href="../articles/index.html">Articles</a></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul>
 <ul class="navbar-nav">
@@ -83,7 +73,7 @@ that you will later export to YAML.</p>
 <p>The recommended workflow is:</p>
 <ol style="list-style-type: decimal">
 <li>Create a <code>gpa</code> object with
-<code><a href="../reference/setup_glm_pipeline.html">setup_glm_pipeline()</a></code>.</li>
+<code><a href="../reference/setup_glm_pipeline.html">setup_glm_pipeline()</a></code> and choose the GLM engine.</li>
 <li>Run the interactive builders once.</li>
 <li>Export the resulting model specification with
 <code><a href="../reference/export_glm_config.html">export_glm_config()</a></code>.</li>
@@ -825,8 +815,10 @@ remembering column order.</p>
 <div class="section level2">
 <h2 id="level-2-builder">Level 2 Builder<a class="anchor" aria-label="anchor" href="#level-2-builder"></a>
 </h2>
-<p>Level 2 models combine run-level estimates within subject or within
-subject-session.</p>
+<p>For multi-run FSL analyses, the L2 builder defines how to combine
+run-level estimates within subject or subject-session. AFNI users can go
+directly to the L3 builder after defining L1. SPM users need the L2
+builder only when projecting run-level predictors into L1. See <a href="glm-engines.html">Choosing a GLM engine</a>.</p>
 <p>Run it with:</p>
 <div class="sourceCode" id="cb47"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">gpa</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/build_l2_models.html">build_l2_models</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">)</span></span></code></pre></div>
@@ -931,8 +923,8 @@ from all sessions are stacked into one subject-level model.</li>
 preserves session-level outputs for Level 3.</li>
 <li>Use <code>id</code> only when pooling sessions within subject is
 scientifically intended.</li>
-<li>If you need AFNI <code>3dLMEr</code> at Level 3, use
-<code>id_session</code>.</li>
+<li>If this FSL L2 model supplies AFNI <code>3dLMEr</code> at Level 3,
+use <code>id_session</code>.</li>
 <li>Between-session contrasts at L2 require <code>id</code>, but that
 choice pools sessions in a way that is not appropriate for many
 longitudinal designs.</li>
@@ -998,15 +990,16 @@ them.</li>
 </h3>
 <p>If there are multiple sessions, the builder asks:</p>
 <pre class="text"><code>How should this L3 model use sessions?</code></pre>
-<p>Options:</p>
+<p>For multi-run FSL inputs, pair the L3 mode with the indicated L2
+scope. With native AFNI inputs, the session maps come directly from
+L1.</p>
 <ul>
 <li>
 <code>per_session</code>: fit separate per-session L3 inputs.
 Requires <code>l2_scope = "id_session"</code>.</li>
 <li>
-<code>pooled_sessions_subject_ev</code>: pool sessions in FSL with
-subject indicator EVs. Requires
-<code>l2_scope = "id_session"</code>.</li>
+<code>pooled_sessions_subject_ev</code>: pool sessions with subject
+indicator EVs. Requires <code>l2_scope = "id_session"</code>.</li>
 <li>
 <code>subject_rows</code>: use one row per subject input. Requires
 <code>l2_scope = "id"</code>.</li>
