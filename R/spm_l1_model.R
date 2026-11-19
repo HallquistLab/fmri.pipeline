@@ -521,6 +521,8 @@ spm_l1_model <- function(
   stopifnot(model_name %in% names(gpa$l1_models$models))
 
   spm_defaults <- list(
+    matlab_cmd = "matlab",
+    matlab_args = "-batch",
     hpf = 100,
     hrf_derivs = "none",
     cvi = "AR(1)",
@@ -565,6 +567,7 @@ spm_l1_model <- function(
 
   lg$info("Create l1 spm_l1_output_dir: %s", spm_l1_output_dir)
   dir.create(spm_l1_output_dir, showWarnings = FALSE, recursive = TRUE)
+  spm_l1_output_dir <- normalizePath(spm_l1_output_dir)
 
   projection_model <- resolve_spm_l2_projection_model(
     gpa = gpa,
@@ -633,6 +636,9 @@ spm_l1_model <- function(
   spm_settings$fmri_t <- micro$fmri_t
   spm_settings$fmri_t0 <- micro$fmri_t0
 
+  if (!length(l1_confound_files) || all(!is.na(l1_confound_files) & !nzchar(l1_confound_files))) {
+    l1_confound_files <- NULL
+  }
   if (!is.null(l1_confound_files)) {
     if (isTRUE(spm_settings$concatenate_runs)) {
       if (length(l1_confound_files) != 1L) {
@@ -652,15 +658,6 @@ spm_l1_model <- function(
   if (is.null(spm_settings$nifti_tmpdir)) {
     spm_settings$nifti_tmpdir <- file.path(spm_l1_output_dir, "nifti_tmp")
   }
-  tmpdir_marker <- file.path(spm_l1_output_dir, ".nifti_tmpdir")
-  tryCatch(
-    writeLines(spm_settings$nifti_tmpdir, tmpdir_marker),
-    error = function(e) {
-      lg$warn("Could not write nifti tmpdir marker to %s: %s", tmpdir_marker, as.character(e))
-      return(NULL)
-    }
-  )
-
   if (isTRUE(execute_spm)) {
     spm_settings$spm_execute_setup <- TRUE
     spm_settings$spm_execute_glm <- TRUE
@@ -690,20 +687,30 @@ spm_l1_model <- function(
     if (all(valid_confound)) {
       ts_files <- l1_confound_files
     } else {
-      lg$warn("Some l1_confound_files are missing or invalid; disabling confounds for SPM setup.")
+      stop("SPM confound files were supplied but are missing or invalid; refusing to omit nuisance adjustment.", call. = FALSE)
     }
   }
 
   # Ensure SPM uses the run_niftis field
-  if (is.null(d_obj$run_niftis)) d_obj$run_niftis <- run_nifti
+  d_obj$run_niftis <- run_nifti
 
   spm_status <- get_spm_status(spm_l1_output_dir, lg = lg)
 
+  signature_settings <- spm_settings[!grepl("^force_|^spm_execute_", names(spm_settings))]
+  signature <- spm_setup_signature(list(
+    bdm = d_obj[c("design", "design_concat", "run_volumes", "drop_volumes", "tr", "runs_to_output",
+                  "spm_l2_projection", "spm_l2_projection_interactions")],
+    contrasts = gpa$l1_models$models[[model_name]]$contrasts,
+    settings = signature_settings, run_sessions = run_sessions, source_runs = source_run_numbers),
+    c(run_nifti, ts_files))
+  reuse <- !isTRUE(spm_settings$force_l1_creation) && !isTRUE(spm_status$spm_failed) &&
+    spm_setup_current(spm_l1_output_dir, signature) &&
+    all(file.exists(file.path(spm_l1_output_dir, c("setup_glm_design.m", "run_glm.m", "validate_spm_outputs.m"))))
   spm_syntax <- NULL
-  if (isTRUE(spm_status$spm_mat_exists) && isFALSE(spm_settings$force_l1_creation)) {
-    lg$info("SPM.mat exists in %s. Skipping SPM design setup (force_l1_creation = FALSE).", spm_l1_output_dir)
-    spm_syntax <- list(gunzip_cmds = character(0), contrast_cmds = NULL)
+  if (reuse) {
+    spm_syntax <- readRDS(file.path(spm_l1_output_dir, "spm_setup.rds"))$syntax
   } else {
+    spm_invalidate_setup(spm_l1_output_dir)
     lg$info("Generating SPM batch scripts for model: %s", model_name)
     spm_syntax <- tryCatch(
       {
@@ -718,9 +725,9 @@ spm_l1_model <- function(
           condition_contrasts = spm_settings$condition_contrasts,
           unit_contrasts = spm_settings$unit_contrasts,
           effects_of_interest_F = spm_settings$effects_of_interest_F,
-          spm_execute_setup = spm_settings$spm_execute_setup,
-          spm_execute_glm = spm_settings$spm_execute_glm,
-          spm_execute_contrasts = spm_settings$spm_execute_contrasts,
+          spm_execute_setup = FALSE,
+          spm_execute_glm = FALSE,
+          spm_execute_contrasts = FALSE,
           concatenate_runs = spm_settings$concatenate_runs,
           spm_path = spm_settings$spm_path,
           matlab_cmd = spm_settings$matlab_cmd,
@@ -775,7 +782,7 @@ spm_l1_model <- function(
     output_dir = spm_l1_output_dir,
     mobj = mobj,
     spm_path = spm_settings$spm_path,
-    execute = spm_settings$spm_execute_contrasts,
+    execute = FALSE,
     matlab_cmd = spm_settings$matlab_cmd,
     matlab_args = spm_settings$matlab_args,
     projection_interaction_terms = if (!is.null(spm_syntax$projection_interaction_terms)) spm_syntax$projection_interaction_terms else character(0),
@@ -789,14 +796,19 @@ spm_l1_model <- function(
     projection_main_effect_weights = projection_main_effect_weights
   )
 
-  if (!spm_settings$spm_execute_contrasts && !is.null(spm_contrast_cmds)) {
+  if (!is.null(spm_contrast_cmds)) {
     cat(
-      c("#!/bin/bash", spm_contrast_cmds$extract_cmd, spm_contrast_cmds$setup_cmd),
+      c("#!/bin/bash", "set -euo pipefail", spm_contrast_cmds$extract_cmd, spm_contrast_cmds$setup_cmd),
       file = file.path(spm_l1_output_dir, "setup_spm_contrasts.sh"),
       sep = "\n"
     )
   }
   spm_syntax$contrast_cmds <- spm_contrast_cmds
+
+  if (!reuse) spm_save_setup(spm_l1_output_dir, signature, spm_syntax,
+    isTRUE(spm_settings$write_residuals) && normalize_spm_estimation_method(spm_settings$estimation_method) == "Classical")
+
+  spm_execute_model(spm_l1_output_dir, 1L, spm_settings, spm_compute_env)
 
   spm_script_files <- list.files(spm_l1_output_dir, pattern = "\\.m$", full.names = FALSE)
   lg$debug(

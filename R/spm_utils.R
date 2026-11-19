@@ -87,8 +87,10 @@ run_spm_sepjobs <- function(gpa, level = 1L, model_names = NULL, rerun = FALSE, 
     stop("SPM queue is missing spm_dir column. Ensure setup_l1_models/setup_l3_models ran successfully.")
   }
 
-  spm_job_df <- spm_queue %>%
-    dplyr::select("spm_dir", "spm_complete", "to_run")
+  # Re-read disk state: the queue may predate a failure or a removed output.
+  spm_job_df <- dplyr::bind_rows(lapply(unique(spm_queue$spm_dir), get_spm_status, lg = lg))
+  spm_job_df$spm_dir <- unique(spm_queue$spm_dir)
+  spm_job_df$to_run <- !spm_job_df$spm_complete
 
   if (isTRUE(rerun)) {
     lg$info("rerun = TRUE in run_spm_sepjobs. All SPM directories will be marked for job execution.")
@@ -104,6 +106,10 @@ run_spm_sepjobs <- function(gpa, level = 1L, model_names = NULL, rerun = FALSE, 
     return(NULL)
   }
 
+  current <- vapply(to_run_dirs, spm_setup_current, logical(1))
+  if (any(!current)) stop("SPM setup is missing or stale; rerun setup_l", level,
+                         "_models before submitting: ", paste(to_run_dirs[!current], collapse = ", "))
+
   if (!file.exists(spm_output_directory)) {
     lg$debug("Creating spm_l%d working directory: %s", level, spm_output_directory)
     dir.create(spm_output_directory, recursive = TRUE)
@@ -117,14 +123,6 @@ run_spm_sepjobs <- function(gpa, level = 1L, model_names = NULL, rerun = FALSE, 
   if (is.null(matlab_cmd) || !nzchar(matlab_cmd)) matlab_cmd <- "matlab"
   matlab_args <- gpa$glm_settings$spm$matlab_args
   if (is.null(matlab_args) || !nzchar(matlab_args)) matlab_args <- "-batch"
-
-  build_matlab_call <- function(script_path) {
-    cmd_str <- paste0(
-      "try; run('", script_path, "'); ",
-      "catch ME; disp(getReport(ME,'extended')); exit(1); end; exit(0);"
-    )
-    paste(matlab_cmd, matlab_args, shQuote(cmd_str))
-  }
 
   child_log_directory <- Sys.getenv("SLURM_SUBMIT_DIR", unset = "")
   if (!nzchar(child_log_directory)) child_log_directory <- Sys.getenv("PBS_O_WORKDIR", unset = "")
@@ -140,7 +138,7 @@ run_spm_sepjobs <- function(gpa, level = 1L, model_names = NULL, rerun = FALSE, 
         paste0("#SBATCH -n ", spm_cpus),
         paste0("#SBATCH --time=", spm_time),
         paste0("#SBATCH --mem-per-cpu=", spm_memgb, "G"),
-        ifelse(wait_for != "", paste0("#SBATCH --dependency=afterok:", paste(wait_for, collapse=":")), ""),
+        ifelse(any(nzchar(wait_for)), paste0("#SBATCH --dependency=afterok:", paste(wait_for, collapse=":")), ""),
         sched_args_to_header(gpa),
         paste("#SBATCH -J", scheduler_safe_token(job_name, max_chars = 80L)),
         scheduler_output_directives(gpa$scheduler, child_log_directory, job_name = job_name, extra = extra),
@@ -164,7 +162,7 @@ run_spm_sepjobs <- function(gpa, level = 1L, model_names = NULL, rerun = FALSE, 
         "#!/bin/bash",
         paste0("#PBS -l nodes=1:ppn=", spm_cpus),
         paste0("#PBS -l pmem=", spm_memgb, "gb"),
-        ifelse(wait_for != "", paste0("#PBS -W depend=afterok:", paste(wait_for, collapse=":")), ""),
+        ifelse(any(nzchar(wait_for)), paste0("#PBS -W depend=afterok:", paste(wait_for, collapse=":")), ""),
         paste0("#PBS -l walltime=", spm_time),
         sched_args_to_header(gpa),
         paste("#PBS -N", substr(scheduler_safe_token(job_name, max_chars = 80L), 1L, 15L)),
@@ -227,97 +225,11 @@ run_spm_sepjobs <- function(gpa, level = 1L, model_names = NULL, rerun = FALSE, 
       paste0("spm_contrast_script=", shQuote(script_map[["contrasts"]])),
       "",
       paste0("cleanup_tmp=", ifelse(cleanup_tmp, "1", "0")),
-      "function spm_runner() {",
-      "  odir=\"$1\"",
-      "  [ -f \"${odir}/.spm_fail\" ] && rm -f \"${odir}/.spm_fail\"",
-      "  if [ -f \"${odir}/.spm_complete\" ]; then",
-      "    rm -f \"${odir}/.spm_complete\"",
-      "  fi",
-      "  start_time=$( date )",
-      "  exit_code=0",
-      "",
-      "  run_matlab() {",
-      "    script_path=\"$1\"",
-      "    cmd_str=\"try; run('${script_path}'); catch ME; disp(getReport(ME,'extended')); exit(1); end; exit(0);\"",
-      "    ${matlab_cmd} ${matlab_args} \"${cmd_str}\"",
-      "    cmd_exit=$?",
-      "    if [ $cmd_exit -ne 0 ]; then",
-      "      exit_code=$cmd_exit",
-      "    fi",
-      "  }",
-      "",
-      "  gunzip_script=\"${odir}/gunzip_commands.sh\"",
-      "  if [ -f \"${gunzip_script}\" ]; then",
-      "    bash \"${gunzip_script}\"",
-      "    cmd_exit=$?",
-      "    if [ $cmd_exit -ne 0 ]; then exit_code=$cmd_exit; fi",
-      "  fi",
-      "",
-      if (isTRUE(run_setup)) {
-        c(
-          "  setup_script=\"${odir}/${spm_setup_script}\"",
-          "  if [ -f \"${setup_script}\" ]; then",
-          "    run_matlab \"${setup_script}\"",
-          "  fi"
-        )
-      } else {
-        character(0)
-      },
-      if (isTRUE(run_glm)) {
-        c(
-          "  glm_script=\"${odir}/${spm_glm_script}\"",
-          "  if [ -f \"${glm_script}\" ]; then",
-          "    run_matlab \"${glm_script}\"",
-          "  fi"
-        )
-      } else {
-        character(0)
-      },
-      "",
-      "  contrast_setup_script=\"${odir}/setup_spm_contrasts.sh\"",
-      "  if [ -f \"${contrast_setup_script}\" ]; then",
-      "    bash \"${contrast_setup_script}\"",
-      "    cmd_exit=$?",
-      "    if [ $cmd_exit -ne 0 ]; then exit_code=$cmd_exit; fi",
-      "  fi",
-      "",
-      if (isTRUE(run_contrasts)) {
-        c(
-          "  contrast_script=\"${odir}/${spm_contrast_script}\"",
-          "  if [ -f \"${contrast_script}\" ]; then",
-            "    run_matlab \"${contrast_script}\"",
-          "  fi"
-        )
-      } else {
-        character(0)
-      },
-      "",
-      "  if [ \"${cleanup_tmp}\" -eq 1 ] && [ $exit_code -eq 0 ]; then",
-      "    tmpdir_file=\"${odir}/.nifti_tmpdir\"",
-      "    if [ -f \"${tmpdir_file}\" ]; then",
-      "      tmpdir=$(cat \"${tmpdir_file}\")",
-      "    else",
-      "      tmpdir=\"${odir}/nifti_tmp\"",
-      "    fi",
-      "    if [ -d \"${tmpdir}\" ]; then",
-      "      rm -f \"${tmpdir}\"/*.nii",
-      "      rmdir \"${tmpdir}\" 2>/dev/null",
-      "    fi",
-      "  fi",
-      "",
-      "  end_time=$( date )",
-      "  if [ $exit_code -eq 0 ]; then",
-      "    status_file=\"${odir}/.spm_complete\"",
-      "    artifact_status=\"COMPLETED\"",
-      "  else",
-      "    status_file=\"${odir}/.spm_fail\"",
-      "    artifact_status=\"FAILED\"",
-      "  fi",
-      "  echo $start_time > \"${status_file}\"",
-      "  echo $end_time >> \"${status_file}\"",
-      paste0("  write_job_manifest \"${odir}\" \"spm_l", level, "\" \"${artifact_status}\" \"${odir}\""),
-      "  return $exit_code",
-      "}",
+      paste0("run_setup=", as.integer(run_setup)),
+      paste0("run_glm=", as.integer(run_glm)),
+      paste0("run_contrasts=", as.integer(run_contrasts)),
+      paste0("spm_level=", level),
+      readLines(system.file("scripts", "spm_runner.sh", package = "fmri.pipeline")),
       "",
       "function spm_killed() {",
       "  kill_time=$( date )",
@@ -377,13 +289,14 @@ run_spm_sepjobs <- function(gpa, level = 1L, model_names = NULL, rerun = FALSE, 
       scheduler_options = gpa$parallel$sched_args
     )
 
-    if (wait_for != "") tracking_args$parent_job_id <- wait_for
+    if (any(nzchar(wait_for))) tracking_args$parent_job_id <- wait_for
 
     joblist[j] <- cluster_job_submit(
       outfile,
       scheduler = gpa$scheduler,
       tracking_sqlite_db = tracking_sqlite_db,
-      tracking_args = tracking_args
+      tracking_args = tracking_args,
+      fail_on_error = TRUE
     )
   }
 

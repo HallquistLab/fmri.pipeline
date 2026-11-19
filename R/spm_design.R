@@ -561,7 +561,7 @@ generate_spm_mat <- function(bdm, ts_files=NULL, output_dir="spm_out",
   spm_syntax <- list()
 
   if (is.null(spm_path)) { message("No spm_path provided. The scripts will assume that spm is already in the MATLAB path.") }
-  if (!dir.exists(spm_path)) { stop("Provided spm_path does not exist: ", spm_path) }
+  if (!is.null(spm_path) && !dir.exists(spm_path)) { stop("Provided spm_path does not exist: ", spm_path) }
   
   if (!inherits(bdm, "bdm")) { stop("generate_spm_mat requires an object of class 'bdm' from build_design_matrix.") }
 
@@ -631,6 +631,7 @@ generate_spm_mat <- function(bdm, ts_files=NULL, output_dir="spm_out",
   if (!concatenate_runs && length(run_niftis) != nrow(design)) { stop("Length of run_niftis argument is not equal to rows in design") }
   
   stopifnot(all(file.exists(run_niftis)))
+  run_niftis <- normalizePath(run_niftis, mustWork = TRUE)
 
   if (!is.null(ts_files)) {
     stopifnot(all(file.exists(ts_files)))
@@ -641,15 +642,16 @@ generate_spm_mat <- function(bdm, ts_files=NULL, output_dir="spm_out",
     }
   }
 
-  if (!dir.exists(output_dir)) { dir.create(output_dir) }
+  if (!dir.exists(output_dir)) { dir.create(output_dir, recursive = TRUE) }
   output_dir <- normalizePath(output_dir) #convert to absolute path to avoid any ambiguity
   
   nruns <- dim(design)[1]
   nregressors <- dim(design)[2]
   
-  #NB. RNifti::niftiHeader is far faster than readNIfTI with read_data=FALSE
-  run_headers <- lapply(run_niftis, function(x) { RNifti::niftiHeader(x) })
-  run_lengths <- sapply(run_headers, function(x) { x$dim[5] }) #first element is just 3 versus 4 dimensions
+  aligned <- spm_align_inputs(bdm, run_niftis, ts_files, concatenate_runs, output_dir)
+  run_lengths <- aligned$lengths
+  scan_offsets <- aligned$offsets
+  ts_files <- aligned$ts_files
 
   run_numbers <- if (!is.null(bdm$runs_to_output)) as.integer(bdm$runs_to_output) else seq_along(run_niftis)
   if (length(run_numbers) != length(run_niftis)) {
@@ -747,30 +749,36 @@ generate_spm_mat <- function(bdm, ts_files=NULL, output_dir="spm_out",
   gunzip_cmds <- character(0)
   if (any(gzipped)) {
     dir.create(nifti_tmpdir, showWarnings = FALSE, recursive = TRUE)
+    nifti_tmpdir <- normalizePath(nifti_tmpdir)
     # Use deterministic names in the nifti_tmpdir so the cluster job can find/create them reliably
-    target_niftis <- sapply(run_niftis, function(x) {
-      if (grepl(".nii.gz$", x)) {
-        # basename can be non-unique across runs, use run index or just keep full path structure if possible?
-        # But we want these in nifti_tmpdir. Let's use basename + a hash of the full path if we're worried.
-        # For simplicity, if we are in a subject's session/run folder structure, basename is usually unique *per session*.
-        file.path(nifti_tmpdir, sub(".nii.gz$", ".nii", basename(x)))
-      } else {
-        x
-      }
-    })
+    # Isolate temporary images by analysis and run, even for repeated basenames.
+    scope_file <- tempfile()
+    writeLines(output_dir, scope_file)
+    scope <- unname(tools::md5sum(scope_file))
+    unlink(scope_file)
+    nifti_tmpdir <- file.path(nifti_tmpdir, paste0("spm_", scope))
+    dir.create(nifti_tmpdir, showWarnings = FALSE, recursive = TRUE)
+    writeLines(nifti_tmpdir, file.path(output_dir, ".nifti_tmpdir"))
+    target_niftis <- vapply(seq_along(run_niftis), function(i) {
+      x <- run_niftis[i]
+      if (grepl("\\.nii\\.gz$", x)) {
+        file.path(nifti_tmpdir, paste0(sprintf("run_%04d_", i), sub("\\.gz$", "", basename(x))))
+      } else x
+    }, character(1))
 
     # Record the commands to be run either now or on the cluster
-    gunzip_cmds <- paste0("gunzip -c ", shQuote(run_niftis[gzipped]), " > ", shQuote(target_niftis[gzipped]))
+    gunzip_cmds <- c(paste("mkdir -p", shQuote(nifti_tmpdir)), paste0("gunzip -c ", shQuote(run_niftis[gzipped]), " > ", shQuote(target_niftis[gzipped])))
 
     if (spm_execute_setup || spm_execute_glm) {
       for (cmd in gunzip_cmds) {
         message("Executing: ", cmd)
-        system(cmd)
+        if (system(cmd) != 0L) stop("SPM image decompression failed.")
       }
-    } else {
-      cat(c("#!/bin/bash", gunzip_cmds), file = file.path(output_dir, "gunzip_commands.sh"), sep = "\n")
     }
+    cat(c("#!/bin/bash", "set -euo pipefail", gunzip_cmds), file = file.path(output_dir, "gunzip_commands.sh"), sep = "\n")
     run_niftis <- target_niftis
+  } else {
+    unlink(file.path(output_dir, c("gunzip_commands.sh", ".nifti_tmpdir")))
   }
 
   spm_preamble <- c(
@@ -837,7 +845,7 @@ generate_spm_mat <- function(bdm, ts_files=NULL, output_dir="spm_out",
           paste0("Nt = ", run_lengths[nn], ";"),
           paste0("Nt_start = ", ifelse(nn > 1, run_vol_concat[nn-1], 0), ";"),
           "for i = 1:Nt",
-          paste0("  ", baseobj, ".sess(", rr, ").scans{i+Nt_start,1} = [ '", run_niftis[nn], "' ',' num2str(i) ];"),
+          paste0("  ", baseobj, ".sess(", rr, ").scans{i+Nt_start,1} = [ '", run_niftis[nn], "' ',' num2str(i + ", scan_offsets[nn], ") ];"),
           "end",
           ""
         )
@@ -846,7 +854,7 @@ generate_spm_mat <- function(bdm, ts_files=NULL, output_dir="spm_out",
       scans_string <- c(
         paste0("Nt = ", run_lengths[rr], ";"),
         "for i = 1:Nt",
-        paste0("  ", baseobj, ".sess(", rr, ").scans{i,1} = [ '", run_niftis[rr], "' ',' num2str(i) ];"),
+        paste0("  ", baseobj, ".sess(", rr, ").scans{i,1} = [ '", run_niftis[rr], "' ',' num2str(i + ", scan_offsets[rr], ") ];"),
         "end"
       )
     }
@@ -1042,14 +1050,14 @@ generate_spm_mat <- function(bdm, ts_files=NULL, output_dir="spm_out",
   #Generate syntax for executing SPM GLM setup
   exec_string <- c(
     spm_preamble,
-    ifelse (file.exists(file.path(output_dir, "SPM.mat")), paste0("delete('", file.path(output_dir, "SPM.mat"), "');"), ""), #remove SPM.mat if it exists
+    paste0("if exist('", file.path(output_dir, "SPM.mat"), "', 'file'), delete('", file.path(output_dir, "SPM.mat"), "'); end;"), #remove SPM.mat if it exists
     paste0("run('", file.path(output_dir, "glm_design_batch.m"), "');"), #source the settings for this GLM
     "% RUN DESIGN MATRIX JOB",
     paste0("spm_jobman('run',matlabbatch);")
   )
 
   if (concatenate_runs) {
-    exec_string <- c(exec_string, paste0("spm_fmri_concatenate( [ '", output_dir, "' filesep 'SPM.mat'], [ ", paste(bdm$run_volumes, collapse=", "), " ]);"))
+    exec_string <- c(exec_string, paste0("spm_fmri_concatenate( [ '", output_dir, "' filesep 'SPM.mat'], [ ", paste(run_lengths, collapse=", "), " ]);"))
   }
   
   #write GLM setup to file
@@ -1074,7 +1082,7 @@ generate_spm_mat <- function(bdm, ts_files=NULL, output_dir="spm_out",
   }
 
   if (spm_execute_setup) {
-    system(build_shell_call(file.path(output_dir, "setup_glm_design.m")))
+    if (system(build_shell_call(file.path(output_dir, "setup_glm_design.m"))) != 0L) stop("SPM design setup failed.")
   } else {
     message("To run GLM setup script, execute this command: ", build_shell_call(file.path(output_dir, "setup_glm_design.m")))
   }
@@ -1100,7 +1108,7 @@ generate_spm_mat <- function(bdm, ts_files=NULL, output_dir="spm_out",
   spm_syntax[["run_glm"]] <- m_string  
 
   if (spm_execute_glm) {
-    system(build_shell_call(file.path(output_dir, "run_glm.m")))
+    if (system(build_shell_call(file.path(output_dir, "run_glm.m"))) != 0L) stop("SPM estimation failed.")
   } else {
     message("To estimate GLM after design matrix setup, execute this command: ", build_shell_call(file.path(output_dir, "run_glm.m")))
   }
@@ -1110,7 +1118,7 @@ generate_spm_mat <- function(bdm, ts_files=NULL, output_dir="spm_out",
     matlab_cmd = matlab_cmd, matlab_args = matlab_args)
   
   if (!spm_execute_contrasts && !is.null(spm_contrast_cmds)) {
-    cat(c("#!/bin/bash", spm_contrast_cmds$extract_cmd, spm_contrast_cmds$setup_cmd), 
+    cat(c("#!/bin/bash", "set -euo pipefail", spm_contrast_cmds$extract_cmd, spm_contrast_cmds$setup_cmd),
       file = file.path(output_dir, "setup_spm_contrasts.sh"), sep = "\n")
   }
   

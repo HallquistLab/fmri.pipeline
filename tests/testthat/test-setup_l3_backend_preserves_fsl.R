@@ -3,9 +3,7 @@
 test_that("setup_l3_models(backend='spm') preserves existing FSL l3 tables", {
   spm_dir <- file.path(tempdir(), "spm_l1_test")
   dir.create(spm_dir, recursive = TRUE, showWarnings = FALSE)
-  file.create(file.path(spm_dir, "SPM.mat"))
-  file.create(file.path(spm_dir, "beta_0001.nii"))
-  file.create(file.path(spm_dir, "con_0001.nii"))
+  make_spm_completed_fixture(spm_dir)
   subj_ids <- paste0("sub", 1:4)
 
   l1_models <- list(models = list(model1 = list()))

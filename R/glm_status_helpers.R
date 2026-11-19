@@ -136,36 +136,15 @@ get_spm_status <- function(spm_dir, lg = NULL, prefix = NULL) {
   spm_checks$spm_beta_count <- length(beta_files)
   spm_checks$spm_contrast_exists <- length(con_files) > 0L
   spm_checks$spm_contrast_count <- length(con_files)
-  spm_checks$spm_minimal_outputs_exist <- isTRUE(spm_mat_exists && length(beta_files) > 0L)
+  spm_checks$spm_minimal_outputs_exist <- spm_nonempty_files(c(spm_mat, beta_files)) && length(beta_files) > 0L
+  spm_checks$spm_outputs_valid <- spm_outputs_valid(spm_dir)
+  spm_checks$spm_complete <- file.exists(spm_complete_file) && !file.exists(spm_fail_file) &&
+    isTRUE(spm_checks$spm_outputs_valid)
+  spm_checks$spm_failed <- file.exists(spm_fail_file) ||
+    (file.exists(spm_complete_file) && !isTRUE(spm_checks$spm_outputs_valid))
 
   if (dir.exists(spm_dir)) {
-    if (file.exists(spm_complete_file)) {
-      if (isTRUE(spm_checks$spm_minimal_outputs_exist)) {
-        lg$debug("SPM directory is complete: %s", spm_dir)
-      } else {
-        lg$warn(
-          "Found .spm_complete in %s, but required outputs are missing (need SPM.mat and at least one beta image).",
-          spm_dir
-        )
-      }
-      timing_file <- spm_complete_file
-      if (file.exists(spm_fail_file)) {
-        lg$warn("Both .spm_complete and .spm_fail objects exist in %s", spm_dir)
-        lg$warn(
-          "Treating this run as %s based on output files.",
-          ifelse(isTRUE(spm_checks$spm_minimal_outputs_exist), "complete", "failed")
-        )
-      }
-      spm_checks$spm_complete <- isTRUE(spm_checks$spm_minimal_outputs_exist)
-      spm_checks$spm_failed <- !isTRUE(spm_checks$spm_minimal_outputs_exist)
-    } else if (file.exists(spm_fail_file)) {
-      lg$debug("Detected SPM failure in: %s", spm_dir)
-      timing_file <- spm_fail_file
-      spm_checks$spm_failed <- TRUE
-    } else {
-      timing_file <- NULL
-      spm_checks$spm_complete <- isTRUE(spm_checks$spm_minimal_outputs_exist)
-    }
+    timing_file <- if (file.exists(spm_fail_file)) spm_fail_file else if (file.exists(spm_complete_file)) spm_complete_file else NULL
 
     if (!is.null(timing_file)) {
       timing <- readLines(timing_file)

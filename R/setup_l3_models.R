@@ -1223,15 +1223,14 @@ get_feat_l3_inputs <- function(gpa, l3_cope_config, lg=NULL) {
   return(feat_inputs)
 }
 
-get_spm_contrast_file <- function(spm_dir, cope_number) {
-  base <- sprintf("con_%04d.nii", cope_number)
-  cand <- file.path(spm_dir, base)
-  if (file.exists(cand)) return(cand)
-  cand_gz <- paste0(cand, ".gz")
-  if (file.exists(cand_gz)) return(cand_gz)
-  cand_gz2 <- sub("\\.nii$", ".nii.gz", cand)
-  if (file.exists(cand_gz2)) return(cand_gz2)
-  return(cand)
+get_spm_contrast_file <- function(spm_dir, contrast_name) {
+  manifest <- spm_read_contrast_manifest(spm_dir)
+  if (is.null(manifest)) return(NA_character_)
+  match <- which(manifest$contrast_name == contrast_name & manifest$stat == "T")
+  if (length(match) != 1L) return(NA_character_)
+  file <- manifest$coef_file[match]
+  if (!spm_nonempty_files(file)) return(NA_character_)
+  file
 }
 
 get_spm_l3_model_df <- function(gpa, model_df, subj_df = NULL) {
@@ -1279,17 +1278,8 @@ get_spm_l3_inputs <- function(gpa, l3_cope_config, lg = NULL) {
     return(list())
   }
 
-  if ("spm_complete" %in% names(spm_inputs)) {
-    spm_inputs <- spm_inputs %>%
-      dplyr::filter(.data$spm_complete == TRUE)
-  } else {
-    lg$warn("No spm_complete column in gpa$l1_model_setup$spm. Proceeding without completion filter for L3 inputs.")
-  }
-
-  if ("spm_contrast_exists" %in% names(spm_inputs)) {
-    spm_inputs <- spm_inputs %>%
-      dplyr::filter(.data$spm_contrast_exists == TRUE)
-  }
+  current_status <- dplyr::bind_rows(lapply(spm_inputs$spm_dir, get_spm_status, lg = lg))
+  spm_inputs <- spm_inputs[current_status$spm_complete %in% TRUE, , drop = FALSE]
 
   spm_inputs <- spm_inputs %>%
     dplyr::inner_join(l3_cope_config, by = c("id", "session", "l1_model"))
@@ -1299,7 +1289,7 @@ get_spm_l3_inputs <- function(gpa, l3_cope_config, lg = NULL) {
   }
 
   spm_inputs <- spm_inputs %>%
-    dplyr::mutate(con_file = mapply(get_spm_contrast_file, .data$spm_dir, .data$l1_cope_number, USE.NAMES = FALSE)) %>%
+    dplyr::mutate(con_file = mapply(get_spm_contrast_file, .data$spm_dir, .data$l1_cope_name, USE.NAMES = FALSE)) %>%
     dplyr::select("id", "session", "l1_model", "l3_model", "l3_input_mode", "l1_cope_name", "spm_dir", "con_file")
 
   if (!is.character(spm_inputs$con_file)) {
