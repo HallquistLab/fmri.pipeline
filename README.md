@@ -352,6 +352,10 @@ The pkgdown site is the primary documentation entry point:
 
 MEDuSA deconvolution, event-locked alignment, and multilevel trajectory modeling (`mixed_by`, `jlmer`, `meta_mixed_by`) now live in the standalone [`medusa`](https://github.com/HallquistLab/medusa) package. Legacy pre-0.4-1 MEDuSA entry points in `fmri.pipeline` emit deprecation warnings and forward to `medusa` when installed.
 
+## End-to-end tests
+
+The clock-task suite runs FSL, SPM and AFNI from trial data through group contrasts on Slurm. It includes a four-participant smoke profile and the complete 80-run fixture. [Run the clock GLM suite](tests/integration/clock-glm/README.md).
+
 ## Development status
 
 `fmri.pipeline` is under active development. FSL-centered analyses are the most established path. Backend resolution, SPM support, AFNI Level 3 workflows, longitudinal model specification, and diagnostic tooling are current areas of active work. For new projects, prefer YAML model specifications, explicit `subject_data`/`run_data`/`trial_data` tables, and small test runs before launching the full model grid.
