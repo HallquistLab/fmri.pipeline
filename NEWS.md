@@ -2,6 +2,10 @@
 
 ## Factorial GLM correctness
 
+* Automatic custom AFNI GLTs now reject non-unit quantitative coefficient weights
+  and combinations of slopes, which AFNI cannot express in this form, instead of
+  misinterpreting them as covariate evaluation offsets. Single slopes with weight
+  `+1` and explicit `lmer_glt_codes` covariate offsets remain supported.
 * Preserve signed L1 formula weights during convolution, exclude post-scan or
   omitted trials from formula-rank diagnostics, and exclude canonical factor
   padding from continuous-covariate reference values.
