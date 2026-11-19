@@ -1,6 +1,6 @@
 test_that("FLAME fallback TSV records are promoted to lgr estimation logs", {
   tmp <- withr::local_tempdir()
-  feat_dir <- file.path(tmp, "cope1.feat")
+  feat_dir <- file.path(tmp, "group.gfeat", "cope1.feat")
   dir.create(feat_dir, recursive = TRUE)
 
   fallback_tsv <- file.path(feat_dir, "flame_runner_fallbacks.tsv")
@@ -24,7 +24,7 @@ test_that("FLAME fallback TSV records are promoted to lgr estimation logs", {
     rscript_executable(),
     c(
       script,
-      "--feat_dir", feat_dir,
+      "--feat_dir", dirname(feat_dir),
       "--level", "3",
       "--log_txt", log_txt,
       "--log_json", "NULL",

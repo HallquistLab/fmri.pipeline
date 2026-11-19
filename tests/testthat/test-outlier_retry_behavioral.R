@@ -301,9 +301,15 @@ build_mock_feat <- function(tmpdir) {
     "count=$((count + 1))",
     "echo $count > \"$state_file\"",
     "",
-    "mkdir -p \"$gfeat\"",
+    'fit="$gfeat/cope1.feat"',
+    'mkdir -p "$fit"',
+    'options=""',
+    'if grep -q "^set fmri(robust_yn) 1$" "$fsf"; then options="--io"; fi',
+    'echo "flameo --ld=stats0000 --runmode=flame12 $options" > "$fit/.flame"',
+    'printf "ld_dir\\tfallback_status\\n" > "$fit/flame_runner_fallbacks.tsv"',
     "",
     "if [ $count -eq 1 ]; then",
+    '  printf "stats0000\\t0\\n" >> "$fit/flame_runner_fallbacks.tsv"',
     "  # First call: simulate FLAME outlier failure",
     '  echo "Excessive number of outliers detected" > "${gfeat}/flame_log.txt"',
     "  exit 1",
@@ -326,6 +332,7 @@ test_that("retry wrapper retries on outlier failure and produces correct output"
   fsf <- file.path(tmp, "test_model.fsf")
   writeLines(c(
     paste0('set fmri(outputdir) "', file.path(tmp, "test_model"), '"'),
+    "set fmri(mixed_yn) 1",
     "set fmri(robust_yn) 1",
     "set fmri(npts) 100"
   ), fsf)
@@ -353,6 +360,12 @@ test_that("retry wrapper retries on outlier failure and produces correct output"
   expect_true(file.exists(design_copy))
   retry_lines <- readLines(design_copy)
   expect_true(any(grepl("robust_yn\\) 0", retry_lines)))
+
+  retained <- feat_estimator_result(list(syntax = readLines(fsf), level = 3L, output_dir = canonical_gfeat))
+  expect_true(retained$feat_requested_outlier_deweighting)
+  expect_false(retained$feat_actual_outlier_deweighting)
+  expect_identical(retained$feat_actual_estimator, "flame12")
+  expect_identical(retained$feat_flame1_fallback_count, 0L)
 
   # Retry artifacts should be cleaned up on success
   retry_fsf <- file.path(tmp, "test_model__retry_no_outlier.fsf")

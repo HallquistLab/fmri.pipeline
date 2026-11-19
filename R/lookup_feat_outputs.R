@@ -15,6 +15,17 @@
 #' \code{image_feat_dir} identifies the originating L1 FEAT directory. A
 #' passthrough has only a \code{"cope"} image row.
 #'
+#' Higher-level rows report \code{feat_requested_estimator} and
+#' \code{feat_actual_estimator} (\code{ols}, \code{fe}, \code{flame1},
+#' \code{flame12}, or \code{randomise}). A partial FLAME1 fallback is
+#' \code{flame12+flame1}; \code{feat_flame1_fallback_count} counts affected
+#' slices. \code{feat_requested_outlier_deweighting} and
+#' \code{feat_actual_outlier_deweighting} report the FSF request and the retained
+#' fit's outlier option. \code{feat_auto_retried} identifies a whole-model
+#' outlier retry. Actual settings are missing for unvalidated fits or when
+#' execution evidence is unavailable. Use \code{refresh_status = TRUE} to
+#' update a setup table saved before estimation.
+#'
 #' @param gpa a \code{glm_pipeline_arguments} object. The function is most
 #'   informative when populated FSL setup tables are present, but \code{source =
 #'   "auto"} can also search scheduler caches and crawl FEAT folders.
@@ -210,6 +221,7 @@ lookup_feat_level_user_columns <- function(level) {
     "analysis_status", "lookup_source", "cache_file"
   )
 
+  higher_estimator <- c(names(feat_requested_estimator()), "feat_auto_retried")
   switch(as.character(level),
     "1" = c(
       "output_level", "id", "session", "run_number",
@@ -221,7 +233,7 @@ lookup_feat_level_user_columns <- function(level) {
       "l1_model", "l1_cope_number", "l1_cope_name",
       "l2_model", "l2_cope_number", "l2_cope_name",
       "l2_input_mode", "is_passthrough",
-      image_cols
+      higher_estimator, image_cols
     ),
     "3" = c(
       "output_level", "session",
@@ -229,7 +241,7 @@ lookup_feat_level_user_columns <- function(level) {
       "l2_model", "l2_cope_number", "l2_cope_name",
       "l3_model", "l3_cope_number", "l3_cope_name",
       "l3_input_mode",
-      image_cols
+      higher_estimator, image_cols
     )
   )
 }
@@ -258,12 +270,13 @@ lookup_feat_column_type <- function(column) {
     "output_level", "session", "run_number",
     "l1_cope_number", "l2_cope_number", "l3_cope_number",
     "materialized_level", "image_cope_number",
-    "n_l2_copes", "n_input_files", "run_volumes"
+    "n_l2_copes", "n_input_files", "run_volumes", "feat_flame1_fallback_count"
   )) return("integer")
   if (column %in% c(
     "is_passthrough", "image_exists",
     "feat_complete", "feat_failed", "feat_dir_exists", "feat_fsf_exists",
-    "to_run", "feat_auto_retried", "l2_passthrough"
+    "to_run", "feat_auto_retried", "l2_passthrough",
+    "feat_requested_outlier_deweighting", "feat_actual_outlier_deweighting"
   )) return("logical")
   if (column %in% "feat_execution_min") return("numeric")
   if (column %in% c(
@@ -846,7 +859,9 @@ lookup_feat_rows_from_cope_df <- function(cope_df, level, what, feat_dir, feat_f
       feat_dir = feat_dir,
       stats_dir = stats_dir,
       feat_complete = status$feat_complete,
-      feat_failed = status$feat_failed
+      feat_failed = status$feat_failed,
+      feat_auto_retried = status$feat_auto_retried,
+      !!!status[names(feat_requested_estimator())]
     )
 
   lookup_feat_select_columns(rows)

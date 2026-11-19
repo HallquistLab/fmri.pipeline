@@ -2,6 +2,10 @@
 
 ## FSL FEAT estimation
 
+* FEAT results now report the requested and actual higher-level estimator and
+  outlier deweighting, including the number of slices recovered with FLAME1.
+  These fields are available in refreshed status and `lookup_feat_outputs()`.
+
 * L1, L2 and L3 save the model specification beside the FSF. Changes to model inputs
   or lower-level fits invalidate dependent results. Status checks require a validated
   design and readable statistical images. Older fits with only a completion marker
