@@ -39,7 +39,9 @@ fwe_spec(
 
   correction method name or named method configuration. Currently
   supported specifications are `"ptfce"` and
-  `"afni_3dclustsim_permutation"`.
+  `"afni_3dclustsim_permutation"`. Only pTFCE currently has a planning
+  and execution adapter; the AFNI specification can be saved for future
+  use.
 
 - level:
 

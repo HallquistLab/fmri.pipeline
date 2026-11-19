@@ -308,6 +308,14 @@
 <span>  <span class="va">logs</span><span class="op">/</span>                    <span class="co"># text and JSON logs</span></span>
 <span>  <span class="va">glm_pipeline.sqlite</span>      <span class="co"># job tracking database</span></span></code></pre>
 <p>The pipeline writes backend preflight information before submission, then tracks submitted jobs through the SQLite database. <code><a href="reference/diagnose_pipeline.html">diagnose_pipeline()</a></code> summarizes the job tree and helps locate failed or incomplete stages.</p>
+<p>FSL group models can include an <code>inference</code> configuration to run pTFCE automatically after L3 estimation:</p>
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_models</span><span class="op">$</span><span class="va">models</span><span class="op">$</span><span class="va">group</span><span class="op">$</span><span class="va">inference</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/fwe_spec.html">fwe_spec</a></span><span class="op">(</span></span>
+<span>  <span class="st">"group_ptfce"</span>, targets <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l3_model <span class="op">=</span> <span class="st">"group"</span><span class="op">)</span>,</span>
+<span>  fwe_alpha <span class="op">=</span> <span class="fl">0.05</span>, two_sided <span class="op">=</span> <span class="cn">TRUE</span></span>
+<span><span class="op">)</span></span>
+<span><span class="fu"><a href="reference/run_glm_pipeline.html">run_glm_pipeline</a></span><span class="op">(</span><span class="va">gpa</span>, l3_model_names <span class="op">=</span> <span class="st">"group"</span><span class="op">)</span></span></code></pre></div>
+<p>The L3 model builder offers the same settings, and <code><a href="reference/export_glm_config.html">export_glm_config()</a></code> preserves them in YAML. FWE is controlled separately within each selected map. Use <code>run_fwe_correction(gpa)</code> to retry correction without fitting models again, and <code>refresh_fwe_correction(gpa)</code> to collect scheduled results. See the FWE vignette for custom masks, resource settings, and the standalone planning workflow.</p>
 </div>
 <div class="section level2">
 <h2 id="longitudinal-workflows">Longitudinal workflows<a class="anchor" aria-label="anchor" href="#longitudinal-workflows"></a>

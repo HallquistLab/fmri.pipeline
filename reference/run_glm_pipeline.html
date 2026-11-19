@@ -55,7 +55,8 @@
 <span>  l3_model_names <span class="op">=</span> <span class="st">"prompt"</span>,</span>
 <span>  glm_software <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  level_backends <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  backend_overrides <span class="op">=</span> <span class="cn">NULL</span></span>
+<span>  backend_overrides <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  run_fwe <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -89,6 +90,10 @@
 
 <dt id="arg-backend-overrides">backend_overrides<a class="anchor" aria-label="anchor" href="#arg-backend-overrides"></a></dt>
 <dd><p>optional model-specific backend override list</p></dd>
+
+
+<dt id="arg-run-fwe">run_fwe<a class="anchor" aria-label="anchor" href="#arg-run-fwe"></a></dt>
+<dd><p>run configured FWE correction after the selected L3 models finish.</p></dd>
 
 </dl></div>
 

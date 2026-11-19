@@ -154,6 +154,7 @@
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/read_feat_inputs.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/read_fwe_result.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/read_gfeat_dir.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/refresh_fwe_correction.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/refresh_fwe_plan.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/refresh_glm_status.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/reset_tracking_sqlite_db.html</loc></url>
@@ -164,6 +165,7 @@
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_afni_command.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_feat_sepjobs.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_fsl_command.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_fwe_correction.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_fwe_plan.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_glm_pipeline.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_spm_sepjobs.html</loc></url>

@@ -173,6 +173,8 @@
   : Read a collected FWE result or artifact manifest
 - [`read_gfeat_dir()`](https://hallquistlab.github.io/fmri.pipeline/reference/read_gfeat_dir.md)
   : helper function to look up core stats outputs from a .gfeat folder
+- [`refresh_fwe_correction()`](https://hallquistlab.github.io/fmri.pipeline/reference/refresh_fwe_correction.md)
+  : Refresh configured group inference results
 - [`refresh_fwe_plan()`](https://hallquistlab.github.io/fmri.pipeline/reference/refresh_fwe_plan.md)
   : Refresh the state of a compiled FWE plan
 - [`refresh_glm_status()`](https://hallquistlab.github.io/fmri.pipeline/reference/refresh_glm_status.md)
@@ -191,6 +193,8 @@
   level 1 models
 - [`run_fsl_command()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_fsl_command.md)
   : Wrapper for running an FSL command safely within R
+- [`run_fwe_correction()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_fwe_correction.md)
+  : Run configured group inference without refitting GLMs
 - [`run_fwe_plan()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_fwe_plan.md)
   : Execute a compiled FWE plan
 - [`run_glm_pipeline()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_glm_pipeline.md)

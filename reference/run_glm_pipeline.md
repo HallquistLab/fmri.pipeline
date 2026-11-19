@@ -12,7 +12,8 @@ run_glm_pipeline(
   l3_model_names = "prompt",
   glm_software = NULL,
   level_backends = NULL,
-  backend_overrides = NULL
+  backend_overrides = NULL,
+  run_fwe = TRUE
 )
 ```
 
@@ -51,3 +52,7 @@ run_glm_pipeline(
 - backend_overrides:
 
   optional model-specific backend override list
+
+- run_fwe:
+
+  run configured FWE correction after the selected L3 models finish.

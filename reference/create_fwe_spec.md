@@ -6,15 +6,15 @@ correction and the model outputs to which it is applied
 ## Usage
 
 ``` r
-create_fwe_spec(gpa, level = level, lg = NULL)
+create_fwe_spec(gpa, level = 3L, lg = NULL)
 ```
 
 ## Arguments
 
 - gpa:
 
-  a `glm_pipeline_arguments` object that already contains model output
-  information in \$l3_model_setup\$fsl
+  a `glm_pipeline_arguments` object containing configured L3 models;
+  estimation need not be complete
 
 - level:
 

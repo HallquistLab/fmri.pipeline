@@ -64,15 +64,17 @@ and can later be refreshed with <code><a href="refresh_fwe_plan.html">refresh_fw
 <span>  dry_run <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  allow_blocked <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  worker_script <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  commands_per_cpu <span class="op">=</span> <span class="fl">1L</span>,</span>
-<span>  cpus_per_job <span class="op">=</span> <span class="fl">1L</span>,</span>
-<span>  memgb_per_command <span class="op">=</span> <span class="fl">8</span>,</span>
-<span>  time_per_command <span class="op">=</span> <span class="st">"12:00"</span>,</span>
+<span>  commands_per_cpu <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  cpus_per_job <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  memgb_per_command <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  time_per_command <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  sched_args <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  env_variables <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  wait_jobs <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  stop_on_error <span class="op">=</span> <span class="cn">TRUE</span>,</span>
-<span>  persist_results <span class="op">=</span> <span class="cn">TRUE</span></span>
+<span>  persist_results <span class="op">=</span> <span class="cn">TRUE</span>,</span>
+<span>  tracking_sqlite_db <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  tracking_args <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -128,6 +130,11 @@ fails. The condition contains the run report in its <code>run</code> field.</p><
 <dd><p>if <code>TRUE</code>, real executions and submissions update
 the persistent artifact manifest and RDS result snapshot. Dry runs never
 write result files.</p></dd>
+
+
+<dt id="arg-tracking-sqlite-db-tracking-args">tracking_sqlite_db, tracking_args<a class="anchor" aria-label="anchor" href="#arg-tracking-sqlite-db-tracking-args"></a></dt>
+<dd><p>optional SQLite database and metadata
+for registering submitted correction jobs in pipeline job tracking.</p></dd>
 
 </dl></div>
     <div class="section level2">

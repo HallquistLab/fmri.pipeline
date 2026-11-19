@@ -13,8 +13,7 @@ build_fwe_correction(gpa, lg = NULL)
 
 - gpa:
 
-  a `glm_pipeline_arguments` object containing model outputs in
-  l3_model_setup
+  a `glm_pipeline_arguments` object containing configured L3 models
 
 - lg:
 
