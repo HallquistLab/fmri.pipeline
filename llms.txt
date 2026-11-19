@@ -32,10 +32,11 @@ that constellation explicit. The package helps you:
 - support longitudinal analyses where runs are nested within sessions
   and sessions are nested within subjects.
 
-The most mature end-to-end backend is FSL FEAT/FLAME. Current
-development also supports backend selection and hybrid workflows,
-especially FSL at Levels 1-2 followed by AFNI `3dLMEr` at Level 3 for
-longitudinal mixed-effects models.
+FSL FEAT/FLAME, SPM, and AFNI have backend-specific estimation paths.
+AFNI combines runs within each subject/session using `3dDeconvolve` and
+`3dREMLfit`, then supplies contrast maps to ordinary group GLMs or
+longitudinal `3dLMEr` models. Hybrid FSL Levels 1–2 → AFNI `3dLMEr`
+workflows remain supported.
 
 `fmri.pipeline` is not a preprocessing pipeline. It expects preprocessed
 4D BOLD NIfTI files, event timing, and optional confound files from
@@ -177,6 +178,91 @@ Check status and inspect logs:
 diagnose_pipeline(gpa)
 view_log(gpa, level = 1, id = "01")
 ```
+
+## AFNI estimation
+
+Select `glm_software = "afni"` in
+[`setup_glm_pipeline()`](https://hallquistlab.github.io/fmri.pipeline/reference/setup_glm_pipeline.md)
+to use AFNI throughout the analysis. Build L1 and L3 models with the
+usual YAML specification, then submit them with:
+
+``` r
+
+run_glm_pipeline(
+  gpa,
+  glm_software = "afni",
+  l1_model_names = "all",
+  l2_model_names = "none",
+  l3_model_names = "all"
+)
+```
+
+AFNI estimates one model per subject/session. All retained runs share
+task coefficients; each run has its own polynomial baseline and nuisance
+coefficients. It always uses the pipeline’s convolved regressors,
+preserving event durations, parametric modulators, and signal
+normalizations. Runs with `exclude_run = TRUE` and excluded subjects do
+not enter the fit. This is a joint time-series fit: AFNI does not run a
+separate L2 job or apply L2 model specifications. Use FSL’s explicit L2
+path when you need run-level COPE/VARCOPE combination or L2 contrasts.
+
+Configure AFNI through `glm_settings` when creating the pipeline:
+
+``` r
+
+glm_settings = list(afni = list(
+  estimation = "REML",        # default; "OLS" uses 3dDeconvolve alone
+  polort = "A",               # AFNI automatic run drift order, or an integer >= 0
+  mask = NULL,                # optional mask on the input image grid
+  censor_column = "afni_censor_file",
+  write_residuals = TRUE,
+  force_l1_creation = FALSE,
+  force_l3_creation = FALSE
+))
+```
+
+When `run_data$afni_censor_file` is supplied, each path points to a
+single-column binary vector (`1 = keep`, `0 = censor`). Censor files and
+nuisance files may contain either retained volumes or original volumes
+with the specified leading drops. Length mismatches fail setup. Existing
+spike regressors remain nuisance regressors. Without an explicit mask,
+L1 intersects masks derived from the retained runs. Image geometry must
+match; AFNI estimation does not perform registration or intensity
+normalization. Supply preprocessed images in a common space and on a
+comparable intensity scale.
+
+L3 uses ordinary least squares for the pipeline’s group design and
+contrasts, through `3dDeconvolve` with no temporal baseline or
+prewhitening. `per_session` analyses stay separate by session;
+`pooled_sessions_subject_ev` retains the pipeline’s subject effects. For
+longitudinal mixed models, specify `l3_input_mode: 3dlmer`. AFNI-only
+analyses use AFNI contrasts as group inputs. To retain a hybrid
+workflow, set `execution_backend: afni` and `producer_backend: fsl` on
+the L3 model and select FSL at L1/L2. Existing mixed FSL/AFNI `3dlmer`
+configurations continue to default to FSL inputs.
+
+Outputs live under `afni_l1/` and `afni_l3/` (mixed models use
+`afni_3dlmer/`). Each ordinary GLM directory contains `run_afni_glm.sh`,
+`afni_glm.log`, `design.xmat.1D`, `stats.nii.gz`, a mask, and optional
+residuals. `contrasts.tsv` maps original contrast names to
+`con_####.nii.gz` and `tstat_####.nii.gz`; `regressors.tsv` maps names
+to AFNI labels. Completion requires both the success marker and every
+expected output. Failed jobs return a nonzero status to the scheduler.
+After changing event/model specifications, set
+`force_l1_creation = TRUE` to rebuild the cached design, then rerun
+setup and estimation.
+
+Resource settings are under `gpa$parallel$afni`: `l1_glm_time`,
+`l1_glm_memgb`, `l1_glm_cpus`, `l1_glm_alljobs_time`, and the
+corresponding `l3_glm_time`, `l3_glm_memgb`, `l3_glm_cpus`. Existing
+`l3_lmer_*` settings continue to control mixed models. Configure AFNI
+modules or PATH through `parallel$compute_environment$afni`.
+
+AFNI’s [3dDeconvolve
+documentation](https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dDeconvolve.html)
+and [3dREMLfit
+documentation](https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dREMLfit.html)
+describe the OLS and REML estimators.
 
 ## YAML model specifications
 
@@ -399,6 +485,8 @@ Issues and feature requests are tracked at
 - [`afni_3dfwhmx_list`](https://hallquistlab.github.io/fmri.pipeline/reference/afni_3dfwhmx_list.md)
   : R6 class for running 3dFWHMx on a group of input files using a
   scheduler/cluster
+- [`afni_l1_model()`](https://hallquistlab.github.io/fmri.pipeline/reference/afni_l1_model.md)
+  : Set up an AFNI first-level GLM
 - [`afni_whereami`](https://hallquistlab.github.io/fmri.pipeline/reference/afni_whereami.md)
   : wrapper class for AFNI whereami
 - [`as.character(`*`<formula>`*`)`](https://hallquistlab.github.io/fmri.pipeline/reference/as.character.formula.md)
@@ -517,6 +605,8 @@ Issues and feature requests are tracked at
 - [`generate_trial_data_from_bids()`](https://hallquistlab.github.io/fmri.pipeline/reference/generate_trial_data_from_bids.md)
   : Function to generate a trial_data object from a BIDS-compliant
   folder
+- [`get_afni_glm_status()`](https://hallquistlab.github.io/fmri.pipeline/reference/get_afni_glm_status.md)
+  : Inspect AFNI GLM completion and output files
 - [`get_output_directory()`](https://hallquistlab.github.io/fmri.pipeline/reference/get_output_directory.md)
   : small helper function to return the location of an l1 directory
   based on id, session, and run number
@@ -569,6 +659,8 @@ Issues and feature requests are tracked at
   : function to submit 3dLMEr jobs on a cluster
 - [`run_afni_command()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_afni_command.md)
   : Wrapper for running an AFNI command safely within R
+- [`run_afni_sepjobs()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_afni_sepjobs.md)
+  : Submit AFNI GLMs to the configured scheduler
 - [`run_feat_sepjobs()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_feat_sepjobs.md)
   : function to submit a set of jobs on a cluster to estimate many Feat
   level 1 models

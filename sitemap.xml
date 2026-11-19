@@ -23,6 +23,7 @@
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/afni_3dfwhmx.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/afni_3dfwhmx_list.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/afni_3dlmer_setup.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/afni_l1_model.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/afni_whereami.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/as.character.formula.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/as_dhms.html</loc></url>
@@ -100,6 +101,7 @@
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/generate_subject_data_from_bids.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/generate_trial_data_from_bids.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/get_3dlmer_status.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/get_afni_glm_status.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/get_collin_events.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/get_contrasts_from_spec.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/get_default_sqlite_busy_timeout.html</loc></url>
@@ -163,6 +165,7 @@
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/rle_dt.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_3dlmer_sepjobs.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_afni_command.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_afni_sepjobs.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_feat_sepjobs.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_fsl_command.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/reference/run_fwe_correction.html</loc></url>

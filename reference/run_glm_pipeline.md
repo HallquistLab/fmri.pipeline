@@ -41,8 +41,8 @@ run_glm_pipeline(
 
 - glm_software:
 
-  which glm software should be used for model estimation (not
-  implemented yet)
+  which GLM software should be used for model estimation (fsl, spm, or
+  afni)
 
 - level_backends:
 

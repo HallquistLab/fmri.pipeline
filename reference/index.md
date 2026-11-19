@@ -18,6 +18,8 @@
 - [`afni_3dfwhmx_list`](https://hallquistlab.github.io/fmri.pipeline/reference/afni_3dfwhmx_list.md)
   : R6 class for running 3dFWHMx on a group of input files using a
   scheduler/cluster
+- [`afni_l1_model()`](https://hallquistlab.github.io/fmri.pipeline/reference/afni_l1_model.md)
+  : Set up an AFNI first-level GLM
 - [`afni_whereami`](https://hallquistlab.github.io/fmri.pipeline/reference/afni_whereami.md)
   : wrapper class for AFNI whereami
 - [`as.character(`*`<formula>`*`)`](https://hallquistlab.github.io/fmri.pipeline/reference/as.character.formula.md)
@@ -136,6 +138,8 @@
 - [`generate_trial_data_from_bids()`](https://hallquistlab.github.io/fmri.pipeline/reference/generate_trial_data_from_bids.md)
   : Function to generate a trial_data object from a BIDS-compliant
   folder
+- [`get_afni_glm_status()`](https://hallquistlab.github.io/fmri.pipeline/reference/get_afni_glm_status.md)
+  : Inspect AFNI GLM completion and output files
 - [`get_output_directory()`](https://hallquistlab.github.io/fmri.pipeline/reference/get_output_directory.md)
   : small helper function to return the location of an l1 directory
   based on id, session, and run number
@@ -188,6 +192,8 @@
   : function to submit 3dLMEr jobs on a cluster
 - [`run_afni_command()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_afni_command.md)
   : Wrapper for running an AFNI command safely within R
+- [`run_afni_sepjobs()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_afni_sepjobs.md)
+  : Submit AFNI GLMs to the configured scheduler
 - [`run_feat_sepjobs()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_feat_sepjobs.md)
   : function to submit a set of jobs on a cluster to estimate many Feat
   level 1 models

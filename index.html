@@ -74,7 +74,7 @@
 <li>reuse the same input tables and YAML model specification across model revisions;</li>
 <li>support longitudinal analyses where runs are nested within sessions and sessions are nested within subjects.</li>
 </ul>
-<p>The most mature end-to-end backend is FSL FEAT/FLAME. Current development also supports backend selection and hybrid workflows, especially FSL at Levels 1-2 followed by AFNI <code>3dLMEr</code> at Level 3 for longitudinal mixed-effects models.</p>
+<p>FSL FEAT/FLAME, SPM, and AFNI have backend-specific estimation paths. AFNI combines runs within each subject/session using <code>3dDeconvolve</code> and <code>3dREMLfit</code>, then supplies contrast maps to ordinary group GLMs or longitudinal <code>3dLMEr</code> models. Hybrid FSL Levels 1–2 → AFNI <code>3dLMEr</code> workflows remain supported.</p>
 <p><code>fmri.pipeline</code> is not a preprocessing pipeline. It expects preprocessed 4D BOLD NIfTI files, event timing, and optional confound files from tools such as fMRIPrep, custom preprocessing workflows, or lab-specific derivatives.</p>
 </div>
 <div class="section level2">
@@ -197,101 +197,131 @@
 <span><span class="fu"><a href="reference/view_log.html">view_log</a></span><span class="op">(</span><span class="va">gpa</span>, level <span class="op">=</span> <span class="fl">1</span>, id <span class="op">=</span> <span class="st">"01"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
+<h2 id="afni-estimation">AFNI estimation<a class="anchor" aria-label="anchor" href="#afni-estimation"></a>
+</h2>
+<p>Select <code>glm_software = "afni"</code> in <code><a href="reference/setup_glm_pipeline.html">setup_glm_pipeline()</a></code> to use AFNI throughout the analysis. Build L1 and L3 models with the usual YAML specification, then submit them with:</p>
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="reference/run_glm_pipeline.html">run_glm_pipeline</a></span><span class="op">(</span></span>
+<span>  <span class="va">gpa</span>,</span>
+<span>  glm_software <span class="op">=</span> <span class="st">"afni"</span>,</span>
+<span>  l1_model_names <span class="op">=</span> <span class="st">"all"</span>,</span>
+<span>  l2_model_names <span class="op">=</span> <span class="st">"none"</span>,</span>
+<span>  l3_model_names <span class="op">=</span> <span class="st">"all"</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+<p>AFNI estimates one model per subject/session. All retained runs share task coefficients; each run has its own polynomial baseline and nuisance coefficients. It always uses the pipeline’s convolved regressors, preserving event durations, parametric modulators, and signal normalizations. Runs with <code>exclude_run = TRUE</code> and excluded subjects do not enter the fit. This is a joint time-series fit: AFNI does not run a separate L2 job or apply L2 model specifications. Use FSL’s explicit L2 path when you need run-level COPE/VARCOPE combination or L2 contrasts.</p>
+<p>Configure AFNI through <code>glm_settings</code> when creating the pipeline:</p>
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">glm_settings</span> <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>afni <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span></span>
+<span>  estimation <span class="op">=</span> <span class="st">"REML"</span>,        <span class="co"># default; "OLS" uses 3dDeconvolve alone</span></span>
+<span>  polort <span class="op">=</span> <span class="st">"A"</span>,               <span class="co"># AFNI automatic run drift order, or an integer &gt;= 0</span></span>
+<span>  mask <span class="op">=</span> <span class="cn">NULL</span>,                <span class="co"># optional mask on the input image grid</span></span>
+<span>  censor_column <span class="op">=</span> <span class="st">"afni_censor_file"</span>,</span>
+<span>  write_residuals <span class="op">=</span> <span class="cn">TRUE</span>,</span>
+<span>  force_l1_creation <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  force_l3_creation <span class="op">=</span> <span class="cn">FALSE</span></span>
+<span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
+<p>When <code>run_data$afni_censor_file</code> is supplied, each path points to a single-column binary vector (<code>1 = keep</code>, <code>0 = censor</code>). Censor files and nuisance files may contain either retained volumes or original volumes with the specified leading drops. Length mismatches fail setup. Existing spike regressors remain nuisance regressors. Without an explicit mask, L1 intersects masks derived from the retained runs. Image geometry must match; AFNI estimation does not perform registration or intensity normalization. Supply preprocessed images in a common space and on a comparable intensity scale.</p>
+<p>L3 uses ordinary least squares for the pipeline’s group design and contrasts, through <code>3dDeconvolve</code> with no temporal baseline or prewhitening. <code>per_session</code> analyses stay separate by session; <code>pooled_sessions_subject_ev</code> retains the pipeline’s subject effects. For longitudinal mixed models, specify <code>l3_input_mode: 3dlmer</code>. AFNI-only analyses use AFNI contrasts as group inputs. To retain a hybrid workflow, set <code>execution_backend: afni</code> and <code>producer_backend: fsl</code> on the L3 model and select FSL at L1/L2. Existing mixed FSL/AFNI <code>3dlmer</code> configurations continue to default to FSL inputs.</p>
+<p>Outputs live under <code>afni_l1/</code> and <code>afni_l3/</code> (mixed models use <code>afni_3dlmer/</code>). Each ordinary GLM directory contains <code>run_afni_glm.sh</code>, <code>afni_glm.log</code>, <code>design.xmat.1D</code>, <code>stats.nii.gz</code>, a mask, and optional residuals. <code>contrasts.tsv</code> maps original contrast names to <code>con_####.nii.gz</code> and <code>tstat_####.nii.gz</code>; <code>regressors.tsv</code> maps names to AFNI labels. Completion requires both the success marker and every expected output. Failed jobs return a nonzero status to the scheduler. After changing event/model specifications, set <code>force_l1_creation = TRUE</code> to rebuild the cached design, then rerun setup and estimation.</p>
+<p>Resource settings are under <code>gpa$parallel$afni</code>: <code>l1_glm_time</code>, <code>l1_glm_memgb</code>, <code>l1_glm_cpus</code>, <code>l1_glm_alljobs_time</code>, and the corresponding <code>l3_glm_time</code>, <code>l3_glm_memgb</code>, <code>l3_glm_cpus</code>. Existing <code>l3_lmer_*</code> settings continue to control mixed models. Configure AFNI modules or PATH through <code>parallel$compute_environment$afni</code>.</p>
+<p>AFNI’s <a href="https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dDeconvolve.html" class="external-link">3dDeconvolve documentation</a> and <a href="https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dREMLfit.html" class="external-link">3dREMLfit documentation</a> describe the OLS and REML estimators.</p>
+</div>
+<div class="section level2">
 <h2 id="yaml-model-specifications">YAML model specifications<a class="anchor" aria-label="anchor" href="#yaml-model-specifications"></a>
 </h2>
 <p>YAML specifications are the recommended way to make analysis decisions reviewable and repeatable. A compact face/house example looks like this:</p>
-<div class="sourceCode" id="cb8"><pre class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a><span class="fu">analysis</span><span class="kw">:</span></span>
-<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> facehouse_longitudinal_demo</span></span>
-<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a><span class="at">  </span><span class="fu">scheduler</span><span class="kw">:</span><span class="at"> slurm</span></span>
-<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a><span class="at">  </span><span class="fu">glm_software</span><span class="kw">:</span></span>
-<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> fsl</span></span>
-<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> afni</span></span>
-<span id="cb8-7"><a href="#cb8-7" tabindex="-1"></a><span class="at">  </span><span class="fu">level_backends</span><span class="kw">:</span></span>
-<span id="cb8-8"><a href="#cb8-8" tabindex="-1"></a><span class="at">    </span><span class="fu">l1</span><span class="kw">:</span><span class="at"> fsl</span></span>
-<span id="cb8-9"><a href="#cb8-9" tabindex="-1"></a><span class="at">    </span><span class="fu">l2</span><span class="kw">:</span><span class="at"> fsl</span></span>
-<span id="cb8-10"><a href="#cb8-10" tabindex="-1"></a><span class="at">    </span><span class="fu">l3</span><span class="kw">:</span></span>
-<span id="cb8-11"><a href="#cb8-11" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> fsl</span></span>
-<span id="cb8-12"><a href="#cb8-12" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> afni</span></span>
-<span id="cb8-13"><a href="#cb8-13" tabindex="-1"></a><span class="at">  </span><span class="fu">n_expected_runs</span><span class="kw">:</span><span class="at"> </span><span class="dv">4</span></span>
-<span id="cb8-14"><a href="#cb8-14" tabindex="-1"></a></span>
-<span id="cb8-15"><a href="#cb8-15" tabindex="-1"></a><span class="fu">onsets</span><span class="kw">:</span></span>
-<span id="cb8-16"><a href="#cb8-16" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> onset</span></span>
-<span id="cb8-17"><a href="#cb8-17" tabindex="-1"></a></span>
-<span id="cb8-18"><a href="#cb8-18" tabindex="-1"></a><span class="fu">durations</span><span class="kw">:</span></span>
-<span id="cb8-19"><a href="#cb8-19" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> duration</span></span>
-<span id="cb8-20"><a href="#cb8-20" tabindex="-1"></a></span>
-<span id="cb8-21"><a href="#cb8-21" tabindex="-1"></a><span class="fu">events</span><span class="kw">:</span></span>
-<span id="cb8-22"><a href="#cb8-22" tabindex="-1"></a><span class="at">  </span><span class="fu">stim</span><span class="kw">:</span></span>
-<span id="cb8-23"><a href="#cb8-23" tabindex="-1"></a><span class="at">    </span><span class="fu">onset</span><span class="kw">:</span><span class="at"> onset</span></span>
-<span id="cb8-24"><a href="#cb8-24" tabindex="-1"></a><span class="at">    </span><span class="fu">duration</span><span class="kw">:</span><span class="at"> duration</span></span>
-<span id="cb8-25"><a href="#cb8-25" tabindex="-1"></a></span>
-<span id="cb8-26"><a href="#cb8-26" tabindex="-1"></a><span class="fu">signals</span><span class="kw">:</span></span>
-<span id="cb8-27"><a href="#cb8-27" tabindex="-1"></a><span class="at">  </span><span class="fu">face</span><span class="kw">:</span></span>
-<span id="cb8-28"><a href="#cb8-28" tabindex="-1"></a><span class="at">    </span><span class="fu">event</span><span class="kw">:</span><span class="at"> stim</span></span>
-<span id="cb8-29"><a href="#cb8-29" tabindex="-1"></a><span class="at">    </span><span class="fu">trial_subset_expression</span><span class="kw">:</span><span class="at"> object == 'face'</span></span>
-<span id="cb8-30"><a href="#cb8-30" tabindex="-1"></a><span class="at">    </span><span class="fu">normalization</span><span class="kw">:</span><span class="at"> none</span></span>
-<span id="cb8-31"><a href="#cb8-31" tabindex="-1"></a><span class="at">    </span><span class="fu">value_fixed</span><span class="kw">:</span><span class="at"> </span><span class="dv">1</span></span>
-<span id="cb8-32"><a href="#cb8-32" tabindex="-1"></a></span>
-<span id="cb8-33"><a href="#cb8-33" tabindex="-1"></a><span class="at">  </span><span class="fu">house</span><span class="kw">:</span></span>
-<span id="cb8-34"><a href="#cb8-34" tabindex="-1"></a><span class="at">    </span><span class="fu">event</span><span class="kw">:</span><span class="at"> stim</span></span>
-<span id="cb8-35"><a href="#cb8-35" tabindex="-1"></a><span class="at">    </span><span class="fu">trial_subset_expression</span><span class="kw">:</span><span class="at"> object == 'house'</span></span>
-<span id="cb8-36"><a href="#cb8-36" tabindex="-1"></a><span class="at">    </span><span class="fu">normalization</span><span class="kw">:</span><span class="at"> none</span></span>
-<span id="cb8-37"><a href="#cb8-37" tabindex="-1"></a><span class="at">    </span><span class="fu">value_fixed</span><span class="kw">:</span><span class="at"> </span><span class="dv">1</span></span>
-<span id="cb8-38"><a href="#cb8-38" tabindex="-1"></a></span>
-<span id="cb8-39"><a href="#cb8-39" tabindex="-1"></a><span class="fu">l1_models</span><span class="kw">:</span></span>
-<span id="cb8-40"><a href="#cb8-40" tabindex="-1"></a><span class="at">  </span><span class="fu">facehouse</span><span class="kw">:</span></span>
-<span id="cb8-41"><a href="#cb8-41" tabindex="-1"></a><span class="at">    </span><span class="fu">signals</span><span class="kw">:</span></span>
-<span id="cb8-42"><a href="#cb8-42" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> face</span></span>
-<span id="cb8-43"><a href="#cb8-43" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> house</span></span>
-<span id="cb8-44"><a href="#cb8-44" tabindex="-1"></a><span class="at">    </span><span class="fu">contrasts</span><span class="kw">:</span></span>
-<span id="cb8-45"><a href="#cb8-45" tabindex="-1"></a><span class="at">      </span><span class="fu">diagonal</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
-<span id="cb8-46"><a href="#cb8-46" tabindex="-1"></a></span>
-<span id="cb8-47"><a href="#cb8-47" tabindex="-1"></a><span class="fu">l2_models</span><span class="kw">:</span></span>
-<span id="cb8-48"><a href="#cb8-48" tabindex="-1"></a><span class="at">  </span><span class="fu">l2_id_session</span><span class="kw">:</span></span>
-<span id="cb8-49"><a href="#cb8-49" tabindex="-1"></a><span class="at">    </span><span class="fu">level</span><span class="kw">:</span><span class="at"> </span><span class="dv">2</span></span>
-<span id="cb8-50"><a href="#cb8-50" tabindex="-1"></a><span class="at">    </span><span class="fu">l2_scope</span><span class="kw">:</span><span class="at"> id_session</span></span>
-<span id="cb8-51"><a href="#cb8-51" tabindex="-1"></a><span class="at">    </span><span class="fu">model_formula</span><span class="kw">:</span><span class="at"> ~ stress_label</span></span>
-<span id="cb8-52"><a href="#cb8-52" tabindex="-1"></a><span class="at">    </span><span class="fu">reference_level</span><span class="kw">:</span></span>
-<span id="cb8-53"><a href="#cb8-53" tabindex="-1"></a><span class="at">      </span><span class="fu">stress_label</span><span class="kw">:</span><span class="at"> stress</span></span>
-<span id="cb8-54"><a href="#cb8-54" tabindex="-1"></a><span class="at">    </span><span class="fu">contrasts</span><span class="kw">:</span></span>
-<span id="cb8-55"><a href="#cb8-55" tabindex="-1"></a><span class="at">      </span><span class="fu">diagonal</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
-<span id="cb8-56"><a href="#cb8-56" tabindex="-1"></a><span class="at">      </span><span class="fu">cond_means</span><span class="kw">:</span></span>
-<span id="cb8-57"><a href="#cb8-57" tabindex="-1"></a><span class="at">        </span><span class="kw">-</span><span class="at"> stress_label</span></span>
-<span id="cb8-58"><a href="#cb8-58" tabindex="-1"></a><span class="at">      </span><span class="fu">pairwise_diffs</span><span class="kw">:</span></span>
-<span id="cb8-59"><a href="#cb8-59" tabindex="-1"></a><span class="at">        </span><span class="kw">-</span><span class="at"> stress_label</span></span>
-<span id="cb8-60"><a href="#cb8-60" tabindex="-1"></a><span class="at">      </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
-<span id="cb8-61"><a href="#cb8-61" tabindex="-1"></a></span>
-<span id="cb8-62"><a href="#cb8-62" tabindex="-1"></a><span class="fu">l3_models</span><span class="kw">:</span></span>
-<span id="cb8-63"><a href="#cb8-63" tabindex="-1"></a><span class="at">  </span><span class="fu">l3_pooled_subject_ev</span><span class="kw">:</span></span>
-<span id="cb8-64"><a href="#cb8-64" tabindex="-1"></a><span class="at">    </span><span class="fu">level</span><span class="kw">:</span><span class="at"> </span><span class="dv">3</span></span>
-<span id="cb8-65"><a href="#cb8-65" tabindex="-1"></a><span class="at">    </span><span class="fu">l3_input_mode</span><span class="kw">:</span><span class="at"> pooled_sessions_subject_ev</span></span>
-<span id="cb8-66"><a href="#cb8-66" tabindex="-1"></a><span class="at">    </span><span class="fu">execution_backend</span><span class="kw">:</span><span class="at"> fsl</span></span>
-<span id="cb8-67"><a href="#cb8-67" tabindex="-1"></a><span class="at">    </span><span class="fu">producer_backend</span><span class="kw">:</span><span class="at"> fsl</span></span>
-<span id="cb8-68"><a href="#cb8-68" tabindex="-1"></a><span class="at">    </span><span class="fu">model_formula</span><span class="kw">:</span><span class="at"> ~ session_label</span></span>
-<span id="cb8-69"><a href="#cb8-69" tabindex="-1"></a><span class="at">    </span><span class="fu">reference_level</span><span class="kw">:</span></span>
-<span id="cb8-70"><a href="#cb8-70" tabindex="-1"></a><span class="at">      </span><span class="fu">session_label</span><span class="kw">:</span><span class="at"> analgesic</span></span>
-<span id="cb8-71"><a href="#cb8-71" tabindex="-1"></a><span class="at">    </span><span class="fu">diagonal</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
-<span id="cb8-72"><a href="#cb8-72" tabindex="-1"></a><span class="at">    </span><span class="fu">cond_means</span><span class="kw">:</span></span>
-<span id="cb8-73"><a href="#cb8-73" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> session_label</span></span>
-<span id="cb8-74"><a href="#cb8-74" tabindex="-1"></a><span class="at">    </span><span class="fu">pairwise_diffs</span><span class="kw">:</span></span>
-<span id="cb8-75"><a href="#cb8-75" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> session_label</span></span>
-<span id="cb8-76"><a href="#cb8-76" tabindex="-1"></a><span class="at">    </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
-<span id="cb8-77"><a href="#cb8-77" tabindex="-1"></a></span>
-<span id="cb8-78"><a href="#cb8-78" tabindex="-1"></a><span class="at">  </span><span class="fu">l3_3dlmer_session</span><span class="kw">:</span></span>
-<span id="cb8-79"><a href="#cb8-79" tabindex="-1"></a><span class="at">    </span><span class="fu">level</span><span class="kw">:</span><span class="at"> </span><span class="dv">3</span></span>
-<span id="cb8-80"><a href="#cb8-80" tabindex="-1"></a><span class="at">    </span><span class="fu">l3_input_mode</span><span class="kw">:</span><span class="at"> 3dlmer</span></span>
-<span id="cb8-81"><a href="#cb8-81" tabindex="-1"></a><span class="at">    </span><span class="fu">execution_backend</span><span class="kw">:</span><span class="at"> afni</span></span>
-<span id="cb8-82"><a href="#cb8-82" tabindex="-1"></a><span class="at">    </span><span class="fu">producer_backend</span><span class="kw">:</span><span class="at"> fsl</span></span>
-<span id="cb8-83"><a href="#cb8-83" tabindex="-1"></a><span class="at">    </span><span class="fu">model_formula</span><span class="kw">:</span><span class="at"> ~ session_label</span></span>
-<span id="cb8-84"><a href="#cb8-84" tabindex="-1"></a><span class="at">    </span><span class="fu">random_effects</span><span class="kw">:</span><span class="at"> (1 | Subj)</span></span>
-<span id="cb8-85"><a href="#cb8-85" tabindex="-1"></a><span class="at">    </span><span class="fu">reference_level</span><span class="kw">:</span></span>
-<span id="cb8-86"><a href="#cb8-86" tabindex="-1"></a><span class="at">      </span><span class="fu">session_label</span><span class="kw">:</span><span class="at"> analgesic</span></span>
-<span id="cb8-87"><a href="#cb8-87" tabindex="-1"></a><span class="at">    </span><span class="fu">diagonal</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
-<span id="cb8-88"><a href="#cb8-88" tabindex="-1"></a><span class="at">    </span><span class="fu">cond_means</span><span class="kw">:</span></span>
-<span id="cb8-89"><a href="#cb8-89" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> session_label</span></span>
-<span id="cb8-90"><a href="#cb8-90" tabindex="-1"></a><span class="at">    </span><span class="fu">pairwise_diffs</span><span class="kw">:</span></span>
-<span id="cb8-91"><a href="#cb8-91" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> session_label</span></span>
-<span id="cb8-92"><a href="#cb8-92" tabindex="-1"></a><span class="at">    </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span></code></pre></div>
+<div class="sourceCode" id="cb10"><pre class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb10-1"><a href="#cb10-1" tabindex="-1"></a><span class="fu">analysis</span><span class="kw">:</span></span>
+<span id="cb10-2"><a href="#cb10-2" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> facehouse_longitudinal_demo</span></span>
+<span id="cb10-3"><a href="#cb10-3" tabindex="-1"></a><span class="at">  </span><span class="fu">scheduler</span><span class="kw">:</span><span class="at"> slurm</span></span>
+<span id="cb10-4"><a href="#cb10-4" tabindex="-1"></a><span class="at">  </span><span class="fu">glm_software</span><span class="kw">:</span></span>
+<span id="cb10-5"><a href="#cb10-5" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> fsl</span></span>
+<span id="cb10-6"><a href="#cb10-6" tabindex="-1"></a><span class="at">    </span><span class="kw">-</span><span class="at"> afni</span></span>
+<span id="cb10-7"><a href="#cb10-7" tabindex="-1"></a><span class="at">  </span><span class="fu">level_backends</span><span class="kw">:</span></span>
+<span id="cb10-8"><a href="#cb10-8" tabindex="-1"></a><span class="at">    </span><span class="fu">l1</span><span class="kw">:</span><span class="at"> fsl</span></span>
+<span id="cb10-9"><a href="#cb10-9" tabindex="-1"></a><span class="at">    </span><span class="fu">l2</span><span class="kw">:</span><span class="at"> fsl</span></span>
+<span id="cb10-10"><a href="#cb10-10" tabindex="-1"></a><span class="at">    </span><span class="fu">l3</span><span class="kw">:</span></span>
+<span id="cb10-11"><a href="#cb10-11" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> fsl</span></span>
+<span id="cb10-12"><a href="#cb10-12" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> afni</span></span>
+<span id="cb10-13"><a href="#cb10-13" tabindex="-1"></a><span class="at">  </span><span class="fu">n_expected_runs</span><span class="kw">:</span><span class="at"> </span><span class="dv">4</span></span>
+<span id="cb10-14"><a href="#cb10-14" tabindex="-1"></a></span>
+<span id="cb10-15"><a href="#cb10-15" tabindex="-1"></a><span class="fu">onsets</span><span class="kw">:</span></span>
+<span id="cb10-16"><a href="#cb10-16" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> onset</span></span>
+<span id="cb10-17"><a href="#cb10-17" tabindex="-1"></a></span>
+<span id="cb10-18"><a href="#cb10-18" tabindex="-1"></a><span class="fu">durations</span><span class="kw">:</span></span>
+<span id="cb10-19"><a href="#cb10-19" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> duration</span></span>
+<span id="cb10-20"><a href="#cb10-20" tabindex="-1"></a></span>
+<span id="cb10-21"><a href="#cb10-21" tabindex="-1"></a><span class="fu">events</span><span class="kw">:</span></span>
+<span id="cb10-22"><a href="#cb10-22" tabindex="-1"></a><span class="at">  </span><span class="fu">stim</span><span class="kw">:</span></span>
+<span id="cb10-23"><a href="#cb10-23" tabindex="-1"></a><span class="at">    </span><span class="fu">onset</span><span class="kw">:</span><span class="at"> onset</span></span>
+<span id="cb10-24"><a href="#cb10-24" tabindex="-1"></a><span class="at">    </span><span class="fu">duration</span><span class="kw">:</span><span class="at"> duration</span></span>
+<span id="cb10-25"><a href="#cb10-25" tabindex="-1"></a></span>
+<span id="cb10-26"><a href="#cb10-26" tabindex="-1"></a><span class="fu">signals</span><span class="kw">:</span></span>
+<span id="cb10-27"><a href="#cb10-27" tabindex="-1"></a><span class="at">  </span><span class="fu">face</span><span class="kw">:</span></span>
+<span id="cb10-28"><a href="#cb10-28" tabindex="-1"></a><span class="at">    </span><span class="fu">event</span><span class="kw">:</span><span class="at"> stim</span></span>
+<span id="cb10-29"><a href="#cb10-29" tabindex="-1"></a><span class="at">    </span><span class="fu">trial_subset_expression</span><span class="kw">:</span><span class="at"> object == 'face'</span></span>
+<span id="cb10-30"><a href="#cb10-30" tabindex="-1"></a><span class="at">    </span><span class="fu">normalization</span><span class="kw">:</span><span class="at"> none</span></span>
+<span id="cb10-31"><a href="#cb10-31" tabindex="-1"></a><span class="at">    </span><span class="fu">value_fixed</span><span class="kw">:</span><span class="at"> </span><span class="dv">1</span></span>
+<span id="cb10-32"><a href="#cb10-32" tabindex="-1"></a></span>
+<span id="cb10-33"><a href="#cb10-33" tabindex="-1"></a><span class="at">  </span><span class="fu">house</span><span class="kw">:</span></span>
+<span id="cb10-34"><a href="#cb10-34" tabindex="-1"></a><span class="at">    </span><span class="fu">event</span><span class="kw">:</span><span class="at"> stim</span></span>
+<span id="cb10-35"><a href="#cb10-35" tabindex="-1"></a><span class="at">    </span><span class="fu">trial_subset_expression</span><span class="kw">:</span><span class="at"> object == 'house'</span></span>
+<span id="cb10-36"><a href="#cb10-36" tabindex="-1"></a><span class="at">    </span><span class="fu">normalization</span><span class="kw">:</span><span class="at"> none</span></span>
+<span id="cb10-37"><a href="#cb10-37" tabindex="-1"></a><span class="at">    </span><span class="fu">value_fixed</span><span class="kw">:</span><span class="at"> </span><span class="dv">1</span></span>
+<span id="cb10-38"><a href="#cb10-38" tabindex="-1"></a></span>
+<span id="cb10-39"><a href="#cb10-39" tabindex="-1"></a><span class="fu">l1_models</span><span class="kw">:</span></span>
+<span id="cb10-40"><a href="#cb10-40" tabindex="-1"></a><span class="at">  </span><span class="fu">facehouse</span><span class="kw">:</span></span>
+<span id="cb10-41"><a href="#cb10-41" tabindex="-1"></a><span class="at">    </span><span class="fu">signals</span><span class="kw">:</span></span>
+<span id="cb10-42"><a href="#cb10-42" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> face</span></span>
+<span id="cb10-43"><a href="#cb10-43" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> house</span></span>
+<span id="cb10-44"><a href="#cb10-44" tabindex="-1"></a><span class="at">    </span><span class="fu">contrasts</span><span class="kw">:</span></span>
+<span id="cb10-45"><a href="#cb10-45" tabindex="-1"></a><span class="at">      </span><span class="fu">diagonal</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
+<span id="cb10-46"><a href="#cb10-46" tabindex="-1"></a></span>
+<span id="cb10-47"><a href="#cb10-47" tabindex="-1"></a><span class="fu">l2_models</span><span class="kw">:</span></span>
+<span id="cb10-48"><a href="#cb10-48" tabindex="-1"></a><span class="at">  </span><span class="fu">l2_id_session</span><span class="kw">:</span></span>
+<span id="cb10-49"><a href="#cb10-49" tabindex="-1"></a><span class="at">    </span><span class="fu">level</span><span class="kw">:</span><span class="at"> </span><span class="dv">2</span></span>
+<span id="cb10-50"><a href="#cb10-50" tabindex="-1"></a><span class="at">    </span><span class="fu">l2_scope</span><span class="kw">:</span><span class="at"> id_session</span></span>
+<span id="cb10-51"><a href="#cb10-51" tabindex="-1"></a><span class="at">    </span><span class="fu">model_formula</span><span class="kw">:</span><span class="at"> ~ stress_label</span></span>
+<span id="cb10-52"><a href="#cb10-52" tabindex="-1"></a><span class="at">    </span><span class="fu">reference_level</span><span class="kw">:</span></span>
+<span id="cb10-53"><a href="#cb10-53" tabindex="-1"></a><span class="at">      </span><span class="fu">stress_label</span><span class="kw">:</span><span class="at"> stress</span></span>
+<span id="cb10-54"><a href="#cb10-54" tabindex="-1"></a><span class="at">    </span><span class="fu">contrasts</span><span class="kw">:</span></span>
+<span id="cb10-55"><a href="#cb10-55" tabindex="-1"></a><span class="at">      </span><span class="fu">diagonal</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
+<span id="cb10-56"><a href="#cb10-56" tabindex="-1"></a><span class="at">      </span><span class="fu">cond_means</span><span class="kw">:</span></span>
+<span id="cb10-57"><a href="#cb10-57" tabindex="-1"></a><span class="at">        </span><span class="kw">-</span><span class="at"> stress_label</span></span>
+<span id="cb10-58"><a href="#cb10-58" tabindex="-1"></a><span class="at">      </span><span class="fu">pairwise_diffs</span><span class="kw">:</span></span>
+<span id="cb10-59"><a href="#cb10-59" tabindex="-1"></a><span class="at">        </span><span class="kw">-</span><span class="at"> stress_label</span></span>
+<span id="cb10-60"><a href="#cb10-60" tabindex="-1"></a><span class="at">      </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
+<span id="cb10-61"><a href="#cb10-61" tabindex="-1"></a></span>
+<span id="cb10-62"><a href="#cb10-62" tabindex="-1"></a><span class="fu">l3_models</span><span class="kw">:</span></span>
+<span id="cb10-63"><a href="#cb10-63" tabindex="-1"></a><span class="at">  </span><span class="fu">l3_pooled_subject_ev</span><span class="kw">:</span></span>
+<span id="cb10-64"><a href="#cb10-64" tabindex="-1"></a><span class="at">    </span><span class="fu">level</span><span class="kw">:</span><span class="at"> </span><span class="dv">3</span></span>
+<span id="cb10-65"><a href="#cb10-65" tabindex="-1"></a><span class="at">    </span><span class="fu">l3_input_mode</span><span class="kw">:</span><span class="at"> pooled_sessions_subject_ev</span></span>
+<span id="cb10-66"><a href="#cb10-66" tabindex="-1"></a><span class="at">    </span><span class="fu">execution_backend</span><span class="kw">:</span><span class="at"> fsl</span></span>
+<span id="cb10-67"><a href="#cb10-67" tabindex="-1"></a><span class="at">    </span><span class="fu">producer_backend</span><span class="kw">:</span><span class="at"> fsl</span></span>
+<span id="cb10-68"><a href="#cb10-68" tabindex="-1"></a><span class="at">    </span><span class="fu">model_formula</span><span class="kw">:</span><span class="at"> ~ session_label</span></span>
+<span id="cb10-69"><a href="#cb10-69" tabindex="-1"></a><span class="at">    </span><span class="fu">reference_level</span><span class="kw">:</span></span>
+<span id="cb10-70"><a href="#cb10-70" tabindex="-1"></a><span class="at">      </span><span class="fu">session_label</span><span class="kw">:</span><span class="at"> analgesic</span></span>
+<span id="cb10-71"><a href="#cb10-71" tabindex="-1"></a><span class="at">    </span><span class="fu">diagonal</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
+<span id="cb10-72"><a href="#cb10-72" tabindex="-1"></a><span class="at">    </span><span class="fu">cond_means</span><span class="kw">:</span></span>
+<span id="cb10-73"><a href="#cb10-73" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> session_label</span></span>
+<span id="cb10-74"><a href="#cb10-74" tabindex="-1"></a><span class="at">    </span><span class="fu">pairwise_diffs</span><span class="kw">:</span></span>
+<span id="cb10-75"><a href="#cb10-75" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> session_label</span></span>
+<span id="cb10-76"><a href="#cb10-76" tabindex="-1"></a><span class="at">    </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
+<span id="cb10-77"><a href="#cb10-77" tabindex="-1"></a></span>
+<span id="cb10-78"><a href="#cb10-78" tabindex="-1"></a><span class="at">  </span><span class="fu">l3_3dlmer_session</span><span class="kw">:</span></span>
+<span id="cb10-79"><a href="#cb10-79" tabindex="-1"></a><span class="at">    </span><span class="fu">level</span><span class="kw">:</span><span class="at"> </span><span class="dv">3</span></span>
+<span id="cb10-80"><a href="#cb10-80" tabindex="-1"></a><span class="at">    </span><span class="fu">l3_input_mode</span><span class="kw">:</span><span class="at"> 3dlmer</span></span>
+<span id="cb10-81"><a href="#cb10-81" tabindex="-1"></a><span class="at">    </span><span class="fu">execution_backend</span><span class="kw">:</span><span class="at"> afni</span></span>
+<span id="cb10-82"><a href="#cb10-82" tabindex="-1"></a><span class="at">    </span><span class="fu">producer_backend</span><span class="kw">:</span><span class="at"> fsl</span></span>
+<span id="cb10-83"><a href="#cb10-83" tabindex="-1"></a><span class="at">    </span><span class="fu">model_formula</span><span class="kw">:</span><span class="at"> ~ session_label</span></span>
+<span id="cb10-84"><a href="#cb10-84" tabindex="-1"></a><span class="at">    </span><span class="fu">random_effects</span><span class="kw">:</span><span class="at"> (1 | Subj)</span></span>
+<span id="cb10-85"><a href="#cb10-85" tabindex="-1"></a><span class="at">    </span><span class="fu">reference_level</span><span class="kw">:</span></span>
+<span id="cb10-86"><a href="#cb10-86" tabindex="-1"></a><span class="at">      </span><span class="fu">session_label</span><span class="kw">:</span><span class="at"> analgesic</span></span>
+<span id="cb10-87"><a href="#cb10-87" tabindex="-1"></a><span class="at">    </span><span class="fu">diagonal</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span>
+<span id="cb10-88"><a href="#cb10-88" tabindex="-1"></a><span class="at">    </span><span class="fu">cond_means</span><span class="kw">:</span></span>
+<span id="cb10-89"><a href="#cb10-89" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> session_label</span></span>
+<span id="cb10-90"><a href="#cb10-90" tabindex="-1"></a><span class="at">    </span><span class="fu">pairwise_diffs</span><span class="kw">:</span></span>
+<span id="cb10-91"><a href="#cb10-91" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> session_label</span></span>
+<span id="cb10-92"><a href="#cb10-92" tabindex="-1"></a><span class="at">    </span><span class="fu">overall_response</span><span class="kw">:</span><span class="at"> </span><span class="ch">true</span></span></code></pre></div>
 <p>This example demonstrates the current longitudinal pattern: keep runs nested within subject-session at Level 2 (<code>l2_scope: id_session</code>), then fit either an FSL-native session model with subject explanatory variables or an AFNI <code>3dLMEr</code> model using FSL-produced Level 2 inputs.</p>
 </div>
 <div class="section level2">
@@ -309,7 +339,7 @@
 <span>  <span class="va">glm_pipeline.sqlite</span>      <span class="co"># job tracking database</span></span></code></pre>
 <p>The pipeline writes backend preflight information before submission, then tracks submitted jobs through the SQLite database. <code><a href="reference/diagnose_pipeline.html">diagnose_pipeline()</a></code> summarizes the job tree and helps locate failed or incomplete stages.</p>
 <p>FSL group models can include an <code>inference</code> configuration to run pTFCE automatically after L3 estimation:</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_models</span><span class="op">$</span><span class="va">models</span><span class="op">$</span><span class="va">group</span><span class="op">$</span><span class="va">inference</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/fwe_spec.html">fwe_spec</a></span><span class="op">(</span></span>
 <span>  <span class="st">"group_ptfce"</span>, targets <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l3_model <span class="op">=</span> <span class="st">"group"</span><span class="op">)</span>,</span>
 <span>  fwe_alpha <span class="op">=</span> <span class="fl">0.05</span>, two_sided <span class="op">=</span> <span class="cn">TRUE</span></span>
