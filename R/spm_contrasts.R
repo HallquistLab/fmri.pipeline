@@ -41,28 +41,32 @@ generate_spm_contrasts <- function(output_dir, condition_contrasts=TRUE, unit_co
     paste0("cpos=SPM.xX.iC; %contrasts of design"),
     paste0("bpos=SPM.xX.iB; %block/run regressors"),
     paste0("npos=SPM.xX.iG; %nuisance regressors"),        
-    paste0("save('", mattmp, "', 'mnames', 'cpos', 'bpos', 'npos');")
+    "design_matrix = SPM.xX.X;",
+    "if isfield(SPM.xX, 'xKXs'), design_matrix = SPM.xX.xKXs.X; end;",
+    paste0("save('", mattmp, "', 'mnames', 'cpos', 'bpos', 'npos', 'design_matrix', '-v6');")
   )
   cat(mnames, file=mtmp, sep="\n")
 
-  extract_cmd <- paste0(matlab_cmd, " ", matlab_args, " \"run('", mtmp, "');exit;\"")
+  matlab_expression <- paste0("try; run('", gsub("'", "''", mtmp, fixed = TRUE),
+    "'); catch ME; disp(getReport(ME,'extended')); exit(1); end; exit(0);")
+  extract_cmd <- paste(matlab_cmd, matlab_args, shQuote(matlab_expression))
   if (execute) {
-    system(extract_cmd)
+    if (system(extract_cmd) != 0L) stop("SPM design extraction failed.")
   }
 
   setup_script <- system.file("Rscript", "setup_spm_contrasts.R", package="fmri.pipeline")
   stopifnot(file.exists(setup_script))
 
   rscript_cmd <- paste0(shQuote(rscript_executable()),
-    " --no-save --no-restore ", setup_script,
-    " -mat_file ", mattmp,
+    " --no-save --no-restore ", shQuote(setup_script),
+    " -mat_file ", shQuote(mattmp),
     " -condition_contrasts ", as.character(condition_contrasts),
     " -unit_contrasts ", as.character(unit_contrasts),
     " -effects_of_interest_F ", as.character(effects_of_interest_F),
-    " -spm_path ", spm_path)
+    if (!is.null(spm_path)) paste0(" -spm_path ", shQuote(spm_path)) else "")
 
   if (execute) {
-    system(rscript_cmd)
+    if (system(rscript_cmd) != 0L) stop("SPM contrast mapping failed.")
   }
 
   return(list(extract_cmd=extract_cmd, setup_cmd=rscript_cmd))
@@ -156,25 +160,29 @@ generate_spm_contrasts_from_model <- function(output_dir, mobj,
     paste0("cpos=SPM.xX.iC; %contrasts of design"),
     paste0("bpos=SPM.xX.iB; %block/run regressors"),
     paste0("npos=SPM.xX.iG; %nuisance regressors"),
-    paste0("save('", mattmp, "', 'mnames', 'cpos', 'bpos', 'npos');")
+    "design_matrix = SPM.xX.X;",
+    "if isfield(SPM.xX, 'xKXs'), design_matrix = SPM.xX.xKXs.X; end;",
+    paste0("save('", mattmp, "', 'mnames', 'cpos', 'bpos', 'npos', 'design_matrix', '-v6');")
   )
   cat(mnames, file = mtmp, sep = "\n")
 
-  extract_cmd <- paste0(matlab_cmd, " ", matlab_args, " \"run('", mtmp, "');exit;\"")
+  matlab_expression <- paste0("try; run('", gsub("'", "''", mtmp, fixed = TRUE),
+    "'); catch ME; disp(getReport(ME,'extended')); exit(1); end; exit(0);")
+  extract_cmd <- paste(matlab_cmd, matlab_args, shQuote(matlab_expression))
 
   setup_script <- system.file("Rscript", "setup_spm_contrasts_from_model.R", package="fmri.pipeline")
   stopifnot(file.exists(setup_script))
 
   rscript_cmd <- paste0(shQuote(rscript_executable()),
-    " --no-save --no-restore ", setup_script,
-    " -mat_file ", mattmp,
-    " -contrast_rds ", spec_path,
+    " --no-save --no-restore ", shQuote(setup_script),
+    " -mat_file ", shQuote(mattmp),
+    " -contrast_rds ", shQuote(spec_path),
     " -average_across_runs ", as.character(average_across_runs),
-    " -spm_path ", spm_path)
+    if (!is.null(spm_path)) paste0(" -spm_path ", shQuote(spm_path)) else "")
 
   if (execute) {
-    system(extract_cmd)
-    system(rscript_cmd)
+    if (system(extract_cmd) != 0L) stop("SPM design extraction failed.")
+    if (system(rscript_cmd) != 0L) stop("SPM contrast mapping failed.")
   }
 
   return(list(extract_cmd=extract_cmd, setup_cmd=rscript_cmd))

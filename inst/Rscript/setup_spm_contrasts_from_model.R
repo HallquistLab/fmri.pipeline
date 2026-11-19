@@ -51,6 +51,8 @@ if (is.null(cmat) || !inherits(cmat, "matrix") || nrow(cmat) == 0L) {
   stop("contrast_matrix must be a non-empty matrix in contrast_rds.")
 }
 
+if (!is.numeric(cmat) || any(!is.finite(cmat))) stop("SPM contrast weights must be finite numbers.")
+
 regressors <- colnames(cmat)
 if (is.null(regressors) || length(regressors) != ncol(cmat)) {
   stop("contrast_matrix must have column names matching regressor names.")
@@ -104,7 +106,7 @@ if (!is.null(projection_main_effect_weights)) {
   projection_main_effect_weights[] <- lapply(projection_main_effect_weights, as.numeric)
 }
 
-spm_info <- readMat(matfile)
+spm_info <- readMat(matfile, fixNames = FALSE)
 mnames <- unlist(spm_info$mnames)
 cpos <- as.vector(spm_info$cpos)
 
@@ -197,7 +199,7 @@ for (ii in seq_len(nrow(cmat))) {
 }
 
 if (length(missing_regs) > 0L) {
-  warning("No SPM columns matched these regressors: ", paste(missing_regs, collapse = ", "))
+  stop("Cannot estimate the requested contrasts: no SPM columns matched these regressors: ", paste(missing_regs, collapse = ", "))
 }
 
 extra_rows <- list()
@@ -324,7 +326,23 @@ nonzero_rows <- apply(full_cmat, 1, function(x) any(abs(x) > 1e-12))
 if (!any(nonzero_rows)) {
   stop("All contrasts are empty after mapping to SPM columns.")
 }
-full_cmat <- full_cmat[nonzero_rows, , drop = FALSE]
+if (any(!nonzero_rows)) stop("Zero-weight SPM contrasts: ", paste(rownames(full_cmat)[!nonzero_rows], collapse = ", "))
+
+if (!is.null(spm_info$design_matrix)) {
+  X <- as.matrix(spm_info$design_matrix)
+  if (ncol(X) != ncol(full_cmat)) stop("SPM design and contrast columns disagree.")
+  # Match SPM's singular-value rank tolerance, including small-scale EVs.
+  basis <- svd(X, nu = 0L)
+  tol <- max(dim(X)) * max(basis$d) * .Machine$double.eps
+  Q <- basis$v[, basis$d > tol, drop = FALSE]
+  projected <- full_cmat %*% Q %*% t(Q)
+  invalid <- apply(abs(full_cmat - projected), 1L, max) > 1e-7 * pmax(1, apply(abs(full_cmat), 1L, max))
+  if (any(invalid)) stop("Non-estimable SPM contrasts: ", paste(rownames(full_cmat)[invalid], collapse = ", "))
+}
+if (anyDuplicated(rownames(full_cmat)) || any(grepl("[\t\r\n]", rownames(full_cmat)))) {
+  stop("SPM contrast names must be unique and contain no tabs or newlines.")
+}
+writeLines(rownames(full_cmat), file.path(output_dir, "spm_expected_contrasts.txt"))
 
 cn <- 1
 m_string <- c(
@@ -338,7 +356,7 @@ m_string <- c(
 
 for (ii in seq_len(nrow(full_cmat))) {
   cname <- rownames(full_cmat)[ii]
-  cname <- gsub("'", "", cname, fixed = TRUE)
+  cname <- gsub("'", "''", cname, fixed = TRUE)
   m_string <- c(
     m_string,
     paste0("% consess ", cn),
@@ -353,7 +371,7 @@ m_string <- c(
   m_string,
   "",
   "% delete?",
-  "contrast.matlabbatch{1}.spm.stats.con.delete = 0;",
+  "contrast.matlabbatch{1}.spm.stats.con.delete = 1;",
   "% RUN BATCH JOB",
   "spm_jobman('run',contrast.matlabbatch);"
 )

@@ -14,7 +14,7 @@ test_that("get_spm_status does not treat marker-only runs as complete", {
   expect_false(isTRUE(status$spm_minimal_outputs_exist[[1]]))
 })
 
-test_that("get_spm_status requires SPM.mat and beta files for completion", {
+test_that("get_spm_status rejects empty SPM.mat and beta files", {
   td <- tempfile("spm_status_")
   dir.create(td, recursive = TRUE, showWarnings = FALSE)
   on.exit(unlink(td, recursive = TRUE, force = TRUE), add = TRUE)
@@ -25,9 +25,9 @@ test_that("get_spm_status requires SPM.mat and beta files for completion", {
 
   status <- get_spm_status(td)
 
-  expect_true(isTRUE(status$spm_complete[[1]]))
-  expect_false(isTRUE(status$spm_failed[[1]]))
+  expect_false(isTRUE(status$spm_complete[[1]]))
+  expect_true(isTRUE(status$spm_failed[[1]]))
   expect_true(isTRUE(status$spm_mat_exists[[1]]))
   expect_true(isTRUE(status$spm_beta_exists[[1]]))
-  expect_true(isTRUE(status$spm_minimal_outputs_exist[[1]]))
+  expect_false(isTRUE(status$spm_minimal_outputs_exist[[1]]))
 })

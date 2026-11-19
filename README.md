@@ -305,6 +305,29 @@ run_glm_pipeline(gpa, l3_model_names = "group")
 
 The L3 model builder offers the same settings, and `export_glm_config()` preserves them in YAML. FWE is controlled separately within each selected map. Use `run_fwe_correction(gpa)` to retry correction without fitting models again, and `refresh_fwe_correction(gpa)` to collect scheduled results. See the FWE vignette for custom masks, resource settings, and the standalone planning workflow.
 
+## SPM execution and reuse
+
+SPM L1 contrasts are matched to the fitted design by regressor name. A missing
+required regressor or a non-estimable contrast stops the job. Group inputs are
+selected using the actual `SPM.xCon` names recorded in `spm_contrasts.tsv`, so a
+change in contrast order cannot silently select a different effect.
+
+SPM setup checks retained scan counts and nuisance rows against each run's
+`run_volumes` and `drop_volumes`. Original images use the appropriate leading
+scan offset; already-trimmed images start at scan 1. Nuisance files may contain
+original or retained rows. Missing files and inconsistent lengths are errors.
+Compressed images use separate temporary paths for each analysis and run.
+
+A complete SPM fit needs a successful full run and validated, nonempty model,
+beta, contrast, statistic, and requested residual files. Setup records the
+model specification and input signatures in `spm_setup.rds`; images use path,
+size, and modification time, while nuisance files are content-hashed. Rerun
+`setup_l1_models()` or `setup_l3_models()` after changing inputs or model settings.
+Existing fits without the new validation metadata require setup and estimation
+once before they can be reused. Runs with disabled setup, estimation, or contrast
+stages receive a stage-completion marker and remain incomplete for group input
+selection.
+
 ## Longitudinal workflows
 
 Longitudinal fMRI analyses require special care because runs, sessions, and subjects represent distinct sources of variation. The current recommended patterns are:

@@ -631,6 +631,7 @@ run_l1_build_design_matrix <- function(bdm_args, subj_id, model_name, lg, subj_s
 }
 
 
+# Internal helper: share the same inputs between BDM cache checks and creation.
 l1_bdm_setup_args <- function(subject_ctx, model_ctx, gpa, l1_output_dir, lg) {
   t_out <- model_ctx$model_backend_names
   if (isTRUE(gpa$use_preconvolve)) t_out <- c("convolved", t_out)
@@ -658,7 +659,7 @@ l1_bdm_input_files <- function(args) {
 
 build_and_cache_l1_bdm <- function(subject_ctx, model_ctx, gpa, model_name, l1_output_dir, bdm_out_file, lg) {
   bdm_args <- l1_bdm_setup_args(subject_ctx, model_ctx, gpa, l1_output_dir, lg)
-  bdm_input_files <- if ("fsl" %in% model_ctx$model_backend_names) l1_bdm_input_files(bdm_args)
+  bdm_input_files <- if (any(c("fsl", "spm") %in% model_ctx$model_backend_names)) l1_bdm_input_files(bdm_args)
 
   d_obj <- run_l1_build_design_matrix(
     bdm_args = bdm_args,
@@ -698,7 +699,7 @@ load_or_build_l1_bdm <- function(subject_ctx, model_ctx, gpa, model_name, l1_out
 
   if (!isTRUE(force_rebuild)) {
     cache <- load_cached_l1_bdm(bdm_out_file = bdm_out_file, lg = lg,
-      expected_args = if ("fsl" %in% model_ctx$model_backend_names)
+      expected_args = if (any(c("fsl", "spm") %in% model_ctx$model_backend_names))
         l1_bdm_setup_args(subject_ctx, model_ctx, gpa, l1_output_dir, lg) else NULL)
     if (!isTRUE(cache$run_bdm)) {
       return(cache$d_obj)
@@ -971,79 +972,19 @@ resolve_spm_confound_inputs <- function(gpa, id, session, run_numbers, confound_
   if (is.null(spm_settings$concatenate_runs)) {
     spm_settings$concatenate_runs <- FALSE
   }
-  if (!isTRUE(spm_settings$concatenate_runs)) {
-    return(confound_files)
+  if (!length(confound_files) || all(!is.na(confound_files) & !nzchar(confound_files))) return(NULL)
+  if (anyNA(confound_files) || any(!nzchar(confound_files)) || any(!file.exists(confound_files))) {
+    stop("SPM confounds are missing or invalid; refusing to omit nuisance adjustment.")
   }
+  if (!isTRUE(spm_settings$concatenate_runs)) return(confound_files)
 
-  has_nonempty_confounds <- length(confound_files) > 0L &&
-    any(!is.na(confound_files) & nzchar(confound_files))
-  valid_confounds <- has_nonempty_confounds &&
-    all(!is.na(confound_files) & nzchar(confound_files) & file.exists(confound_files))
-
-  if (isTRUE(valid_confounds)) {
-    concat_args <- list(
-      gpa = gpa,
-      id = id,
-      session = session,
-      run_numbers = run_numbers,
-      confound_files = confound_files,
-      output_dir = output_dir,
-      lg = lg
-    )
-    if (!is.null(run_sessions)) concat_args$run_sessions <- run_sessions
-    if (!is.null(file_name)) concat_args$file_name <- file_name
-
-    concat_file <- do.call(concat_l1_confounds, concat_args)
-    if (!is.null(concat_file)) {
-      if (!isTRUE(pooled)) {
-        lg$info("Using concatenated confounds for SPM: %s", concat_file)
-      }
-      return(concat_file)
-    }
-
-    if (isTRUE(pooled)) {
-      lg$warn(
-        "Unable to concatenate confounds for pooled SPM setup (id=%s model=%s); proceeding without confounds.",
-        id, model_name
-      )
-    } else {
-      lg$warn(
-        "Unable to concatenate confounds for SPM (id=%s session=%s); proceeding without confounds.",
-        id, session
-      )
-    }
-    return(NULL)
-  }
-
-  if (!isTRUE(has_nonempty_confounds)) {
-    if (isTRUE(pooled)) {
-      lg$info(
-        "SPM concatenate_runs=TRUE with no pooled confounds configured for id=%s model=%s; proceeding without confounds.",
-        id, model_name
-      )
-    } else {
-      lg$info(
-        "SPM concatenate_runs=TRUE with no confounds configured for id=%s session=%s; proceeding without confounds.",
-        id, session
-      )
-    }
-    return(NULL)
-  }
-
-  invalid <- confound_files[is.na(confound_files) | !nzchar(confound_files) | !file.exists(confound_files)]
-  invalid_fmt <- if (length(invalid) == 0L) "<none>" else paste(ifelse(is.na(invalid), "NA", invalid), collapse = ", ")
-  if (isTRUE(pooled)) {
-    lg$warn(
-      "SPM concatenate_runs=TRUE but pooled confounds are missing/invalid for id=%s model=%s; proceeding without confounds. Missing/invalid: %s",
-      id, model_name, invalid_fmt
-    )
-  } else {
-    lg$warn(
-      "SPM concatenate_runs=TRUE but confounds are missing/invalid for id=%s session=%s; proceeding without confounds. Missing/invalid: %s",
-      id, session, invalid_fmt
-    )
-  }
-  NULL
+  concat_args <- list(gpa = gpa, id = id, session = session, run_numbers = run_numbers,
+    confound_files = confound_files, output_dir = output_dir, lg = lg)
+  if (!is.null(run_sessions)) concat_args$run_sessions <- run_sessions
+  if (!is.null(file_name)) concat_args$file_name <- file_name
+  concat_file <- do.call(concat_l1_confounds, concat_args)
+  if (is.null(concat_file)) stop("Unable to concatenate SPM confounds; refusing to omit nuisance adjustment.")
+  concat_file
 }
 
 

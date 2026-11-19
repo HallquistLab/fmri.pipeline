@@ -281,3 +281,44 @@ test_that("generate_spm_contrasts_from_model adds centered projection main-effec
   expect_equal(weights[1:4], c(0.5, 0.5, -0.5, -0.5), tolerance = 1e-8)
   expect_equal(weights[5:8], rep(0, 4), tolerance = 1e-8)
 })
+
+
+test_that("SPM contrast mapping rejects missing and non-estimable terms", {
+  td <- tempfile("spm_invalid_contrast_")
+  dir.create(td)
+  mat <- file.path(td, "columns.mat")
+  spec <- file.path(td, "contrasts.rds")
+  script <- system.file("Rscript", "setup_spm_contrasts_from_model.R", package = "fmri.pipeline")
+  run <- function() suppressWarnings(run_spm_contrast_script(script,
+    c("-mat_file", mat, "-contrast_rds", spec)))
+  cmat <- matrix(c(1, -1), 1, dimnames = list("A_minus_B", c("A", "B")))
+  saveRDS(list(contrast_matrix = cmat), spec)
+  R.matlab::writeMat(mat, mnames = c("Sn(1) A*bf(1)", "Sn(1) constant"),
+    cpos = 1, bpos = 2, npos = integer(0), design_matrix = diag(2))
+  result <- run()
+  expect_equal(attr(result, "status"), 1L)
+  expect_true(any(grepl("no SPM columns matched.*B", result)))
+  expect_false(file.exists(file.path(td, "estimate_glm_contrasts.m")))
+
+  R.matlab::writeMat(mat, mnames = c("Sn(1) A*bf(1)", "Sn(1) B*bf(1)", "Sn(1) constant"),
+    cpos = 1:2, bpos = 3, npos = integer(0), design_matrix = cbind(1:5, 1:5, 1))
+  result <- run()
+  expect_equal(attr(result, "status"), 1L)
+  expect_true(any(grepl("Non-estimable SPM contrasts: A_minus_B", result)))
+
+  cmat[1, ] <- c(1, 1)
+  rownames(cmat) <- "Participant's sum"
+  saveRDS(list(contrast_matrix = cmat), spec)
+  result <- run()
+  expect_null(attr(result, "status"), info = paste(result, collapse = "\n"))
+  expect_equal(readLines(file.path(td, "spm_expected_contrasts.txt")), "Participant's sum")
+  lines <- readLines(file.path(td, "estimate_glm_contrasts.m"))
+  expect_true(any(grepl("Participant''s sum", lines, fixed = TRUE)))
+  expect_true(any(grepl("con.delete = 1", lines, fixed = TRUE)))
+
+  # A small regressor scale alone must not make a full-rank contrast invalid.
+  R.matlab::writeMat(mat, mnames = c("Sn(1) A*bf(1)", "Sn(1) B*bf(1)", "Sn(1) constant"),
+    cpos = 1:2, bpos = 3, npos = integer(0), design_matrix = cbind(1e-9 * (1:5), c(1, 1, 2, 2, 4), 1))
+  result <- run()
+  expect_null(attr(result, "status"), info = paste(result, collapse = "\n"))
+})

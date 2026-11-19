@@ -66,6 +66,7 @@ reg_split <- split(minterest, reg_names)
 #if (any(which_const <- names(reg_split) == "constant")) { reg_split <- reg_split[!which_const] }
 
 cn <- 1 #contrast number
+expected_names <- character(0)
 
 m_string <- c(
   spm_preamble,
@@ -85,6 +86,7 @@ if (effects_of_interest_F) {
     paste0("contrast.matlabbatch{1}.spm.stats.con.consess{", cn, "}.fcon.weights = [", paste(cvec, collapse=", "), "];"),
     paste0("contrast.matlabbatch{1}.spm.stats.con.consess{", cn, "}.fcon.sessrep = 'none';")
   )
+  expected_names <- c(expected_names, "Effects of interest")
   cn <- cn + 1 #increment contrast number
 }
 
@@ -111,16 +113,18 @@ if (condition_contrasts) {
     )
   }
   
+  expected_names <- c(expected_names, rownames(cmat))
   cn <- cn + nrow(cmat) #increment contrast number
 
   m_string <- c(m_string,
     "",
     "% delete?",
-    "contrast.matlabbatch{1}.spm.stats.con.delete = 0;",
+    "contrast.matlabbatch{1}.spm.stats.con.delete = 1;",
     "% RUN BATCH JOB",
     "spm_jobman('run',contrast.matlabbatch);"
   )
 
   cat(m_string, file=file.path(output_dir, "estimate_glm_contrasts.m"), sep="\n")
+  writeLines(expected_names, file.path(output_dir, "spm_expected_contrasts.txt"))
 
 }

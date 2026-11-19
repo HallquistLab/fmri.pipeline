@@ -1,5 +1,16 @@
 # fmri.pipeline 0.5
 
+## SPM correctness
+
+* Reject missing or non-estimable contrast terms and resolve group input maps by
+  their actual SPM contrast names rather than contrast positions.
+* Isolate compressed inputs by analysis and run; align leading scan drops and
+  nuisance rows and fail when requested confounds cannot be used.
+* Invalidate stale setup from changed designs, settings, contrasts, or source
+  files. Stop execution at the first failed stage and validate all expected
+  outputs before marking L1 or L3 fits complete. Older fits need one new run to
+  acquire the validation metadata.
+
 ## FSL FEAT estimation
 
 * FEAT results now report the requested and actual higher-level estimator and

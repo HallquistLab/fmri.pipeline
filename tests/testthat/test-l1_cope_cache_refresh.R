@@ -27,9 +27,7 @@ test_that("refresh_l1_cope_names populates cache from L1 contrasts", {
 test_that("setup_l3_models refreshes missing L1 cope cache before mapping copes", {
   spm_dir <- file.path(tempdir(), paste0("spm_l1_cache_refresh_", as.integer(Sys.time())))
   dir.create(spm_dir, recursive = TRUE, showWarnings = FALSE)
-  file.create(file.path(spm_dir, "SPM.mat"))
-  file.create(file.path(spm_dir, "beta_0001.nii"))
-  file.create(file.path(spm_dir, "con_0001.nii"))
+  make_spm_completed_fixture(spm_dir)
 
   subj_ids <- paste0("sub", 1:4)
   l1_models <- list(
@@ -126,9 +124,7 @@ test_that("setup_l3_models refreshes missing L1 cope cache before mapping copes"
 test_that("setup_l3_models errors clearly when L1 contrasts are missing", {
   spm_dir <- file.path(tempdir(), paste0("spm_l1_no_contrasts_", as.integer(Sys.time())))
   dir.create(spm_dir, recursive = TRUE, showWarnings = FALSE)
-  file.create(file.path(spm_dir, "SPM.mat"))
-  file.create(file.path(spm_dir, "beta_0001.nii"))
-  file.create(file.path(spm_dir, "con_0001.nii"))
+  make_spm_completed_fixture(spm_dir)
 
   subj_ids <- paste0("sub", 1:4)
   l1_models <- list(

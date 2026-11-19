@@ -1193,7 +1193,7 @@ test_that("get_spm_l3_inputs splits by session only for per_session mode", {
   )
   for (ii in seq_len(nrow(spm_setup))) {
     dir.create(spm_setup$spm_dir[ii], recursive = TRUE, showWarnings = FALSE)
-    file.create(file.path(spm_setup$spm_dir[ii], "con_0001.nii"))
+    make_spm_completed_fixture(spm_setup$spm_dir[ii], numbers = 3L)
   }
 
   gpa <- list(
@@ -1222,6 +1222,7 @@ test_that("get_spm_l3_inputs splits by session only for per_session mode", {
   pooled_inputs <- fmri.pipeline:::get_spm_l3_inputs(gpa, cfg_pool, lg = lgr::get_logger("test"))
   expect_equal(length(pooled_inputs), 1L)
   expect_equal(nrow(pooled_inputs[[1L]]), nrow(cfg_pool))
+  expect_true(all(basename(pooled_inputs[[1L]]$con_file) == "con_0003.nii"))
 })
 
 # ==============================================================================

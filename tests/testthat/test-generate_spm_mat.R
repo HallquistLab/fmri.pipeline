@@ -41,7 +41,7 @@ test_that("generate_spm_mat handles concatenated ts_files and non-concat mismatc
   class(bdm) <- c("bdm", "list")
 
   ts_file <- file.path(tmp_dir, "confounds.txt")
-  writeLines("1 2 3", ts_file)
+  writeLines(rep("1 2 3", 11), ts_file)
 
   expect_error(
     generate_spm_mat(
