@@ -70,7 +70,7 @@ get_feat_status <- function(feat_dir, feat_fsf=NULL, lg=NULL, prefix=NULL) {
   if (is.null(lg)) lg <- lgr::get_logger() #just use root logger
 
   # handle feat_dir with no extension
-  if (!grepl(".feat$", feat_dir)) {
+  if (!grepl("\\.g?feat$", feat_dir)) {
     feat_dir <- paste0(feat_dir, ".feat")
     if (!dir.exists(feat_dir) && dir.exists(sub(".feat$", ".gfeat", feat_dir))) {
       feat_dir <- sub(".feat$", ".gfeat", feat_dir)
@@ -100,21 +100,16 @@ get_feat_status <- function(feat_dir, feat_fsf=NULL, lg=NULL, prefix=NULL) {
   feat_checks$feat_failed <- NA # default: NA if feat hasn't even been run
 
   if (dir.exists(feat_dir)) {
-    if (file.exists(file.path(feat_dir, ".feat_complete"))) {
-      lg$debug("Feat directory is complete: %s", feat_dir)
-      timing_file <- file.path(feat_dir, ".feat_complete")
-      if (file.exists(file.path(feat_dir, ".feat_fail"))) {
-        lg$warn("Both .feat_complete and .feat_fail objects exist in %s", feat_dir)
-        lg$warn("Assuming that .feat_complete reflects a successful completion of feat")
-      }
-      feat_checks$feat_complete <- TRUE
-      feat_checks$feat_failed <- FALSE
-    } else if (file.exists(file.path(feat_dir, ".feat_fail"))) {
-      lg$debug("Detected feat failure in: %s", feat_dir)
-      timing_file <- file.path(feat_dir, ".feat_fail")
+    timing_file <- NULL
+    complete <- file.path(feat_dir, ".feat_complete")
+    failed <- file.path(feat_dir, ".feat_fail")
+    if (file.exists(failed)) {
+      timing_file <- failed
       feat_checks$feat_failed <- TRUE
-    } else {
-      timing_file <- NULL
+    } else if (file.exists(complete)) {
+      timing_file <- complete
+      feat_checks$feat_complete <- feat_outputs_valid(feat_dir, feat_fsf)
+      feat_checks$feat_failed <- !feat_checks$feat_complete
     }
 
     if (!is.null(timing_file)) {

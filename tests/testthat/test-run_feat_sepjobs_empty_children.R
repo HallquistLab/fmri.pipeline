@@ -28,6 +28,9 @@ test_that("run_feat_sepjobs returns an empty character vector when nothing needs
     class = "l1_setup"
   )
 
+  fit <- make_valid_feat(withr::local_tempdir())
+  gpa$l1_model_setup$fsl$feat_fsf <- fit$fsf
+  gpa$l1_model_setup$fsl$feat_dir <- fit$out
   res <- fmri.pipeline::run_feat_sepjobs(gpa, level = 1L, model_names = "facehouse")
   expect_type(res, "character")
   expect_length(res, 0L)

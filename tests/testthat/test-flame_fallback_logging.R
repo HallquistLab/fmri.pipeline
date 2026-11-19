@@ -47,7 +47,8 @@ test_that("run_feat_sepjobs source wires FLAME fallback logging into FEAT jobs",
   lines <- readLines(run_feat_path, warn = FALSE)
 
   expect_true(any(grepl("log_flame_runner_fallbacks\\.R", lines)))
-  expect_true(any(grepl("--feat_dir", lines) & grepl("\\$\\{odir\\}", lines)))
+  runner <- readLines(source_tree_file("inst", "bash", "feat_runner.sh"))
+  expect_true(any(grepl('--feat_dir "$odir"', runner, fixed = TRUE)))
   expect_true(any(grepl("l%d_estimation.txt", lines, fixed = TRUE)))
   expect_true(any(grepl("l%d_estimation.json", lines, fixed = TRUE)))
 })

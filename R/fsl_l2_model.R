@@ -199,15 +199,6 @@ fsl_l2_model <- function(l1_df=NULL, l2_model, gpa) {
     dir.create(l2_feat_parent_dir, recursive = TRUE)
   }
 
-  # add columns regarding whether inputs already exist and FEAT is already complete
-  feat_l2_df <- feat_l2_df %>%
-    dplyr::bind_cols(get_feat_status(feat_dir = l2_feat_dir, feat_fsf = l2_feat_fsf, lg = lg))
-
-  feat_l2_df$to_run <- !feat_l2_df$feat_complete
-
-  lg$debug("Expected L2 feat directory is: %s", l2_feat_dir)
-  lg$debug("Expected L2 feat fsf is: %s", l2_feat_fsf)
-
   # specify output directory (removing .gfeat suffix)
   # .OUTPUTDIR. : the feat output location
   l2_fsf_syntax <- gsub(".OUTPUTDIR.", sub("\\.gfeat$", "", l2_feat_dir), l2_fsf_syntax, fixed = TRUE)
@@ -215,17 +206,12 @@ fsl_l2_model <- function(l1_df=NULL, l2_model, gpa) {
   # handle custom L1 FSF syntax
   l2_fsf_syntax <- add_custom_feat_syntax(l2_fsf_syntax, gpa$additional$feat_l2_args, lg)
 
-  # Rewrite FSF whenever this model is queued to run or force_l2_creation is TRUE so updated contrasts are never masked by a stale file
-  write_l2_fsf <- !file.exists(l2_feat_fsf) ||
-    isTRUE(gpa$glm_settings$fsl$force_l2_creation) ||
-    isTRUE(feat_l2_df$to_run[1L])
-
-  if (isTRUE(write_l2_fsf)) {
-    lg$info("Writing L2 FSF syntax to: %s", l2_feat_fsf)
-    cat(l2_fsf_syntax, file = l2_feat_fsf, sep = "\n")
-  } else {
-    lg$info("Skipping existing L2 FSF syntax: %s", l2_feat_fsf)
-  }
+  feat_save_setup(l2_feat_fsf, l2_fsf_syntax, inputs = feat_higher_inputs(l1_cope_files),
+    level = 2L, spec = list(design = dmat, contrasts = cmat),
+    force = isTRUE(gpa$glm_settings$fsl$force_l2_creation))
+  feat_l2_df <- dplyr::bind_cols(feat_l2_df,
+    get_feat_status(feat_dir = feat_output_directory(l2_fsf_syntax), feat_fsf = l2_feat_fsf, lg = lg))
+  feat_l2_df$to_run <- !feat_l2_df$feat_complete
 
   return(feat_l2_df)
 

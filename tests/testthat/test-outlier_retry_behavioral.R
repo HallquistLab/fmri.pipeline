@@ -478,7 +478,7 @@ test_that("get_feat_status detects auto-retry and sets feat_auto_retried=TRUE", 
 
   result <- fmri.pipeline:::get_feat_status(feat_dir = gfeat)
   expect_true(result$feat_auto_retried)
-  expect_true(result$feat_complete)
+  expect_false(result$feat_complete) # A retry marker alone cannot validate a fit.
 })
 
 test_that("get_feat_status returns feat_auto_retried=FALSE when no warning file", {
@@ -491,7 +491,7 @@ test_that("get_feat_status returns feat_auto_retried=FALSE when no warning file"
 
   result <- fmri.pipeline:::get_feat_status(feat_dir = gfeat)
   expect_false(result$feat_auto_retried)
-  expect_true(result$feat_complete)
+  expect_false(result$feat_complete) # A retry marker alone cannot validate a fit.
 })
 
 test_that("get_feat_status returns feat_auto_retried=FALSE when directory does not exist", {
