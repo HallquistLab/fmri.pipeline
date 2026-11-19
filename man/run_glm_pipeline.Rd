@@ -23,7 +23,7 @@ run_glm_pipeline(
 
 \item{l3_model_names}{a character vector of level 3 model names (specified during build_l3_models) that should be executed}
 
-\item{glm_software}{which glm software should be used for model estimation (not implemented yet)}
+\item{glm_software}{which GLM software should be used for model estimation (fsl, spm, or afni)}
 
 \item{level_backends}{optional per-level backend override list keyed by `l1`, `l2`, and/or `l3`}
 

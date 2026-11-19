@@ -427,7 +427,7 @@ setup_glm_pipeline <- function(analysis_name = "glm_analysis", scheduler = "slur
   gpa <- normalize_longitudinal_model_signatures(gpa, lg)
 
   # initial checks on compute environment
-  test_compute_environment(gpa, stop_on_fail=FALSE)
+  test_compute_environment(gpa, what = unique(c("r", gpa$glm_software)), stop_on_fail = FALSE)
   if ("spm" %in% gpa$glm_software) {
     test_spm_compute_environment(gpa, stop_on_fail = FALSE)
   }

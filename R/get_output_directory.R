@@ -100,8 +100,10 @@ get_output_directory <- function(id = NULL, session = NULL, run_number = NULL,
           l1_directory <- gsub("([/\\\\])ses-\\{session\\}([/\\\\]|$)", "\\1", l1_directory, perl = TRUE)
         }
       }
-    } else if (glm_software == "afni" && "afni_l1_directory" %in% names(gpa$output_locations)) {
-      l1_directory <- gpa$output_locations$afni_l1_directory
+    } else if (glm_software == "afni") {
+      l1_directory <- gpa$output_locations$afni_l1_directory %||% file.path(
+        "{gpa$output_directory}", "afni_l1", "sub-{id}", "ses-{session}", "{l1_model}"
+      )
     }
 
     if (l1_directory == "local") {
@@ -163,6 +165,10 @@ get_output_directory <- function(id = NULL, session = NULL, run_number = NULL,
     l3_directory <- gpa$output_locations$feat_l3_directory
     if (glm_software == "spm" && "spm_l3_directory" %in% names(gpa$output_locations)) {
       l3_directory <- gpa$output_locations$spm_l3_directory
+    } else if (glm_software == "afni") {
+      l3_directory <- gpa$output_locations$afni_l3_directory %||% file.path(
+        "{gpa$output_directory}", "afni_l3", "L3m-{l3_model}", "L1m-{l1_model}", "l1c-{l1_cope_name}"
+      )
     }
     out_dir <- glue::glue(l3_directory) # evaluate glue expression
   } else if (what == "sub") {
