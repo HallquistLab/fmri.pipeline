@@ -127,6 +127,7 @@ test_that("AFNI scheduler wrapper preserves failures and vector dependencies", {
   lines <- readLines(captured)
   expect_true(any(grepl("afterok:10:11", lines, fixed = TRUE)))
   expect_true(any(grepl("--cpus-per-task=2", lines, fixed = TRUE)))
+  skip_on_os("windows") # Keep scheduler assertions above; execution needs Unix paths.
   withr::local_envvar(c(SLURM_JOB_ID = "123"))
   expect_equal(system2("bash", shQuote(captured)), 19L)
 })
@@ -189,7 +190,7 @@ test_that("AFNI excludes flagged runs before concatenation and validates image g
   out <- afni_l1_model("sub1", 1L, d_obj = f$d, gpa = f$gpa, model_name = "model1")
   spec <- readRDS(file.path(out$afni_dir, "afni_setup.rds"))
   expect_equal(nrow(spec$design), 50L)
-  expect_equal(spec$inputs, f$d$run_nifti[2])
+  expect_equal(spec$inputs, normalizePath(f$d$run_nifti[2], mustWork = TRUE))
   f$gpa$run_data$exclude_run[] <- TRUE
   expect_null(afni_l1_model("sub1", 1L, d_obj = f$d, gpa = f$gpa, model_name = "model1"))
   f$gpa$run_data$exclude_run[] <- FALSE
