@@ -79,7 +79,7 @@ Suggests:
 Enhances:
     medusa
 Remotes:
-    spisakt/pTFCE@v0.2.2.1
+    spisakt/pTFCE@6fd6be5508974a9473c643bee3fcc714c7b57d5e
 LinkingTo:
     Rcpp,
     RcppArmadillo,
