@@ -25,8 +25,8 @@ l3_models:
       correction_mask: model
       compute:
         scheduler: inherit
-        memgb_per_command: 8
-        time_per_command: "00:30:00"
+        memgb_per_command: 1
+        time_per_command: "00:00:45"
 ```
 
 `inference` applies to all contrasts of its model unless `targets`
@@ -35,6 +35,25 @@ controls FWE separately within each selected map, including both tails
 when `two_sided` is true. It does **not** jointly correct across
 contrasts or models. Omit `inference` or set it to `false` to leave
 correction disabled.
+
+Install the HallquistLab fork of pTFCE on each execution host. The
+package DESCRIPTION pins the tested revision. To run a completed FEAT
+group directory in the current R session, use
+`ptfce_spec$new(gfeat_dir = "group.gfeat")$run()`. Directory runs
+recompute maps with older threshold tables. Use `$run(force = TRUE)` to
+replace existing outputs after changing the input images or smoothness.
+Declarative FWE plans automatically invalidate receipts from the old
+worker.
+
+The installed CLI accepts either a single map or a whole group
+directory:
+
+``` r
+
+script <- system.file("bin", "ptfce_zstat.R", package = "fmri.pipeline")
+system2("Rscript", c("--vanilla", shQuote(script), "--gfeat", "group.gfeat",
+  "--twosided", "--fwep", "0.05", "0.01", "--write_thresh_imgs"))
+```
 
 For programmatic configuration, assign the same specification to the
 model:
@@ -147,10 +166,10 @@ all_l3_spec
 
 `fwe_alpha` controls the FWE thresholds reported and, when
 `write_threshold_images = TRUE`, the thresholded pTFCE images written
-for each selected map. With `two_sided = TRUE`, pTFCE corrects positive
-and negative tails separately and uses half of each requested FWE alpha
-for the per-tail threshold. Set `two_sided = FALSE` when a one-sided
-positive-tail analysis is the intended inferential test.
+for each selected map. With `two_sided = TRUE`, pTFCE enhances both
+tails on a shared threshold grid and uses half of each requested FWE
+alpha for the per-tail threshold. Set `two_sided = FALSE` when a
+one-sided positive-tail analysis is the intended inferential test.
 
 Use `correction_mask = "model"` for the FEAT mask associated with each
 target, or supply one explicit NIfTI mask when the same small-volume
@@ -234,8 +253,8 @@ fwe_run <- run_fwe_plan(fwe_plan, scheduler = "local")
 #   scheduler = "slurm",
 #   commands_per_cpu = 1L,
 #   cpus_per_job = 1L,
-#   memgb_per_command = 8,
-#   time_per_command = "00:30"
+#   memgb_per_command = 1,
+#   time_per_command = "00:00:45"
 # )
 ```
 

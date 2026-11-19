@@ -95,8 +95,8 @@ equivalent YAML configuration is:</p>
 <span id="cb1-12"><a href="#cb1-12" tabindex="-1"></a><span class="at">      </span><span class="fu">correction_mask</span><span class="kw">:</span><span class="at"> model</span></span>
 <span id="cb1-13"><a href="#cb1-13" tabindex="-1"></a><span class="at">      </span><span class="fu">compute</span><span class="kw">:</span></span>
 <span id="cb1-14"><a href="#cb1-14" tabindex="-1"></a><span class="at">        </span><span class="fu">scheduler</span><span class="kw">:</span><span class="at"> inherit</span></span>
-<span id="cb1-15"><a href="#cb1-15" tabindex="-1"></a><span class="at">        </span><span class="fu">memgb_per_command</span><span class="kw">:</span><span class="at"> </span><span class="dv">8</span></span>
-<span id="cb1-16"><a href="#cb1-16" tabindex="-1"></a><span class="at">        </span><span class="fu">time_per_command</span><span class="kw">:</span><span class="at"> </span><span class="st">"00:30:00"</span></span></code></pre></div>
+<span id="cb1-15"><a href="#cb1-15" tabindex="-1"></a><span class="at">        </span><span class="fu">memgb_per_command</span><span class="kw">:</span><span class="at"> </span><span class="dv">1</span></span>
+<span id="cb1-16"><a href="#cb1-16" tabindex="-1"></a><span class="at">        </span><span class="fu">time_per_command</span><span class="kw">:</span><span class="at"> </span><span class="st">"00:00:45"</span></span></code></pre></div>
 <p><code>inference</code> applies to all contrasts of its model unless
 <code>targets</code> selects a subset, for example
 <code>targets: {l3_cope_name: age}</code>. Correction controls FWE
@@ -104,9 +104,23 @@ separately within each selected map, including both tails when
 <code>two_sided</code> is true. It does <strong>not</strong> jointly
 correct across contrasts or models. Omit <code>inference</code> or set
 it to <code>false</code> to leave correction disabled.</p>
+<p>Install the HallquistLab fork of pTFCE on each execution host. The
+package DESCRIPTION pins the tested revision. To run a completed FEAT
+group directory in the current R session, use
+<code>ptfce_spec$new(gfeat_dir = "group.gfeat")$run()</code>. Directory
+runs recompute maps with older threshold tables. Use
+<code>$run(force = TRUE)</code> to replace existing outputs after
+changing the input images or smoothness. Declarative FWE plans
+automatically invalidate receipts from the old worker.</p>
+<p>The installed CLI accepts either a single map or a whole group
+directory:</p>
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">script</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"bin"</span>, <span class="st">"ptfce_zstat.R"</span>, package <span class="op">=</span> <span class="st">"fmri.pipeline"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/system2.html" class="external-link">system2</a></span><span class="op">(</span><span class="st">"Rscript"</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"--vanilla"</span>, <span class="fu"><a href="https://rdrr.io/r/base/shQuote.html" class="external-link">shQuote</a></span><span class="op">(</span><span class="va">script</span><span class="op">)</span>, <span class="st">"--gfeat"</span>, <span class="st">"group.gfeat"</span>,</span>
+<span>  <span class="st">"--twosided"</span>, <span class="st">"--fwep"</span>, <span class="st">"0.05"</span>, <span class="st">"0.01"</span>, <span class="st">"--write_thresh_imgs"</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
 <p>For programmatic configuration, assign the same specification to the
 model:</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">l3_models</span><span class="op">$</span><span class="va">models</span><span class="op">$</span><span class="va">group</span><span class="op">$</span><span class="va">inference</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/fwe_spec.html">fwe_spec</a></span><span class="op">(</span></span>
 <span>  <span class="st">"group_ptfce"</span>, targets <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l3_model <span class="op">=</span> <span class="st">"group"</span><span class="op">)</span>,</span>
 <span>  fwe_alpha <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">0.05</span>, <span class="fl">0.01</span><span class="op">)</span>, two_sided <span class="op">=</span> <span class="cn">TRUE</span></span>
@@ -132,7 +146,7 @@ APIs, but must be replaced with declarative specifications for automatic
 execution.</p>
 <p>To inspect or retry correction after estimation, reload the saved
 pipeline object and use the correction-only entry point:</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">gpa</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/readRDS.html" class="external-link">readRDS</a></span><span class="op">(</span><span class="va">gpa</span><span class="op">$</span><span class="va">output_locations</span><span class="op">$</span><span class="va">object_cache</span><span class="op">)</span></span>
 <span><span class="va">gpa</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/run_fwe_correction.html">run_fwe_correction</a></span><span class="op">(</span><span class="va">gpa</span>, l3_model_names <span class="op">=</span> <span class="st">"group"</span><span class="op">)</span></span>
 <span><span class="co"># After scheduler jobs finish:</span></span>
@@ -187,7 +201,7 @@ the following specification applies pTFCE to every level-3 z-statistic
 map from <code>l3_group</code>. Narrow the scope by adding selectors
 such as <code>l3_cope_name</code>, <code>l2_model</code>, or
 <code>l1_model</code>; selector values may be vectors.</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">all_l3_spec</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/fwe_spec.html">fwe_spec</a></span><span class="op">(</span></span>
 <span>  name <span class="op">=</span> <span class="st">"l3_group_ptfce"</span>,</span>
 <span>  targets <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>l3_model <span class="op">=</span> <span class="st">"l3_group"</span><span class="op">)</span>,</span>
@@ -203,7 +217,7 @@ such as <code>l3_cope_name</code>, <code>l2_model</code>, or
 <p><code>fwe_alpha</code> controls the FWE thresholds reported and, when
 <code>write_threshold_images = TRUE</code>, the thresholded pTFCE images
 written for each selected map. With <code>two_sided = TRUE</code>, pTFCE
-corrects positive and negative tails separately and uses half of each
+enhances both tails on a shared threshold grid and uses half of each
 requested FWE alpha for the per-tail threshold. Set
 <code>two_sided = FALSE</code> when a one-sided positive-tail analysis
 is the intended inferential test.</p>
@@ -212,7 +226,7 @@ associated with each target, or supply one explicit NIfTI mask when the
 same small-volume mask should be used for every selected map.
 Specifications are ordinary serializable objects, so they can be kept
 under version control as YAML.</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/write_fwe_spec.html">write_fwe_spec</a></span><span class="op">(</span><span class="va">all_l3_spec</span>, <span class="st">"config/fwe/l3_group_ptfce.yaml"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># In a later R session:</span></span>
@@ -225,7 +239,7 @@ under version control as YAML.</p>
 <code>glm_pipeline_arguments</code> object after the selected level-3
 FEAT analyses have completed. Planning is side-effect free: it does not
 create output directories, submit jobs, or run pTFCE.</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">fwe_plan</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/plan_fwe_correction.html">plan_fwe_correction</a></span><span class="op">(</span><span class="va">gpa</span>, <span class="va">all_l3_spec</span><span class="op">)</span></span>
 <span><span class="va">fwe_plan</span></span>
 <span></span>
@@ -240,14 +254,14 @@ create output directories, submit jobs, or run pTFCE.</p>
 <p>If you are planning before all inputs exist, use a non-strict
 preview. Blocked tasks identify the missing input instead of running
 with an incomplete setup.</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">fwe_plan</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/plan_fwe_correction.html">plan_fwe_correction</a></span><span class="op">(</span></span>
 <span>  <span class="va">gpa</span>, <span class="va">all_l3_spec</span>, require_inputs <span class="op">=</span> <span class="cn">FALSE</span></span>
 <span><span class="op">)</span></span>
 <span><span class="va">fwe_plan</span><span class="op">$</span><span class="va">tasks</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"task_id"</span>, <span class="st">"l3_cope_name"</span>, <span class="st">"status"</span>, <span class="st">"missing_inputs"</span><span class="op">)</span><span class="op">]</span></span></code></pre></div>
 <p>Once the plan is ready, it may also be saved and executed from
 another R session or submission script.</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/write_fwe_plan.html">write_fwe_plan</a></span><span class="op">(</span><span class="va">fwe_plan</span>, <span class="st">"derivatives/fwe/l3_group_ptfce/plan.rds"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level3">
@@ -255,14 +269,14 @@ another R session or submission script.</p>
 </h3>
 <p>First use a dry run to inspect the generated command for each task
 without creating files or submitting work.</p>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">dry_run</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/run_fwe_plan.html">run_fwe_plan</a></span><span class="op">(</span><span class="va">fwe_plan</span>, dry_run <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
 <span><span class="va">dry_run</span><span class="op">$</span><span class="va">execution</span><span class="op">[</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"task_id"</span>, <span class="st">"execution_status"</span>, <span class="st">"command"</span><span class="op">)</span><span class="op">]</span></span></code></pre></div>
 <p>For a small analysis, run pTFCE synchronously on the current host.
 Otherwise, omit <code>scheduler</code> to use the scheduler compiled
 into the plan, or set it explicitly to <code>"slurm"</code> or
 <code>"torque"</code> and provide task-appropriate resources.</p>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Local execution</span></span>
 <span><span class="va">fwe_run</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/run_fwe_plan.html">run_fwe_plan</a></span><span class="op">(</span><span class="va">fwe_plan</span>, scheduler <span class="op">=</span> <span class="st">"local"</span><span class="op">)</span></span>
 <span></span>
@@ -272,8 +286,8 @@ into the plan, or set it explicitly to <code>"slurm"</code> or
 <span><span class="co">#   scheduler = "slurm",</span></span>
 <span><span class="co">#   commands_per_cpu = 1L,</span></span>
 <span><span class="co">#   cpus_per_job = 1L,</span></span>
-<span><span class="co">#   memgb_per_command = 8,</span></span>
-<span><span class="co">#   time_per_command = "00:30"</span></span>
+<span><span class="co">#   memgb_per_command = 1,</span></span>
+<span><span class="co">#   time_per_command = "00:00:45"</span></span>
 <span><span class="co"># )</span></span></code></pre></div>
 <p>Local execution returns after pTFCE has finished. Scheduler execution
 returns after submission, so refresh and collect after those jobs have
@@ -281,7 +295,7 @@ completed. Real runs automatically persist a result snapshot and
 <code>manifest/artifacts.csv</code> in the correction output directory;
 collecting again updates those canonical files with the current artifact
 state.</p>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">fwe_plan</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/refresh_fwe_plan.html">refresh_fwe_plan</a></span><span class="op">(</span><span class="va">fwe_run</span><span class="op">$</span><span class="va">plan</span><span class="op">)</span></span>
 <span><span class="va">fwe_result</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/collect_fwe_results.html">collect_fwe_results</a></span><span class="op">(</span></span>
 <span>  <span class="va">fwe_plan</span>,</span>
@@ -363,7 +377,7 @@ G, H, I.</p>
 </h5>
 <p>If you would like to run 3dFWHMx yourself using the afni_3dfwhmx
 wrapper class, here is an example:</p>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># example FEAT LVL1 output</span></span>
 <span><span class="va">path</span> <span class="op">&lt;-</span> <span class="st">"/proj/mnhallqlab/studies/MMClock/MR_Proc/10637_20140304/mni_5mm_aroma/sceptic_vchosen_ventropy_dauc_pemax_vtime_preconvolve/FEAT_LVL1_run1.feat"</span></span>
 <span><span class="va">res4d_file</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/file.path.html" class="external-link">file.path</a></span><span class="op">(</span><span class="va">path</span>, <span class="st">"stats"</span>, <span class="st">"res4d.nii.gz"</span><span class="op">)</span></span>
@@ -408,7 +422,7 @@ The goal of the afni_3fwhmx_list class is to run 3dFWHMx for all input
 datasets and to provide average values for the ACF across the datasets.
 This average can then be passed directly to 3dClustSim -acf.</p>
 <p>Here’s a quick example:</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># get ACF parameters for 8 first-level residual files for testing</span></span>
 <span><span class="co"># this example is simpler than typical applications where we have many subject and many runs</span></span>
 <span><span class="va">path</span> <span class="op">&lt;-</span> <span class="st">"/proj/mnhallqlab/studies/MMClock/MR_Proc/10637_20140304/mni_5mm_aroma/sceptic_vchosen_ventropy_dauc_pemax_vtime_preconvolve"</span></span>
@@ -456,7 +470,7 @@ residuals and mask files as above (in the 3dFWHMx list step). Here, we
 ask 3dClustSim to use 8 cores for parallel estimation and we use the MNI
 2009c brain mask (at 2.3mm) as the volume over which to correct for FWE
 (this should match the empirical data).</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">clustsim_acf</span> <span class="op">&lt;-</span> <span class="va"><a href="../reference/afni_3dclustsim.html">afni_3dclustsim</a></span><span class="op">$</span><span class="fu">new</span><span class="op">(</span></span>
 <span>  fwhmx_input_files <span class="op">=</span> <span class="va">res4d_files</span>, fwhmx_mask_files <span class="op">=</span> <span class="va">fwhmx_mask_files</span>,</span>
 <span>  scheduler <span class="op">=</span> <span class="st">"slurm"</span>, out_dir <span class="op">=</span> <span class="st">"/proj/mnhallqlab/users/michael/fmri.pipeline"</span>, <span class="co"># where you want the 3dClustSim output files to go</span></span>
@@ -472,14 +486,14 @@ ask 3dClustSim to use 8 cores for parallel estimation and we use the MNI
 <p>Once the above job completes, we can look at the number of voxels
 needed at different combinations of voxelwise and clusterwise
 thresholds.</p>
-<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">clustsim_acf</span><span class="op">$</span><span class="fu">get_clustsim_df</span><span class="op">(</span><span class="op">)</span> <span class="op">%&gt;%</span> <span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 <p>If you were curious about a cluster correction result, you can use
 the <code><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">dplyr::filter</a></code> function to obtain this. For example,
 imagine that I want to look at the whole-brain FWE cluster threshold for
 all clusters defined by NN=1 (faces touching) and a voxelwise
 significance level of p = .001. Here’s the result.</p>
-<div class="sourceCode" id="cb16"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">clustsim_acf</span><span class="op">$</span><span class="fu">get_clustsim_df</span><span class="op">(</span><span class="op">)</span> <span class="op">%&gt;%</span> <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="va">nn</span><span class="op">==</span><span class="fl">1</span> <span class="op">&amp;</span> <span class="va">pthr</span><span class="op">==</span><span class="fl">.001</span><span class="op">)</span></span></code></pre></div>
 <p>If you would like to apply the 3dClustSim correction to your data to
 obtain an FWE-corrected map and corresponding clusters, use the
@@ -498,7 +512,7 @@ these subjects were a part.</p>
 touch).</p>
 <p>Also, by default, this method has <code>add_whereami = TRUE</code>,
 which looks up anatomical labels for each cluster that is found.</p>
-<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">cobj</span> <span class="op">&lt;-</span> <span class="va">clustsim_acf</span><span class="op">$</span><span class="fu">apply_clustsim</span><span class="op">(</span></span>
 <span>  statistic_nifti <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/file.path.html" class="external-link">file.path</a></span><span class="op">(</span></span>
 <span>    <span class="st">"/proj/mnhallqlab/studies/MMClock/group_analyses/MMClock_aroma_preconvolve_fse_groupfixed"</span>,</span>
@@ -541,7 +555,7 @@ and usually correct, approach of just doing sign-flipping on the
 residuals – the approach advocated for one-sample t-tests. That is, the
 signs of residuals are randomized across subjects, but we do not permute
 group labels, nor do we permute the covariates.</p>
-<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">clustsim_perm</span> <span class="op">&lt;-</span> <span class="va"><a href="../reference/afni_3dclustsim.html">afni_3dclustsim</a></span><span class="op">$</span><span class="fu">new</span><span class="op">(</span></span>
 <span>  residuals_file <span class="op">=</span> <span class="st">"/proj/mnhallqlab/users/michael/mmclock_pe/mmclock_nov2021/feat_l3/L1m-pe/L2m-l2_l2c-overall/L3m-age_sex/FEAT_l1c-EV_pe.gfeat/cope1.feat/stats/res4d.nii.gz"</span>,</span>
 <span>  residuals_mask_file <span class="op">=</span> <span class="st">"/proj/mnhallqlab/users/michael/mmclock_pe/mmclock_nov2021/feat_l3/L1m-pe/L2m-l2_l2c-overall/L3m-age_sex/FEAT_l1c-EV_pe.gfeat/cope1.feat/mask.nii.gz"</span>,</span>
@@ -562,13 +576,13 @@ already completed (and are saved), this step will not be repeated.
 Likewise, if 3dClustSim is already complete, the <code>$submit()</code>
 method will tell you this and not re-run the simulation unless you use
 <code>$submit(force = TRUE)</code>.</p>
-<div class="sourceCode" id="cb20"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">clustsim_perm</span><span class="op">$</span><span class="fu">submit</span><span class="op">(</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">clustsim_perm</span><span class="op">$</span><span class="fu">is_complete</span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 <p>Now that we have the 3dClustSim results, we can adopt the same
 approach as with the -ACF object above.</p>
-<div class="sourceCode" id="cb21"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">clustsim_perm</span><span class="op">$</span><span class="fu">get_clustsim_df</span><span class="op">(</span><span class="op">)</span> <span class="op">%&gt;%</span> <span class="fu">dplyr</span><span class="fu">::</span><span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="va">nn</span><span class="op">==</span><span class="fl">1</span> <span class="op">&amp;</span> <span class="va">pthr</span><span class="op">==</span><span class="fl">.001</span><span class="op">)</span></span></code></pre></div>
 <p>And if we want to clusterize and threshold a statistic file that
 relates to this analysis, we can use <code>$apply_clustsim()</code> to
@@ -576,24 +590,24 @@ any statistics from the GLM whose residuals we used for permutation.</p>
 <p>What are the contrasts in this analysis? If you don’t recall from
 setting this up manually (or otherwise), we can use the handy
 <code>read_feat_dir</code> function in fmri.pipeline.</p>
-<div class="sourceCode" id="cb22"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">feat_info</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/read_feat_dir.html">read_feat_dir</a></span><span class="op">(</span><span class="st">"/proj/mnhallqlab/users/michael/mmclock_pe/mmclock_nov2021/feat_l3/L1m-pe/L2m-l2_l2c-overall/L3m-age_sex/FEAT_l1c-EV_pe.gfeat/cope1.feat"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">feat_info</span><span class="op">$</span><span class="va">cope_df</span> <span class="op">%&gt;%</span> <span class="fu">select</span><span class="op">(</span><span class="va">cope_number</span>, <span class="va">contrast_name</span>, <span class="va">z</span><span class="op">)</span></span></code></pre></div>
 <p>Let’s take a look at FWE clusters from zstat6, the overall
 contrast.</p>
-<div class="sourceCode" id="cb23"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">cobj</span> <span class="op">&lt;-</span> <span class="va">clustsim_perm</span><span class="op">$</span><span class="fu">apply_clustsim</span><span class="op">(</span></span>
 <span>  statistic_nifti <span class="op">=</span> <span class="st">"/proj/mnhallqlab/users/michael/mmclock_pe/mmclock_nov2021/feat_l3/L1m-pe/L2m-l2_l2c-overall/L3m-age_sex/FEAT_l1c-EV_pe.gfeat/cope1.feat/stats/zstat6.nii.gz"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 <p>We can get info about the FWE clusters from this map, based on the
 3dClustSim permutation-based thresholds (again, default cluster p &lt;
 .05 and voxel p &lt; .001, bisided).</p>
-<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">cobj</span><span class="op">$</span><span class="fu">get_clust_df</span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 <p>If we want to look at the file outputs of the clusterize operation,
 you can obtain them like this:</p>
-<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">cobj</span><span class="op">$</span><span class="fu">get_outputs</span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level3">
@@ -639,7 +653,7 @@ different effects, and so on.</p>
 <code>$apply_clustsim()</code>, you can use the
 <code>$get_outputs()</code> method of the returned clusterize
 object.</p>
-<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">cobj</span><span class="op">$</span><span class="fu">get_outputs</span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 <p>Here, the <code>cluster_table</code> is the text file of cluster
 locations and sizes from 3dClusterize, <code>cluster_map</code> is the
@@ -651,7 +665,7 @@ non-significant voxels are removed).</p>
 <p>For extracting betas, we’d want to hand off the
 <code>cluster_map</code> as the input to
 <code>extract_glm_betas_in_mask</code> like so:</p>
-<div class="sourceCode" id="cb27"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/extract_glm_betas_in_mask.html">extract_glm_betas_in_mask</a></span><span class="op">(</span><span class="va">gpa</span>, mask_files <span class="op">=</span> <span class="va">cobj</span><span class="op">$</span><span class="fu">get_outputs</span><span class="op">(</span><span class="op">)</span><span class="op">$</span><span class="va">cluster_map</span><span class="op">)</span></span></code></pre></div>
 <div class="section level3">
 <h3 id="subclustering">Subclustering<a class="anchor" aria-label="anchor" href="#subclustering"></a>
@@ -691,7 +705,7 @@ subclustering algorithm that can be applied to any cluster set
 identified by 3dClusterize. After setting up an afni_3dclusterize object
 and running it to obtain the cluster data.frame, you run subclustering
 as follows:</p>
-<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">cobj</span><span class="op">$</span><span class="fu">generate_subclusters</span><span class="op">(</span>break_nvox <span class="op">=</span> <span class="fl">800</span>, min_subclust_nvox <span class="op">=</span> <span class="fl">100</span>, max_subclust_nvox <span class="op">=</span> <span class="fl">4500</span>, max_iter <span class="op">=</span> <span class="fl">100</span>, print_progress <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span></code></pre></div>
 <div class="section level4">
 <h4 id="subclustering-algorithm">Subclustering algorithm<a class="anchor" aria-label="anchor" href="#subclustering-algorithm"></a>
@@ -746,7 +760,7 @@ default, the subcluster maps and 3dClusterize tables are also saved in
 the same folder as the input/threshold image, with a suffix like
 “_roi1_subclusters.1D”. You can view the locations of these files with
 <code>$get_outputs()$subcluster_files</code>.</p>
-<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">cobj</span><span class="op">$</span><span class="fu">get_clust_df</span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="va">cobj</span><span class="op">$</span><span class="fu">get_outputs</span><span class="op">(</span><span class="op">)</span><span class="op">$</span><span class="va">subcluster_files</span></span></code></pre></div>
 </div>
@@ -792,7 +806,7 @@ within the retained parcels that overlap with the thresholded and
 clusterized map by retained. This is achieved with
 <code>mask_by_overlap = TRUE</code>, perhaps at the expense of somewhat
 circular/data-dependent parcel definition.</p>
-<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">atlas</span> <span class="op">&lt;-</span> <span class="st">"/proj/mnhallqlab/projects/clock_analysis/fmri/pfc_entropy/masks/Schaefer_DorsAttn_2.3mm.nii.gz"</span></span>
 <span><span class="va">cobj</span><span class="op">$</span><span class="fu">subset_atlas_against_clusters</span><span class="op">(</span><span class="va">atlas</span>, minimum_overlap <span class="op">=</span> <span class="fl">0.7</span>, output_atlas <span class="op">=</span> <span class="st">"default"</span><span class="op">)</span></span>
 <span><span class="va">cobj</span><span class="op">$</span><span class="fu">get_outputs</span><span class="op">(</span><span class="op">)</span></span></code></pre></div>

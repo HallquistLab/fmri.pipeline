@@ -11,8 +11,8 @@ R6 class for pTFCE specification for one or more z-statistic images
 
 - `two_sided`:
 
-  It `TRUE`, run pTFCE on both tails of the statistic separately. If
-  `FALSE`, only run pTFCE on the positve tail (z \> 0).
+  If `TRUE`, use native two-sided pTFCE on a shared threshold grid. If
+  `FALSE`, only run pTFCE on the positive tail (z \> 0).
 
 ## Methods
 
@@ -121,12 +121,12 @@ Create a new ptfce_spec object
 - `time_per_zstat`:
 
   The amount of time to budget for each zstat to run through pTFCE in
-  dd-hh:mm:ss format. Default is 10:00 (10 minutes).
+  dd-hh:mm:ss format. Default is 00:00:45 (45 seconds).
 
 - `memgb_per_command`:
 
   How many GB of memory should be requested for each pTFCE command/run.
-  If not provided, defaults to 8.
+  If not provided, defaults to 1.
 
 ------------------------------------------------------------------------
 
@@ -159,7 +159,7 @@ return the vector of expected output files
 
 ### `ptfce_spec$run()`
 
-Run pTFCE in this compute environment. This is not supported at present!
+Run each pending map sequentially in the current R session.
 
 #### Usage
 
@@ -191,8 +191,8 @@ Run pTFCE in this compute environment. This is not supported at present!
 
 ### `ptfce_spec$is_complete()`
 
-returns `TRUE` if all expected pTFCE output files exist, `FALSE` if any
-output is missing
+returns `TRUE` when all expected outputs exist and their threshold
+tables match the requested settings
 
 #### Usage
 
