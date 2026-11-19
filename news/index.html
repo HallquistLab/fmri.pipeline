@@ -44,6 +44,12 @@
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.5" id="fmripipeline-05">fmri.pipeline 0.5<a class="anchor" aria-label="anchor" href="#fmripipeline-05"></a></h2>
 <div class="section level3">
+<h3 id="spm-correctness-0-5">SPM correctness<a class="anchor" aria-label="anchor" href="#spm-correctness-0-5"></a></h3>
+<ul><li>Reject missing or non-estimable contrast terms and resolve group input maps by their actual SPM contrast names rather than contrast positions.</li>
+<li>Isolate compressed inputs by analysis and run; align leading scan drops and nuisance rows and fail when requested confounds cannot be used.</li>
+<li>Invalidate stale setup from changed designs, settings, contrasts, or source files. Stop execution at the first failed stage and validate all expected outputs before marking L1 or L3 fits complete. Older fits need one new run to acquire the validation metadata.</li>
+</ul></div>
+<div class="section level3">
 <h3 id="fsl-feat-estimation-0-5">FSL FEAT estimation<a class="anchor" aria-label="anchor" href="#fsl-feat-estimation-0-5"></a></h3>
 <ul><li><p>FEAT results now report the requested and actual higher-level estimator and outlier deweighting, including the number of slices recovered with FLAME1. These fields are available in refreshed status and <code><a href="../reference/lookup_feat_outputs.html">lookup_feat_outputs()</a></code>.</p></li>
 <li><p>L1, L2 and L3 save the model specification beside the FSF. Changes to model inputs or lower-level fits invalidate dependent results. Status checks require a validated design and readable statistical images. Older fits with only a completion marker need model setup and estimation again. Setup leaves their output directories in place; execution archives stale fits unless the folder policy is <code>keep</code>.</p></li>

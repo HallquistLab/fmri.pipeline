@@ -348,6 +348,13 @@
 <p>The L3 model builder offers the same settings, and <code><a href="reference/export_glm_config.html">export_glm_config()</a></code> preserves them in YAML. FWE is controlled separately within each selected map. Use <code>run_fwe_correction(gpa)</code> to retry correction without fitting models again, and <code>refresh_fwe_correction(gpa)</code> to collect scheduled results. See the FWE vignette for custom masks, resource settings, and the standalone planning workflow.</p>
 </div>
 <div class="section level2">
+<h2 id="spm-execution-and-reuse">SPM execution and reuse<a class="anchor" aria-label="anchor" href="#spm-execution-and-reuse"></a>
+</h2>
+<p>SPM L1 contrasts are matched to the fitted design by regressor name. A missing required regressor or a non-estimable contrast stops the job. Group inputs are selected using the actual <code>SPM.xCon</code> names recorded in <code>spm_contrasts.tsv</code>, so a change in contrast order cannot silently select a different effect.</p>
+<p>SPM setup checks retained scan counts and nuisance rows against each run’s <code>run_volumes</code> and <code>drop_volumes</code>. Original images use the appropriate leading scan offset; already-trimmed images start at scan 1. Nuisance files may contain original or retained rows. Missing files and inconsistent lengths are errors. Compressed images use separate temporary paths for each analysis and run.</p>
+<p>A complete SPM fit needs a successful full run and validated, nonempty model, beta, contrast, statistic, and requested residual files. Setup records the model specification and input signatures in <code>spm_setup.rds</code>; images use path, size, and modification time, while nuisance files are content-hashed. Rerun <code><a href="reference/setup_l1_models.html">setup_l1_models()</a></code> or <code><a href="reference/setup_l3_models.html">setup_l3_models()</a></code> after changing inputs or model settings. Existing fits without the new validation metadata require setup and estimation once before they can be reused. Runs with disabled setup, estimation, or contrast stages receive a stage-completion marker and remain incomplete for group input selection.</p>
+</div>
+<div class="section level2">
 <h2 id="longitudinal-workflows">Longitudinal workflows<a class="anchor" aria-label="anchor" href="#longitudinal-workflows"></a>
 </h2>
 <p>Longitudinal fMRI analyses require special care because runs, sessions, and subjects represent distinct sources of variation. The current recommended patterns are:</p>
