@@ -233,6 +233,11 @@ resolve_3dlmer_mask <- function(target_dir, harvested_inputs, explicit_mask = NU
   checkmate::assert_class(lg, "Logger", null.ok = TRUE)
 
   if (!is.null(explicit_mask)) return(explicit_mask)
+  if ("mask_file" %in% names(harvested_inputs)) {
+    mask_files <- unique(harvested_inputs$mask_file)
+    checkmate::assert_file_exists(mask_files)
+    return(build_3dlmer_intersection_mask(mask_files, file.path(target_dir, "mask.nii.gz"), lg))
+  }
   if (!"feat_dir" %in% names(harvested_inputs)) return(NULL)
 
   mask_files <- unique(vapply(as.character(harvested_inputs$feat_dir), function(fd) {

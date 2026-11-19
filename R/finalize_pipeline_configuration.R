@@ -26,7 +26,8 @@ finalize_pipeline_configuration <- function(gpa, refinalize = FALSE) {
   sqlite_con <- DBI::dbConnect(RSQLite::SQLite(), gpa$output_locations$sqlite_db)
 
   # final checks on compute environment now that we're running inside the compute environment
-  test_compute_environment(gpa, stop_on_fail=TRUE)
+  test_compute_environment(gpa, what = unique(c("r", gpa$glm_software)), stop_on_fail = TRUE)
+  if ("afni" %in% gpa$glm_software) test_afni_glm_compute_environment(gpa)
   if ("spm" %in% gpa$glm_software) {
     test_spm_compute_environment(gpa, stop_on_fail = TRUE)
   }
@@ -39,7 +40,8 @@ finalize_pipeline_configuration <- function(gpa, refinalize = FALSE) {
   }
 
   # l2 models are optional and depend on whether it's a multi-run setup
-  if (isTRUE(gpa$multi_run) && !checkmate::test_class(gpa$l2_models, "hi_model_set")) {
+  if (isTRUE(gpa$multi_run) && "fsl" %in% get_level_backend_names(gpa, 2L) &&
+      !checkmate::test_class(gpa$l2_models, "hi_model_set")) {
     msg <- "Could not find valid $l2_models specification in gpa. We will proceed, but weird things may happen! I suggest running build_l2_models()."
     lg$warn(msg)
     warning(msg)
@@ -203,6 +205,8 @@ finalize_pipeline_configuration <- function(gpa, refinalize = FALSE) {
   )
 
   gpa$glm_settings$spm <- populate_defaults(gpa$glm_settings$spm, spm_defaults)
+
+  gpa$glm_settings$afni <- afni_glm_settings(gpa)
 
   # initialize GLM backend specs and resolved functions
   gpa <- initialize_glm_backends(gpa)
@@ -396,6 +400,10 @@ setup_parallel_settings <- function(gpa, lg = NULL) {
   if (is.null(gpa$parallel$spm$l3_spm_memgb)) gpa$parallel$spm$l3_spm_memgb <- "16"
 
   if (is.null(gpa$parallel$afni)) gpa$parallel$afni <- list()
+  gpa$parallel$afni <- populate_defaults(gpa$parallel$afni, list(
+    l1_glm_alljobs_time = "24:00:00", l1_glm_time = "8:00:00", l1_glm_memgb = "12", l1_glm_cpus = 4L,
+    l3_glm_time = "8:00:00", l3_glm_memgb = "16", l3_glm_cpus = 1L
+  ))
   if (is.null(gpa$parallel$afni$l3_lmer_time)) gpa$parallel$afni$l3_lmer_time <- "48:00:00"
   if (is.null(gpa$parallel$afni$l3_lmer_memgb)) gpa$parallel$afni$l3_lmer_memgb <- "32"
   if (is.null(gpa$parallel$afni$l3_lmer_njobs)) gpa$parallel$afni$l3_lmer_njobs <- 8
@@ -517,6 +525,8 @@ setup_output_locations <- function(gpa, lg = NULL) {
     spm_l3_directory = file.path("{gpa$output_directory}", "spm_l3", "L3m-{l3_model}", "L1m-{l1_model}", "l1c-{l1_cope_name}"),
     afni_sub_directory = afni_sub_directory,
     afni_l1_directory = file.path(afni_sub_directory, "{l1_model}"),
+    afni_l3_directory = file.path("{gpa$output_directory}", "afni_l3", "L3m-{l3_model}",
+                                  "L1m-{l1_model}", "l1c-{l1_cope_name}"),
     # old default:
     # feat_l3_directory = ifelse(isTRUE(gpa$multi_run),
     #   file.path("{gpa$output_directory}", "feat_l3", "L1m-{l1_model}", "L2m-{l2_model}_l2c-{l2_contrast}", "L3m-{l3_model}"),
