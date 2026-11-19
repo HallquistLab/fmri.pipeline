@@ -2,7 +2,7 @@
 % Please edit documentation in R/fsl_l3_model.R
 \name{fsl_l3_model}
 \alias{fsl_l3_model}
-\title{Estimate a level 2 (subject) model using FSL FEAT with fixed effects integration of runs}
+\title{Prepare a level 3 FSL FEAT group model from lower-level COPEs}
 \usage{
 fsl_l3_model(l3_df = NULL, gpa)
 }
@@ -13,7 +13,7 @@ that identify the model.}
 \item{gpa}{a \code{glm_pipeline_arguments} object containing model specification}
 }
 \description{
-Estimate a level 2 (subject) model using FSL FEAT with fixed effects integration of runs
+Prepare a level 3 FSL FEAT group model from lower-level COPEs
 }
 \author{
 Michael Hallquist

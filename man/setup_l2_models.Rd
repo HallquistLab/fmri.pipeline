@@ -13,7 +13,7 @@ setup_l2_models(
 )
 }
 \arguments{
-\item{gpa}{a \code{glm_pipeline_arguments} object containing analysis speecification}
+\item{gpa}{a \code{glm_pipeline_arguments} object containing the analysis specification}
 
 \item{l1_model_names}{a subset of L1 models to be passed to L2 by this function. If not
 specified, all models in gpa$l1_models will be included}
@@ -30,7 +30,8 @@ fixed effects estimation.
 }
 \details{
 This function will setup FSL level 2 (subject) .fsf files for all combinations of
-  \code{l2_model_names} and \code{l1_model_names}.
+  \code{l2_model_names} and \code{l1_model_names}. Native AFNI and SPM
+  analyses combine runs within L1 and proceed directly to group setup.
 }
 \author{
 Michael Hallquist

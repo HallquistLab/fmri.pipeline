@@ -2,24 +2,29 @@
 % Please edit documentation in R/setup_l1_models.R
 \name{setup_l1_models}
 \alias{setup_l1_models}
-\title{Function for setting up level 1 model specifications and corresponding files}
+\title{Prepare first-level designs and files for the selected GLM engines}
 \usage{
 setup_l1_models(gpa, l1_model_names = NULL)
 }
 \arguments{
-\item{gpa}{A glm_model_arguments function setup by the \code{setup_glm_pipeline} function}
+\item{gpa}{A \code{glm_pipeline_arguments} object from \code{\link{setup_glm_pipeline}}.}
 
-\item{l1_model_names}{A character vector of model names within \code{gpa$l1_models} whose l1
-inputs should be generated. If omitted, all models within \code{gpa$l1_models} will be generated.}
+\item{l1_model_names}{Names of the L1 models to prepare. The default selects all L1 models.}
+}
+\value{
+The updated \code{gpa}. Its \code{l1_model_setup} list holds run
+  metadata and setup tables named \code{fsl}, \code{afni}, and \code{spm}.
+  Inspect the table for the engine you selected.
 }
 \description{
-Function for setting up level 1 model specifications and corresponding files
+Prepare first-level designs and files for the selected GLM engines
 }
 \details{
-The \code{l1_model_names} argument allows the creation of multiple l1 models to be parallelized at
-  a superordinate level or, even better, to be spread across independent jobs on a cluster. This function
-  already provides the option to parallelize over subjects for a single model if \code{gpa$l1_setup_cpus}
-  is greater than 1.
+FSL generates a FEAT design per run. AFNI prepares one joint
+  time-series fit per participant and visit. SPM prepares a first-level
+  model per participant and visit by default, with separate SPM sessions
+  for the retained runs. Set \code{gpa$parallel$l1_setup_cores} to control
+  parallel setup across participants.
 }
 \author{
 Michael Hallquist

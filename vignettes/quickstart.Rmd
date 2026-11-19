@@ -27,13 +27,13 @@ vignette: >
 
 `fmri.pipeline` is an R package for setting up, submitting, and tracking fMRI GLM analyses on HPC systems. The package is built around a single analysis object, usually called `gpa`, that stores the input data, model specifications, output locations, compute settings, and job-tracking state for one task analysis.
 
-The most mature end-to-end backend is FSL FEAT/FLAME. Current pipeline engineering also supports backend selection, including hybrid workflows such as FSL at Levels 1-2 and AFNI `3dLMEr` at Level 3 for longitudinal models. The backend system performs a preflight check before submission so that model/back-end combinations and upstream artifact requirements are resolved before jobs are launched.
+This walkthrough uses FSL for a two-run task. AFNI and SPM can each fit both the time-series and group models. To run this task with either suite, see [Choosing a GLM engine](glm-engines.html).
 
 This guide is meant to get a new user from input tables to a submitted pipeline run. More detailed conceptual material is in `vignette("design")`, longitudinal guidance is in `vignette("longitudinal")`, and run diagnosis is in `vignette("diagnosis")`.
 
 # Model Combinations
 
-The pipeline treats Level 1, Level 2, and Level 3 model sets as a grid of model combinations. For example, suppose you define:
+For multi-run FSL analyses, the pipeline treats compatible Level 1, Level 2, and Level 3 models as a grid of combinations. For example, suppose you define:
 
 - two Level 1 models: one with a prediction-error modulator and one with only event onsets
 - two Level 2 models: one run-average model and one model with a run-level condition predictor
@@ -45,9 +45,9 @@ If you run all of them, `fmri.pipeline` will set up and estimate all eight combi
 
 `fmri.pipeline` uses a fixed three-level vocabulary:
 
-- **Level 1**: Run-level time-series GLM. Events and parametric modulators are convolved with the HRF and estimated separately for each run.
-- **Level 2**: Within-subject run combination. Multiple Level 1 COPEs are combined within a subject or subject-session.
-- **Level 3**: Sample-level or group-level model. Subject/session maps are modeled across participants.
+- **Level 1** fits the time-series GLM. FSL fits one model per run. AFNI and SPM handle multiple runs in one model per subject and visit by default.
+- **Level 2** combines run-level contrast estimates for multi-run FSL analyses.
+- **Level 3** fits the sample or group model to subject or subject-session maps.
 
 For a single-run task, there is no standalone Level 2 run-combination step. The pipeline still calls the group model Level 3 so the nomenclature is stable across single-run and multi-run analyses.
 
@@ -463,21 +463,12 @@ l3_models:
 
 # Backend Selection
 
-For a standard FSL analysis, no special backend configuration is needed:
+Set `glm_software` in the setup call above. Choose `"fsl"` for the run-wise FEAT example, `"afni"` for a joint fit with shared task coefficients, or `"spm"` for a first-level SPM design. For native AFNI and SPM, submit the task and group models with `l2_model_names = "none"`. SPM users should also set `glm_settings$spm$spm_path` to their installation.
+
+For FSL run and session estimates followed by an AFNI group analysis, pass `glm_software = c("fsl", "afni")` at setup, then assign the stages:
 
 ```{r, eval=FALSE}
-gpa$glm_software <- "fsl"
-```
-
-For different software at different levels, use `gpa$level_backends`:
-
-```{r, eval=FALSE}
-gpa$glm_software <- "fsl"
-gpa$level_backends <- list(
-  l1 = "fsl",
-  l2 = "fsl",
-  l3 = "afni"
-)
+gpa$level_backends <- list(l1 = "fsl", l2 = "fsl", l3 = "afni")
 ```
 
 For model-specific control, set backend fields on the model object or in YAML. This is the current recommended pattern for AFNI `3dLMEr` Level 3 models that consume FSL-produced Level 2 inputs:
@@ -506,14 +497,9 @@ l3_models:
       overall_response: yes
 ```
 
-Current limitations are important:
+For native AFNI ordinary group models, leave the producer unset to use AFNI L1 contrasts. Native SPM group models also use their own L1 contrasts with the producer unset.
 
-- FSL supports separate Level 1, Level 2, and Level 3 execution.
-- SPM support uses SPM-style run/session handling and does not run a standalone Level 2 FEAT-style step.
-- AFNI `3dLMEr` is currently supported as a Level 3 execution backend.
-- Level 3 producer inputs are currently implemented only for FSL. In practice, AFNI Level 3 should usually specify `producer_backend: fsl`.
-
-When `run_glm_pipeline()` starts, it resolves backend selection, validates producer requirements, and logs a backend preflight report. If you see a backend or producer error, read that report first.
+When `run_glm_pipeline()` starts, it validates the engine choices and logs the resolved plan before submission. Check the L3 line for the execution engine, producer, and input level.
 
 # Run the Pipeline
 
@@ -571,7 +557,11 @@ Important contents include:
 feat_l1/                 # FSL Level 1 setup files and .feat outputs
 feat_l2/                 # FSL Level 2 .fsf files and .gfeat outputs
 feat_l3/                 # FSL Level 3 .fsf files and .gfeat outputs
-afni_3dlmer/             # AFNI 3dLMEr scripts and outputs, when AFNI is used
+spm_l1/                  # SPM first-level analyses
+spm_l3/                  # SPM group models
+afni_l1/                 # AFNI subject/session fits
+afni_l3/                 # AFNI ordinary group GLMs
+afni_3dlmer/             # AFNI mixed models
 logs/                    # text and JSON logs from setup functions
 scheduler_scripts/       # one batch_<uuid>/ directory per run_glm_pipeline() call
 project_config.json      # analysis metadata and batch history
@@ -608,42 +598,50 @@ latest_batch <- batch_dirs[which.max(file.info(batch_dirs)$mtime)]
 latest_batch
 ```
 
-Load the run cache to inspect model status:
+Load the batch's saved pipeline object. Each populated table is named for the engine that produced the fit:
 
 ```{r, eval=FALSE}
 load(file.path(latest_batch, "run_pipeline_cache.RData"))
 
-if (!is.null(gpa$l1_model_setup$fsl)) {
+if (NROW(gpa$l1_model_setup$fsl) > 0L) {
   gpa$l1_model_setup$fsl |>
     dplyr::count(feat_complete, feat_failed, to_run)
 }
 
-if (!is.null(gpa$l2_model_setup$fsl)) {
+if (NROW(gpa$l2_model_setup$fsl) > 0L) {
   gpa$l2_model_setup$fsl |>
     dplyr::filter(feat_failed | !feat_complete) |>
     dplyr::select(id, session, l1_model, l1_cope_name, l2_model, feat_dir, feat_fsf)
 }
 
-if (!is.null(gpa$l3_model_setup$fsl)) {
+if (NROW(gpa$l3_model_setup$fsl) > 0L) {
   gpa$l3_model_setup$fsl |>
     dplyr::filter(feat_failed | !feat_complete) |>
     dplyr::select(l1_model, l2_model, l3_model, feat_dir, feat_fsf)
 }
 
-if (!is.null(gpa$l3_model_setup$afni)) {
+if (NROW(gpa$l3_model_setup$spm) > 0L) {
+  gpa$l3_model_setup$spm |>
+    dplyr::filter(spm_failed | !spm_complete) |>
+    dplyr::select(l3_model, l1_cope_name, spm_dir)
+}
+
+if (NROW(gpa$l3_model_setup$afni) > 0L) {
   gpa$l3_model_setup$afni |>
     dplyr::filter(afni_failed | !afni_complete) |>
-    dplyr::select(l3_model, l1_cope_name, l2_cope_name, output_file, afni_script)
+    dplyr::select(l3_model, l1_cope_name, output_file, afni_script)
 }
 ```
 
-Backend-specific caches, such as `run_pipeline_cache_fsl.RData` or `run_pipeline_cache_afni.RData`, can be more informative because they are saved immediately after backend-specific jobs finish:
+Each engine also saves its own cache in the batch directory (`run_pipeline_cache_fsl.RData`, `run_pipeline_cache_afni.RData`, or `run_pipeline_cache_spm.RData`). To investigate a multi-run FSL job before the final cache has been collected:
 
 ```{r, eval=FALSE}
 load(file.path(latest_batch, "run_pipeline_cache_fsl.RData"))
 gpa$l2_model_setup$fsl |>
   dplyr::filter(feat_failed | !feat_complete)
 ```
+
+For first-level status columns and log locations in each suite, see the [diagnosis guide](diagnosis.html#check-the-fit-behind-a-scheduler-job).
 
 On SLURM, scheduler exit codes are often the fastest way to distinguish model errors from time or memory kills:
 
@@ -670,7 +668,7 @@ manifest[, c("status", "job_id", "job_name", "scheduler_log", "batch_file")]
 - **TR not provided**: provide either `tr = <seconds>` in `setup_glm_pipeline()` or a numeric `tr` column in `run_data`.
 - **Model specs not finalized**: `run_glm_pipeline()` requires a valid `l1_model_set`. Build L1 models before submission.
 - **Confound column mismatch**: if confound files have no header, set `confound_input_colnames`. If they use fMRIPrep-style missing values, set `na_strings` inside `confound_settings`.
-- **Backend mismatch**: AFNI Level 3 currently expects `l3_input_mode: 3dlmer` and FSL-produced upstream inputs.
+- **Backend mismatch**: check which suite produced the requested contrast. AFNI group models consume AFNI or FSL estimates. Native SPM group models look up contrast names in completed SPM fits.
 
 # Minimal End-to-End Skeleton
 
@@ -713,4 +711,4 @@ run_glm_pipeline(
 diagnose_pipeline(gpa)
 ```
 
-For a first real project, start with one L1 model, one L2 model, and one intercept-only L3 model. Once that path submits and status checks are clean, add scientific contrasts, covariates, and alternate backend models.
+For a first project, start with one task model and one intercept-only group model. Include a run-combination model for multi-run FSL analyses. Once that path submits and status checks are clean, add scientific contrasts, covariates, and alternate backend models.

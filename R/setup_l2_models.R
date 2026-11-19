@@ -1,7 +1,7 @@
 #' This function generates the inputs for an FSL level 2 analysis, where multiple runs for a subject are combined using
 #' fixed effects estimation.
 #'
-#' @param gpa a \code{glm_pipeline_arguments} object containing analysis speecification
+#' @param gpa a \code{glm_pipeline_arguments} object containing the analysis specification
 #' @param l2_model_names a subset of L2 models to be setup by this function. If not specified,
 #'   all models in gpa$l2_models will be included
 #' @param l1_model_names a subset of L1 models to be passed to L2 by this function. If not
@@ -11,7 +11,8 @@
 #'
 #' @details
 #'   This function will setup FSL level 2 (subject) .fsf files for all combinations of
-#'   \code{l2_model_names} and \code{l1_model_names}.
+#'   \code{l2_model_names} and \code{l1_model_names}. Native AFNI and SPM
+#'   analyses combine runs within L1 and proceed directly to group setup.
 #'
 #' @author Michael Hallquist
 #' @importFrom checkmate assert_class assert_character assert_data_frame

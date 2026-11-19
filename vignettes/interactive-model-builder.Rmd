@@ -29,7 +29,7 @@ vignette: >
 
 The recommended workflow is:
 
-1. Create a `gpa` object with `setup_glm_pipeline()`.
+1. Create a `gpa` object with `setup_glm_pipeline()` and choose the GLM engine.
 2. Run the interactive builders once.
 3. Export the resulting model specification with `export_glm_config()`.
 4. Review and edit the YAML file.
@@ -770,7 +770,7 @@ Named coefficients are safer because they do not depend on remembering column or
 
 # Level 2 Builder
 
-Level 2 models combine run-level estimates within subject or within subject-session.
+For multi-run FSL analyses, the L2 builder defines how to combine run-level estimates within subject or subject-session. AFNI users can go directly to the L3 builder after defining L1. SPM users need the L2 builder only when projecting run-level predictors into L1. See [Choosing a GLM engine](glm-engines.html).
 
 Run it with:
 
@@ -880,7 +880,7 @@ Decision points:
 
 - Use `id_session` for most longitudinal analyses. It preserves session-level outputs for Level 3.
 - Use `id` only when pooling sessions within subject is scientifically intended.
-- If you need AFNI `3dLMEr` at Level 3, use `id_session`.
+- If this FSL L2 model supplies AFNI `3dLMEr` at Level 3, use `id_session`.
 - Between-session contrasts at L2 require `id`, but that choice pools sessions in a way that is not appropriate for many longitudinal designs.
 
 Equivalent YAML:
@@ -951,10 +951,10 @@ If there are multiple sessions, the builder asks:
 How should this L3 model use sessions?
 ```
 
-Options:
+For multi-run FSL inputs, pair the L3 mode with the indicated L2 scope. With native AFNI inputs, the session maps come directly from L1.
 
 - `per_session`: fit separate per-session L3 inputs. Requires `l2_scope = "id_session"`.
-- `pooled_sessions_subject_ev`: pool sessions in FSL with subject indicator EVs. Requires `l2_scope = "id_session"`.
+- `pooled_sessions_subject_ev`: pool sessions with subject indicator EVs. Requires `l2_scope = "id_session"`.
 - `subject_rows`: use one row per subject input. Requires `l2_scope = "id"`.
 - `3dlmer`: use AFNI `3dLMEr` for a longitudinal mixed-effects L3 model. Requires `l2_scope = "id_session"`.
 

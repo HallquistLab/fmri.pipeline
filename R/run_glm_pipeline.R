@@ -5,12 +5,19 @@
 #' 
 #' @param gpa a glm_pipeline_arguments object containing a model specification (created by setup_glm_pipeline)
 #' @param l1_model_names a character vector of level 1 model names (specified during build_l1_models) that should be executed
-#' @param l2_model_names a character vector of level 2 model names (specified during build_l2_models) that should be executed
+#' @param l2_model_names Names of standalone L2 models to run for multi-run FSL.
+#'   Use \code{"none"} for a native AFNI or SPM L1-to-L3 analysis.
 #' @param l3_model_names a character vector of level 3 model names (specified during build_l3_models) that should be executed
-#' @param glm_software which GLM software should be used for model estimation (fsl, spm, or afni)
-#' @param level_backends optional per-level backend override list keyed by `l1`, `l2`, and/or `l3`
-#' @param backend_overrides optional model-specific backend override list
+#' @param glm_software Optional global engine override for this submission. A non-NULL value
+#'   resets the level defaults to the supplied engine(s): \code{"fsl"}, \code{"afni"}, or \code{"spm"}.
+#' @param level_backends Optional list overriding specific level defaults for this run, e.g.,
+#'   \code{list(l1 = "fsl", l2 = "fsl", l3 = "afni")}. Model-specific settings take precedence.
+#' @param backend_overrides Optional overrides keyed by level and model name. For example,
+#'   \code{list(l3 = list(execution = c(group = "afni"), producer = c(group = "fsl")))}
+#'   fits the named group model with AFNI using FSL contrast maps. These overrides take
+#'   precedence over the model's \code{execution_backend} and \code{producer_backend}.
 #' @param run_fwe run configured FWE correction after the selected L3 models finish.
+#' @seealso \code{\link{setup_glm_pipeline}}, \code{vignette("glm-engines", package = "fmri.pipeline")}
 #' @importFrom checkmate assert_string assert_class assert_subset assert_integerish
 #' @importFrom stats setNames
 #' @importFrom utils menu modifyList

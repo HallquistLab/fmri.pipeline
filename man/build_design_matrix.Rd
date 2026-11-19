@@ -2,7 +2,7 @@
 % Please edit documentation in R/build_design_matrix.R
 \name{build_design_matrix}
 \alias{build_design_matrix}
-\title{Creates an fmri design matrix, including timing files for for AFNI or FSL.}
+\title{Build a task fMRI design from events and signals}
 \usage{
 build_design_matrix(
   events = NULL,
@@ -163,7 +163,10 @@ A list of containing different aspects of the design matrix:
 }
 }
 \description{
-Creates an fmri design matrix, including timing files for for AFNI or FSL.
+Builds run-level timing and convolved regressors used by the
+  FSL, AFNI, and SPM model writers. FSL and AFNI timing-file exports are
+  also available. The SPM writer reads events and modulators directly from
+  the returned design object.
 }
 \details{
 The function outputs a list containing key aspects of the fMRI design, including

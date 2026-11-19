@@ -4,9 +4,15 @@
 \name{fmri.pipeline-package}
 \alias{fmri.pipeline}
 \alias{fmri.pipeline-package}
-\title{fmri.pipeline: Analysis of fMRI Data on HPC clusters}
+\title{fmri.pipeline: Hierarchical fMRI GLMs with FSL, AFNI, and SPM}
 \description{
-Setup, submission, and tracking of hierarchical fMRI GLM analyses on high-performance computing clusters.
+Specify, run, and track hierarchical general linear models (GLMs) for task fMRI data with FSL, AFNI, and SPM. Generate suite-specific designs and contrasts from shared trial, run, and participant tables, and submit time-series and group analyses locally or through a cluster scheduler.
+}
+\details{
+Start with \code{\link{setup_glm_pipeline}} to select the GLM engine
+  and provide the analysis tables. Use \code{\link{run_glm_pipeline}} to submit
+  the selected models. For a worked comparison of how each suite combines
+  runs and supplies group contrasts, see \code{vignette("glm-engines", package = "fmri.pipeline")}.
 }
 \seealso{
 Useful links:

@@ -1,5 +1,7 @@
 # fmri.pipeline 0.5
 
+The new [GLM engine guide](https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.html) follows one task contrast from the time series to the group model in FSL, AFNI, and SPM. It also shows how to use FSL estimates in an AFNI longitudinal model.
+
 ## SPM correctness
 
 * Reject missing or non-estimable contrast terms and resolve group input maps by
