@@ -598,42 +598,50 @@ latest_batch <- batch_dirs[which.max(file.info(batch_dirs)$mtime)]
 latest_batch
 ```
 
-Load the run cache to inspect model status:
+Load the batch's saved pipeline object. Each populated table is named for the engine that produced the fit:
 
 ```{r, eval=FALSE}
 load(file.path(latest_batch, "run_pipeline_cache.RData"))
 
-if (!is.null(gpa$l1_model_setup$fsl)) {
+if (NROW(gpa$l1_model_setup$fsl) > 0L) {
   gpa$l1_model_setup$fsl |>
     dplyr::count(feat_complete, feat_failed, to_run)
 }
 
-if (!is.null(gpa$l2_model_setup$fsl)) {
+if (NROW(gpa$l2_model_setup$fsl) > 0L) {
   gpa$l2_model_setup$fsl |>
     dplyr::filter(feat_failed | !feat_complete) |>
     dplyr::select(id, session, l1_model, l1_cope_name, l2_model, feat_dir, feat_fsf)
 }
 
-if (!is.null(gpa$l3_model_setup$fsl)) {
+if (NROW(gpa$l3_model_setup$fsl) > 0L) {
   gpa$l3_model_setup$fsl |>
     dplyr::filter(feat_failed | !feat_complete) |>
     dplyr::select(l1_model, l2_model, l3_model, feat_dir, feat_fsf)
 }
 
-if (!is.null(gpa$l3_model_setup$afni)) {
+if (NROW(gpa$l3_model_setup$spm) > 0L) {
+  gpa$l3_model_setup$spm |>
+    dplyr::filter(spm_failed | !spm_complete) |>
+    dplyr::select(l3_model, l1_cope_name, spm_dir)
+}
+
+if (NROW(gpa$l3_model_setup$afni) > 0L) {
   gpa$l3_model_setup$afni |>
     dplyr::filter(afni_failed | !afni_complete) |>
-    dplyr::select(l3_model, l1_cope_name, l2_cope_name, output_file, afni_script)
+    dplyr::select(l3_model, l1_cope_name, output_file, afni_script)
 }
 ```
 
-Backend-specific caches, such as `run_pipeline_cache_fsl.RData` or `run_pipeline_cache_afni.RData`, can be more informative because they are saved immediately after backend-specific jobs finish:
+Each engine also saves its own cache in the batch directory (`run_pipeline_cache_fsl.RData`, `run_pipeline_cache_afni.RData`, or `run_pipeline_cache_spm.RData`). To investigate a multi-run FSL job before the final cache has been collected:
 
 ```{r, eval=FALSE}
 load(file.path(latest_batch, "run_pipeline_cache_fsl.RData"))
 gpa$l2_model_setup$fsl |>
   dplyr::filter(feat_failed | !feat_complete)
 ```
+
+For first-level status columns and log locations in each suite, see the [diagnosis guide](diagnosis.html#check-the-fit-behind-a-scheduler-job).
 
 On SLURM, scheduler exit codes are often the fastest way to distinguish model errors from time or memory kills:
 

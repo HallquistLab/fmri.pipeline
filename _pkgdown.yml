@@ -2,3 +2,15 @@ url: https://hallquistlab.github.io/fmri.pipeline/
 template:
   bootstrap: 5
   bootswatch: spacelab
+articles:
+- title: Getting started
+  contents:
+  - quickstart
+  - glm-engines
+- title: Designing and running analyses
+  contents:
+  - design
+  - interactive-model-builder
+  - longitudinal
+  - diagnosis
+  - fwe

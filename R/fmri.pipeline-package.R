@@ -1,4 +1,8 @@
-#' @keywords internal 
+#' @details Start with \code{\link{setup_glm_pipeline}} to select the GLM engine
+#'   and provide the analysis tables. Use \code{\link{run_glm_pipeline}} to submit
+#'   the selected models. For a worked comparison of how each suite combines
+#'   runs and supplies group contrasts, see \code{vignette("glm-engines", package = "fmri.pipeline")}.
+#' @keywords internal
 "_PACKAGE"
 
 ## usethis namespace: start

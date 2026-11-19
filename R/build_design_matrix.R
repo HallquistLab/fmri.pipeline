@@ -1,4 +1,9 @@
-#' Creates an fmri design matrix, including timing files for for AFNI or FSL.
+#' Build a task fMRI design from events and signals
+#'
+#' @description Builds run-level timing and convolved regressors used by the
+#'   FSL, AFNI, and SPM model writers. FSL and AFNI timing-file exports are
+#'   also available. The SPM writer reads events and modulators directly from
+#'   the returned design object.
 #'
 #' @param events a data.frame that includes a column for the event type (e.g. outcome vs. cue),
 #'           run number (1:n), trial number (nested within run, 1:x), onset, duration of event

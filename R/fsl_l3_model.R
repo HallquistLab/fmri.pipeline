@@ -1,4 +1,4 @@
-#' Estimate a level 2 (subject) model using FSL FEAT with fixed effects integration of runs
+#' Prepare a level 3 FSL FEAT group model from lower-level COPEs
 #'
 #' @param l3_df a data.frame containing cope inputs for a given l3 model, as well as metadata
 #'   that identify the model.

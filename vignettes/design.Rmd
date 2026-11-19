@@ -193,17 +193,7 @@ Level 2 FEAT outputs are stored under a top-level `feat_l2` directory. To avoid 
 
 This yields paired paths like `feat_l2/sub-123/ses-1/L1m-basic/l1c-01_EV_face/L2m-runavg.fsf` and `feat_l2/sub-123/ses-1/L1m-basic/l1c-01_EV_face/L2m-runavg.gfeat`.
 
-TODO: Create a helper function like `gpa <- setup_output_locations(gpa)` that conducts a simple walkthrough like `build_l1_models`.
-
-Here is a description of the fields in this list:
-
-- feat_sub_directory: The location of FEAT outputs for a single subject [Is this a good idea if the user can provide anything for feat_l1?]
-- feat_ses_directory: The location of FEAT outputs for a single session (of one subject)
-- feat_l2_directory: The location of FEAT outputs for level 2 (subject-level) analyses. Defaults to a `feat_l2` folder and includes `{l1_model}`, `{l1_cope_label}`, and `{l2_model}` to avoid collisions across model and contrast combinations.
-
-
-
-[Use of glue etc.]
+For SPM and AFNI, the corresponding first-level templates are `spm_l1_directory` and `afni_l1_directory`. Group models use `spm_l3_directory`, `afni_l3_directory` (ordinary GLM), or `afni_3dlmer_directory` (longitudinal mixed model). To inspect the actual path for a particular fit, use its setup table described below.
 
 # Overview of GLM levels used in fMRI analysis
 
@@ -283,12 +273,6 @@ You can also provide multiple definitions for spikes, which will be evaluated an
 gpa$confound_settings$spike_volumes <- c(fd0p9 = "-1,0; framewise_displacement > 0.9", big_translate = "tx > 2 | ty > 2 | tz > 2")
 ```
 
-# Overview of GPA structure
-
-# Providing file inputs to fmri.pipeline
-
-TODO: Cover the direct `$run_data` approach versus the regex approach.
-
 # Output structure for FEAT group analysis
 
 The folder and file naming scheme for FEAT group analysis outputs is controlled by two settings in: `gpa$output_locations`. Here are the settings with
@@ -314,16 +298,17 @@ In this case, the regressors in the first level model `abspe` are `clock`, `feed
 
 If you have a single-run analysis, you will not have a level 2 model, so that part of the naming scheme will be omitted.
 
-## l1_model_setup
+# Inspecting first-level setup
 
-After running setup_l1_models, the gpa object will now have a new element called $l1_model_setup. This contains the following sub-elements:
+After `gpa <- setup_l1_models(gpa)`, `gpa$l1_model_setup$metadata` records run inputs, volume counts, confounds, and exclusions. The engine tables describe the fits prepared from those runs.
 
-- `metadata`: A data.frame containing information about the imaging file inputs and confounds for level 1 analysis.
-- `fsl`: A data.frame with one row for every run that is analyzed with a given level 1 model using FSL. This will usually be something like n_l1_models x n_runs in length.
-- `spm`: Not implemented yet
-- `afni`: Not implemented yet
+| Setup table | What one row represents | Where to find the fit |
+|---|---|---|
+| `gpa$l1_model_setup$fsl` | One run for one L1 model | `feat_fsf` points to the FEAT specification and `feat_dir` to the fit. |
+| `gpa$l1_model_setup$afni` | One participant and visit for one L1 model | `afni_script` points to the generated command and `afni_dir` to the design and contrast maps. |
+| `gpa$l1_model_setup$spm` | One participant and visit for one L1 model by default, or one participant when visits are pooled | `spm_dir` holds the first-level analysis. `n_runs` and `source_run_numbers` identify the contributing runs. |
 
-### metadata
+## Run metadata
 
 The structure of this data.frame is:
 
@@ -340,46 +325,16 @@ The structure of this data.frame is:
 - `truncate_volumes`: The number of volumes that have been truncated at the end of the NIfTI file based on the `$truncate_run` setting.
 - `exclude_run`: Whether the run was excluded from higher-level analysis
 
-# parallel compute settings
+# Scheduler resources by engine
 
-The pipeline uses parallel processing at various points to reduce the total time needed to complete all analyses. That said,
-the steps vary in the number of total jobs that are required. For example, in FSL, a single run of data is analyzed by a single
-FEAT job. Thus, if you have 100 subjects who have 5 runs and are analyzed using 4 different level 1 models, you have 100*5*4 = 2000
-jobs that need to be completed. By comparison, the number of level 3 analyses is much smaller since you have only a few jobs for each group
-model of interest.
+With 100 participants, one visit, five retained runs, and four L1 models, FSL prepares 2,000 run fits. AFNI and the default SPM configuration each prepare 400 participant-visit fits. The number of scheduler jobs can differ from the number of fits because a job can process several fits.
 
-There are two ways to parallelize computation: 1. use multiple cores within a single compute job, and 2. distribute computations to a set of
-independent jobs on the scheduler. These are not mutually exclusive approaches. For example, if you have 1000 models that you need to estimate
-with Markov Chain Monte Carlo (MCMC) sampling, the number of samples can be increased for a single model by having multiple
-chains for each model, and each chain can be parked on a separate core on a single computer. So, if I use 4 cores per model to increase my samples,
-but I have 1000 models to run, I would likely submit 1000 jobs to the HPC scheduler (using sbatch on SLURM or qsub on TORQUE), and each job
-would request 4 compute cores. My additional details about these considerations are here: https://psu-psychology.github.io/r-bootcamp-2018/talks/parallel_r.html.
+Set the resource request in the engine's list under `gpa$parallel`. These are the settings for an individual fit or worker job:
 
-In order to accommodate these different parallelization needs and to handle differences in compute times and wait times across
-high-performance cluster environments, the `$parallel_settings` field of the `$gpa` object allows the user to specify how much
-time and how many cores are needed for each step of the pipeline. There are defaults (noted below), but you are encouraged to adjust these values
-if you find your models are taking much longer or shorter to run.
+| Engine settings | L1 wall time and memory | Group wall time and memory |
+|---|---|---|
+| `gpa$parallel$fsl` | `l1_feat_time`, `l1_feat_memgb` | `l3_feat_time`, `l3_feat_memgb` |
+| `gpa$parallel$afni` | `l1_glm_time`, `l1_glm_memgb` | `l3_glm_time`, `l3_glm_memgb` for ordinary GLMs. Use `l3_lmer_time`, `l3_lmer_memgb` for mixed models. |
+| `gpa$parallel$spm` | `l1_spm_time`, `l1_spm_memgb` | `l3_spm_time`, `l3_spm_memgb` |
 
-## Compute time settings
-
-These settings control how much time is requested on the scheduler for a given step. These are all elements within the `gpa$parallel` structure.
-
-### FSL
-
-- `$fsl$l1_feat_time`: The compute time requested for a FEAT level 1 analysis of one run. Default: 10 hours
-- `$fsl$l2_feat_time`: The compute time requested for a FEAT level 2 analysis of one subject. Default: 2 hours
-- `$fsl$l3_feat_time`: The compute time requested for a FEAT level 3 analysis of one group model. Default: 24 hours
-
-- `$fsl$l1_feat_alljobs_time`: The total time requested for the scheduler to run all level 1 FEAT jobs. Default: 72 hours
-- `$fsl$l2_setup_run_time`: The total time for all FEAT level 2 jobs to be setup and run. Default: 14 hours
-- `$fsl$l3_setup_run_time`: The total time for all FEAT level 3 jobs to be setup and run. Default: 80 hours
-
-## Memory settings
-
-- `$fsl$l1_feat_memgb`: The number of gigabytes of memory requested for each 
-
-```
-
-## SELF NOTES
-
-1. Finalize pipeline configuration now enforces that l1, l2, and l3 models are in place. This is necessary to handle run truncation.
+For multi-run FSL, `gpa$parallel$fsl$l2_feat_time` controls the L2 fit. The enclosing pipeline stage has its own wall time in `gpa$parallel$l2_setup_run_time`. Use `parallel$compute_environment` for shell commands that make R and the selected suite available to scheduled jobs.

@@ -1,13 +1,15 @@
-#' Function for setting up level 1 model specifications and corresponding files
+#' Prepare first-level designs and files for the selected GLM engines
 #'
-#' @param gpa A glm_model_arguments function setup by the \code{setup_glm_pipeline} function
-#' @param l1_model_names A character vector of model names within \code{gpa$l1_models} whose l1
-#'    inputs should be generated. If omitted, all models within \code{gpa$l1_models} will be generated.
-#'
-#' @details The \code{l1_model_names} argument allows the creation of multiple l1 models to be parallelized at
-#'   a superordinate level or, even better, to be spread across independent jobs on a cluster. This function
-#'   already provides the option to parallelize over subjects for a single model if \code{gpa$l1_setup_cpus}
-#'   is greater than 1.
+#' @param gpa A \code{glm_pipeline_arguments} object from \code{\link{setup_glm_pipeline}}.
+#' @param l1_model_names Names of the L1 models to prepare. The default selects all L1 models.
+#' @details FSL generates a FEAT design per run. AFNI prepares one joint
+#'   time-series fit per participant and visit. SPM prepares a first-level
+#'   model per participant and visit by default, with separate SPM sessions
+#'   for the retained runs. Set \code{gpa$parallel$l1_setup_cores} to control
+#'   parallel setup across participants.
+#' @return The updated \code{gpa}. Its \code{l1_model_setup} list holds run
+#'   metadata and setup tables named \code{fsl}, \code{afni}, and \code{spm}.
+#'   Inspect the table for the engine you selected.
 #'
 #' @author Michael Hallquist
 #'

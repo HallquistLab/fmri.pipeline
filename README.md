@@ -1,6 +1,6 @@
 # fmri.pipeline
 
-`fmri.pipeline` is an R package for setting up, submitting, and tracking hierarchical fMRI GLM analyses on high-performance computing systems. It is designed for studies where the scientifically interesting model is larger than a single GLM fit: many subjects, many runs, multiple model variants, longitudinal visits, and downstream group models that need to be reproducible months or years later.
+`fmri.pipeline` is an R package for specifying, running, and tracking task fMRI general linear models with FSL, AFNI, and SPM. Use the same trial, run, and participant tables to generate suite-specific designs and contrasts, then run them locally or on a cluster.
 
 The package is built around a single analysis object, usually called `gpa`, that stores the input tables, model specifications, output locations, backend choices, scheduler settings, and job-tracking state for one analysis.
 
@@ -136,7 +136,13 @@ diagnose_pipeline(gpa)
 view_log(gpa, level = 1, id = "01")
 ```
 
-## AFNI estimation
+## Estimation by engine
+
+### FSL
+
+`glm_software = "fsl"` is the default. FEAT fits one time-series model per run. For a multi-run analysis, build an L2 model to combine the run COPEs and their VARCOPEs. Set `l2_scope = "id_session"` when the group model needs one estimate per visit. With a single run, L1 feeds L3 directly. Inspect the generated `.fsf` files, the run's `.feat/stats/` directory, and the higher-level `.gfeat` outputs.
+
+### AFNI
 
 Select `glm_software = "afni"` in `setup_glm_pipeline()` to use AFNI throughout the analysis. Build L1 and L3 models with the usual YAML specification, then submit them with:
 
@@ -175,6 +181,31 @@ Outputs live under `afni_l1/` and `afni_l3/` (mixed models use `afni_3dlmer/`). 
 Resource settings are under `gpa$parallel$afni`: `l1_glm_time`, `l1_glm_memgb`, `l1_glm_cpus`, `l1_glm_alljobs_time`, and the corresponding `l3_glm_time`, `l3_glm_memgb`, `l3_glm_cpus`. Existing `l3_lmer_*` settings continue to control mixed models. Configure AFNI modules or PATH through `parallel$compute_environment$afni`.
 
 AFNI's [3dDeconvolve documentation](https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dDeconvolve.html) and [3dREMLfit documentation](https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dREMLfit.html) describe the OLS and REML estimators.
+
+### SPM
+
+Set `glm_software = "spm"` and give `glm_settings$spm$spm_path` the path to your SPM installation. The default first-level design treats each run as an SPM session and creates one `SPM.mat` per participant, study visit, and task model. Build the L1 and L3 models and submit with `l2_model_names = "none"`. Pipeline L3 is the SPM second-level analysis.
+
+SPM L1 contrasts are matched to the fitted design by regressor name. A missing
+required regressor or a non-estimable contrast stops the job. Group inputs are
+selected using the actual `SPM.xCon` names recorded in `spm_contrasts.tsv`, so a
+change in contrast order cannot silently select a different effect.
+
+SPM setup checks retained scan counts and nuisance rows against each run's
+`run_volumes` and `drop_volumes`. Original images use the appropriate leading
+scan offset; already-trimmed images start at scan 1. Nuisance files may contain
+original or retained rows. Missing files and inconsistent lengths are errors.
+Compressed images use separate temporary paths for each analysis and run.
+
+A complete SPM fit needs a successful full run and validated, nonempty model,
+beta, contrast, statistic, and requested residual files. Setup records the
+model specification and input signatures in `spm_setup.rds`; images use path,
+size, and modification time, while nuisance files are content-hashed. Rerun
+`setup_l1_models()` or `setup_l3_models()` after changing inputs or model settings.
+Existing fits without the new validation metadata require setup and estimation
+once before they can be reused. Runs with disabled setup, estimation, or contrast
+stages receive a stage-completion marker and remain incomplete for group input
+selection.
 
 ## YAML model specifications
 
@@ -311,39 +342,16 @@ run_glm_pipeline(gpa, l3_model_names = "group")
 
 The L3 model builder offers the same settings, and `export_glm_config()` preserves them in YAML. FWE is controlled separately within each selected map. Use `run_fwe_correction(gpa)` to retry correction without fitting models again, and `refresh_fwe_correction(gpa)` to collect scheduled results. See the FWE vignette for custom masks, resource settings, and the standalone planning workflow.
 
-## SPM execution and reuse
-
-SPM L1 contrasts are matched to the fitted design by regressor name. A missing
-required regressor or a non-estimable contrast stops the job. Group inputs are
-selected using the actual `SPM.xCon` names recorded in `spm_contrasts.tsv`, so a
-change in contrast order cannot silently select a different effect.
-
-SPM setup checks retained scan counts and nuisance rows against each run's
-`run_volumes` and `drop_volumes`. Original images use the appropriate leading
-scan offset; already-trimmed images start at scan 1. Nuisance files may contain
-original or retained rows. Missing files and inconsistent lengths are errors.
-Compressed images use separate temporary paths for each analysis and run.
-
-A complete SPM fit needs a successful full run and validated, nonempty model,
-beta, contrast, statistic, and requested residual files. Setup records the
-model specification and input signatures in `spm_setup.rds`; images use path,
-size, and modification time, while nuisance files are content-hashed. Rerun
-`setup_l1_models()` or `setup_l3_models()` after changing inputs or model settings.
-Existing fits without the new validation metadata require setup and estimation
-once before they can be reused. Runs with disabled setup, estimation, or contrast
-stages receive a stage-completion marker and remain incomplete for group input
-selection.
-
 ## Longitudinal workflows
 
 Longitudinal fMRI analyses require special care because runs, sessions, and subjects represent distinct sources of variation. The current recommended patterns are:
 
-- Use `l2_scope = "id_session"` for most longitudinal studies. This creates one Level 2 output per subject-session.
+- For multi-run FSL, use `l2_scope = "id_session"` to keep one L2 estimate per visit. Native AFNI L1 already produces one fit per visit. SPM preserves that distinction with its default `l1_session_mode = "separate"`.
 - Use `l3_input_mode = "pooled_sessions_subject_ev"` for balanced categorical visit comparisons that should remain inside FSL.
 - Use `l3_input_mode = "3dlmer"` for irregular visits, incomplete follow-up, continuous time effects, treatment-by-time interactions, or random-effects structures that are better handled by AFNI `3dLMEr`.
-- Reserve `l2_scope = "id"` for cases where sessions are essentially pseudo-runs and longitudinal change is not the target.
+- In FSL, reserve `l2_scope = "id"` for cases where sessions are essentially pseudo-runs and longitudinal change is not the target.
 
-The repository includes a worked face/house demonstration in `longitudinal_fmri_demo_jun2026/`, including a walkthrough script and YAML model file.
+The [longitudinal vignette](https://hallquistlab.github.io/fmri.pipeline/articles/longitudinal.html) walks through a face/house study with repeated visits.
 
 ## Documentation
 
