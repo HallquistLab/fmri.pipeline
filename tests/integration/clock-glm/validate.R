@@ -66,14 +66,15 @@ verify_clock_run <- function(dir, wait = FALSE) {
               group$feat_actual_estimator %in% c("flame12", "flame12+flame1", "flame1"))
     maps <- fmri.pipeline::lookup_feat_outputs(fit, level = 1:3, what = c("cope", "tstat"),
       source = "setup", format = "long", include_missing = TRUE)
-    expected <- 2L * c(nrow(runs), nrow(subjects), length(group_names))
-    stopifnot(all(as.integer(table(factor(maps$level, levels = 1:3))) == expected),
-              !anyDuplicated(maps$image_file), setequal(maps$contrast_name[maps$level == 3L], group_names))
+    expected <- c(nrow(runs), nrow(subjects), length(group_names))
+    counts <- table(factor(maps$output_level, levels = 1:3), maps$statistic)
+    stopifnot(all(counts[, "cope"] == expected), all(counts[, "tstat"] == expected),
+              !anyDuplicated(maps$image_file), setequal(maps$l3_cope_name[maps$output_level == 3L], group_names))
     check_images(maps$image_file)
     group_inputs <- grep("^set feat_files", readLines(group$feat_fsf), value = TRUE)
     group_inputs <- sub('^[^"]*"([^"]+)".*$', '\\1', group_inputs)
     stopifnot(setequal(normalizePath(group_inputs, mustWork = TRUE),
-                       normalizePath(maps$image_file[maps$level == 2L & maps$statistic == "cope"], mustWork = TRUE)))
+                       normalizePath(maps$image_file[maps$output_level == 2L & maps$statistic == "cope"], mustWork = TRUE)))
     message("FEAT group estimator requested ", group$feat_requested_estimator, ", actual ", group$feat_actual_estimator)
   } else {
     check_rows(l1, subjects, subject_keys)
