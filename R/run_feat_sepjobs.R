@@ -112,56 +112,29 @@ run_feat_sepjobs <- function(gpa, level=1L, model_names=NULL, rerun=FALSE, wait_
   if (is.null(fail_action)) fail_action <- "delete" #should be populated in finalize step, but just in case
   if (is.null(incomplete_action)) incomplete_action <- "delete"
 
-  feat_job_df <- feat_queue %>%
-    dplyr::select("feat_fsf", "feat_dir", "feat_complete", "feat_failed", "to_run")
-
-  # location of scheduler scripts
+  # Refresh from disk before considering any cleanup or submission. A lock covers
+  # the entire queued/running lifetime; no output is removed by this function.
   feat_output_directory <- file.path(gpa$output_locations$scheduler_scripts, paste0("feat_l", level))
-
-  # TODO: probably use a jobs | wc -l approach to throttling jobs within a submission
-  # and we need to make this more flexible
-
-  handle_delete_archive_keep <- function(df, action="delete", type="failed") {
-    if (nrow(df) > 0L) {
-      if (action == "delete") {
-        for (ff in df$feat_dir) {
-          if (dir.exists(ff)) {
-            cmd <- glue("rm -rf \"{ff}\"")
-            lg$info("Removing %s l%d directory: %s", type, level, cmd)
-            system(cmd)
-          }
-        }
-      } else if (action == "archive") {
-        for (ff in df$feat_dir) {
-          if (dir.exists(ff)) {
-            new_dir <- sub("(.*)(\\.g?feat)$", paste0("\\1-", format(Sys.time(), "%F-%H%M%S"), "\\2"), ff, perl = TRUE)
-            cmd <- glue("mv \"{ff}\" \"{new_dir}\"")
-            lg$info("Archiving %s l%d directory: %s", type, level, cmd)
-            system(cmd)
-          }
-        }
-      } else { # "keep"
-        lg$info("Keeping %s l%d directory: %s", type, level, df$feat_dir)
-      }
+  statuses <- lapply(seq_len(nrow(feat_queue)), function(i)
+    get_feat_status(feat_queue$feat_dir[i], feat_queue$feat_fsf[i], lg = lg))
+  feat_job_df <- dplyr::bind_rows(statuses)
+  if (!nrow(feat_job_df)) return(invisible(character(0)))
+  feat_job_df$to_run <- !feat_job_df$feat_complete | isTRUE(rerun)
+  feat_job_df$action <- vapply(seq_len(nrow(feat_job_df)), function(i)
+    feat_run_action(feat_job_df[i, ], fail_action, incomplete_action), character(1))
+  kept <- feat_job_df$to_run & feat_job_df$feat_dir_exists & feat_job_df$action == "keep"
+  if (any(kept)) lg$warn("Keeping existing FEAT output without resubmission: %s", feat_job_df$feat_dir[kept])
+  feat_job_df$to_run[kept] <- FALSE
+  for (i in which(feat_job_df$to_run)) {
+    fsf <- feat_job_df$feat_fsf[i]
+    if (dir.exists(feat_lock_dir(fsf))) stop("FEAT model is already queued/running or locked after interruption: ", fsf)
+    if (!feat_setup_current(fsf)) stop("FEAT setup is missing or stale; run model setup again: ", fsf)
+    if (!identical(feat_read_setup(fsf)$output_dir,
+        normalizePath(feat_job_df$feat_dir[i], winslash = "/", mustWork = FALSE))) {
+      stop("FEAT output directory differs from the submitted setup: ", fsf)
     }
   }
-
-  feat_failed <- feat_job_df %>% dplyr::filter(feat_failed == TRUE)
-  feat_incomplete <- feat_job_df %>% dplyr::filter(feat_complete == FALSE)
-
-  # if a directory is both failed and incomplete, it will be deleted under the failed set
-  handle_delete_archive_keep(feat_failed, action=fail_action, type="failed")
-  handle_delete_archive_keep(feat_incomplete, action=incomplete_action, type="incomplete")
-
-  if (isTRUE(rerun)) {
-    lg$info("rerun = TRUE in run_feat_sepjobs. All fsfs will be marked for job execution.")
-    feat_job_df$to_run <- TRUE
-  }
-
-  # TODO: keep this as a data.frame and return an amended lXX_model_setup to the caller that includes the job id and batch script
-  to_run <- feat_job_df %>%
-    dplyr::filter(to_run == TRUE) %>%
-    dplyr::pull("feat_fsf")
+  to_run <- feat_job_df$feat_fsf[feat_job_df$to_run]
 
   if (length(to_run) == 0L) {
     lg$warn("No Feat level %d .fsf files to execute.", level)
@@ -184,7 +157,7 @@ run_feat_sepjobs <- function(gpa, level=1L, model_names=NULL, rerun=FALSE, wait_
         paste0("#SBATCH -n ", feat_cpus),
         paste0("#SBATCH --time=", feat_time),
         paste0("#SBATCH --mem-per-cpu=", feat_memgb, "G"),
-        ifelse(wait_for != "", paste0("#SBATCH --dependency=afterok:", paste(wait_for, collapse=":")), ""), # allow job dependency on upstream setup
+        ifelse(any(nzchar(wait_for)), paste0("#SBATCH --dependency=afterok:", paste(wait_for, collapse=":")), ""), # allow job dependency on upstream setup
         sched_args_to_header(gpa), # analysis-level SBATCH directives
         paste("#SBATCH -J", scheduler_safe_token(job_name, max_chars = 80L)),
         scheduler_output_directives(gpa$scheduler, child_log_directory, job_name = job_name, extra = extra),
@@ -198,7 +171,7 @@ run_feat_sepjobs <- function(gpa, level=1L, model_names=NULL, rerun=FALSE, wait_
         "",
         get_compute_environment(gpa, c("fsl", "r")), # r needed for job tracking sqlite
         "",
-        "cd $SLURM_SUBMIT_DIR"
+        "cd \"$SLURM_SUBMIT_DIR\""
       )
     }
 
@@ -209,7 +182,7 @@ run_feat_sepjobs <- function(gpa, level=1L, model_names=NULL, rerun=FALSE, wait_
         "#!/bin/bash",
         paste0("#PBS -l nodes=1:ppn=", feat_cpus),
         paste0("#PBS -l pmem=", feat_memgb, "gb"),
-        ifelse(wait_for != "", paste0("#PBS -W depend=afterok:", paste(wait_for, collapse=":")), ""), # allow job dependency on upstream setup
+        ifelse(any(nzchar(wait_for)), paste0("#PBS -W depend=afterok:", paste(wait_for, collapse=":")), ""), # allow job dependency on upstream setup
         paste0("#PBS -l walltime=", feat_time),
         sched_args_to_header(gpa), # analysis-level PBS directives
         paste("#PBS -N", substr(scheduler_safe_token(job_name, max_chars = 80L), 1L, 15L)),
@@ -224,7 +197,7 @@ run_feat_sepjobs <- function(gpa, level=1L, model_names=NULL, rerun=FALSE, wait_
         "",
         get_compute_environment(gpa, c("fsl", "r")),
         "",
-        "cd $PBS_O_WORKDIR"
+        "cd \"$PBS_O_WORKDIR\""
       )
     }
   }
@@ -279,14 +252,6 @@ run_feat_sepjobs <- function(gpa, level=1L, model_names=NULL, rerun=FALSE, wait_
 
   df <- df[order(df$job), ]
 
-  if (level == 3L && isTRUE(auto_retry_l3_excessive_outliers)) {
-    feat_call_with_jobs <- paste0("    \"", feat_retry_binary, "\" \"", feat_binary, "\" \"$1\" \"$2\"")
-    feat_call_no_jobs <- paste0("    \"", feat_retry_binary, "\" \"", feat_binary, "\" \"$1\"")
-  } else {
-    feat_call_with_jobs <- paste0("    \"", feat_binary, "\" \"$1\" -P \"$2\"")
-    feat_call_no_jobs <- paste0("    \"", feat_binary, "\" \"$1\"")
-  }
-
   submission_id <- basename(tempfile(pattern = "job"))
   joblist <- rep(NA_character_, njobs)
   for (j in seq_len(njobs)) {
@@ -294,101 +259,32 @@ run_feat_sepjobs <- function(gpa, level=1L, model_names=NULL, rerun=FALSE, wait_
     job_name <- paste0("featsep_l", level, "_", j)
     cat(preamble(job_name, submission_id, outfile), file=outfile, sep="\n")
     thisrun <- with(df, fsf[job==j])
-    # Compute expected output directories in the parent scope so the SIGTERM trap
-    # can mark them all as failed. Each feat_runner call is backgrounded into its own
-    # subshell, so the odir variable set inside feat_runner is invisible to the parent.
-    # L1/L2 scripts batch multiple FSFs per job (e.g., 8 runs), all of which need
-    # a .feat_fail marker when the job is killed.
-    odir_ext <- ifelse(level == 1L, ".feat", ".gfeat")
-    odir_values <- sub("\\.fsf$", odir_ext, thisrun)
-
-    cat(
-      paste0("all_odirs=(", paste0("\"", odir_values, "\"", collapse = " "), ")"),
-      "",
-      job_manifest_shell_function(),
-      "",
-      "function feat_runner() {",
-      ifelse(level == 1L, "  odir=\"${1/.fsf/.feat}\"", "  odir=\"${1/.fsf/.gfeat}\""),
-      "  [ -f \"${odir}/.feat_fail\" ] && rm -f \"${odir}/.feat_fail\"",
-      "  [ -f \"${odir}/.feat_complete\" ] && rm -f \"${odir}/.feat_complete\"",
-      "  start_time=$( date )",
-      "  if [ $# -eq 2 ]; then",
-      feat_call_with_jobs,
-      "  else",
-      feat_call_no_jobs,
-      "  fi",
-      "  exit_code=$?",
-      "  end_time=$( date )",
-      paste(
-        "  Rscript", shQuote(log_flame_fallbacks_path),
-        "--feat_dir", "\"${odir}\"",
-        "--level", level,
-        "--log_txt", shQuote(estimation_log_txt),
-        "--log_json", shQuote(estimation_log_json),
-        "--threshold", shQuote(as.character(gpa$lgr_threshold)),
-        "|| true"
-      ),
-      "  if [ $exit_code -eq 0 ]; then",
-      "    status_file=\"${odir}/.feat_complete\"",
-      "    artifact_status=\"COMPLETED\"",
-      "  else",
-      "    status_file=\"${odir}/.feat_fail\"",
-      "    artifact_status=\"FAILED\"",
-      "  fi",
-      "  echo $start_time > \"${status_file}\"",
-      "  echo $end_time >> \"${status_file}\"",
-      paste0("  write_job_manifest \"${odir}\" \"fsl_l", level, "_feat\" \"${artifact_status}\" \"$1\""),
-      "  return $exit_code",
-      "}",
-      "function feat_killed() {",
-      "  kill_time=$( date )",
-      "  for _odir in \"${all_odirs[@]}\"; do",
-      "    [ -f \"${_odir}/.feat_complete\" ] && continue",
-      "    echo \"$kill_time\" > \"${_odir}/.feat_fail\"",
-      paste0("    write_job_manifest \"${_odir}\" \"fsl_l", level, "_feat\" \"FAILED\" \"\""),
-      "  done",
-      paste("  Rscript", upd_job_status_path, "--job_id" , "\"$job_id\"", "--sqlite_db", tracking_sqlite_db, "--status", "FAILED"),
-      "  exit 1",
-      "}",
-      "trap feat_killed SIGTERM",
-      paste("Rscript", upd_job_status_path, "--job_id" , "\"$job_id\"", "--sqlite_db", tracking_sqlite_db, "--status", "STARTED"),
-      "job_failed=0",
-      "pids=()",
-      sep = "\n", file = outfile, append = TRUE
-    )
-    if (level == 3L) {
-      feat_launch_lines <- unlist(lapply(thisrun, function(fsf) {
-        c(paste("feat_runner", fsf, feat_cpus, "&"), "pids+=(\"$!\")")
-      }))
-      cat(feat_launch_lines, file = outfile, sep = "\n", append = TRUE)
-    } else {
-      feat_launch_lines <- unlist(lapply(thisrun, function(fsf) {
-        c(paste("feat_runner", fsf, "&"), "pids+=(\"$!\")")
-      }))
-      cat(feat_launch_lines, file=outfile, sep="\n", append=TRUE)
+    rows <- match(thisrun, feat_job_df$feat_fsf)
+    variables <- c(feat_binary = feat_binary, feat_level = level,
+      feat_use_retry = as.integer(level == 3L && isTRUE(auto_retry_l3_excessive_outliers)),
+      feat_retry_binary = feat_retry_binary, feat_fallback_logger = log_flame_fallbacks_path,
+      feat_log_txt = estimation_log_txt, feat_log_json = estimation_log_json,
+      feat_log_threshold = as.character(gpa$lgr_threshold),
+      feat_integrity_script = system.file("bin", "feat_integrity.R", package = "fmri.pipeline"),
+      feat_reg_script = system.file("bash", "gen_feat_reg_dir", package = "fmri.pipeline"))
+    tracking_cmd <- if (!is.null(tracking_sqlite_db)) paste("Rscript", shQuote(upd_job_status_path),
+      "--job_id \"$job_id\" --sqlite_db", shQuote(tracking_sqlite_db)) else "true"
+    cat(c(paste0(names(variables), "=", shQuote(unname(variables))), job_manifest_shell_function(),
+      readLines(system.file("bash", "feat_runner.sh", package = "fmri.pipeline")),
+      "pids=()", "job_failed=0",
+      "feat_killed() { for pid in \"${pids[@]}\"; do kill -TERM \"$pid\" 2>/dev/null; done; wait; exit 1; }",
+      "trap feat_killed TERM INT HUP", paste(tracking_cmd, "--status STARTED")),
+      file = outfile, sep = "\n", append = TRUE)
+    for (i in rows) {
+      args <- c(feat_job_df$feat_fsf[i], feat_job_df$feat_dir[i], submission_id, feat_job_df$action[i])
+      if (level == 3L) args <- c(args, as.character(feat_cpus))
+      cat(c(paste("feat_runner", paste(shQuote(args, type = "sh"), collapse = " "), "&"), "pids+=(\"$!\")"),
+        file = outfile, sep = "\n", append = TRUE)
     }
-    cat("for pid in \"${pids[@]}\"; do",
-        "  if ! wait \"$pid\"; then",
-        "    job_failed=1",
-        "  fi",
-        "done",
-        "if [ $job_failed -ne 0 ]; then",
-        "  job_status=\"FAILED\"",
-        "else",
-        "  job_status=\"COMPLETED\"",
-        "fi",
-        paste("Rscript", upd_job_status_path, "--job_id" , "\"$job_id\"", "--sqlite_db", tracking_sqlite_db, "--status", "\"${job_status}\""),
-        "if [ \"${job_status}\" = \"FAILED\" ]; then",
-        "  exit 1",
-        "fi",
-        "\n\n",
-        sep="\n", file=outfile, append=TRUE)
-    if (level != 3L) {
-      cat(paste(
-        "bash", system.file("bash/gen_feat_reg_dir", package = "fmri.pipeline"),
-        unique(dirname(thisrun))
-      ), sep = "\n", file = outfile, append = TRUE)
-    }
+    cat(c("for pid in \"${pids[@]}\"; do", "  if ! wait \"$pid\"; then job_failed=1; fi", "done",
+      "if [ $job_failed -ne 0 ]; then job_status=FAILED; else job_status=COMPLETED; fi",
+      paste(tracking_cmd, "--status \"${job_status}\""), "exit $job_failed"),
+      file = outfile, sep = "\n", append = TRUE)
 
     # gather tracking arguments
     if (!is.null(tracking_sqlite_db)) {
@@ -403,12 +299,30 @@ run_feat_sepjobs <- function(gpa, level=1L, model_names=NULL, rerun=FALSE, wait_
       } else {
         tracking_args$mem_per_cpu <- feat_memgb
       }
-      if (wait_for != "") tracking_args$parent_job_id <- wait_for
+      if (any(nzchar(wait_for))) tracking_args$parent_job_id <- wait_for
     } else {
       tracking_args = NULL
     }
 
-    joblist[j] <- cluster_job_submit(outfile, scheduler = gpa$scheduler, tracking_sqlite_db = tracking_sqlite_db, tracking_args = tracking_args)
+    reserved <- character()
+    joblist[j] <- tryCatch({
+      for (i in rows) {
+        fsf <- feat_job_df$feat_fsf[i]
+        feat_reserve(fsf, submission_id)
+        reserved <- c(reserved, fsf)
+        current <- get_feat_status(feat_job_df$feat_dir[i], fsf, lg = lg)
+        if ((!isTRUE(rerun) && isTRUE(current$feat_complete)) ||
+            !identical(feat_run_action(current, fail_action, incomplete_action), feat_job_df$action[i])) {
+          stop("FEAT status changed while reserving the batch. Retry submission: ", fsf)
+        }
+      }
+      job <- cluster_job_submit(outfile, scheduler = gpa$scheduler, tracking_sqlite_db = tracking_sqlite_db, tracking_args = tracking_args)
+      if (length(job) != 1L || is.na(job) || !nzchar(job)) stop("FEAT scheduler submission did not return a job ID.")
+      job
+    }, error = function(e) {
+      for (fsf in reserved) feat_release(fsf, submission_id)
+      stop(e)
+    })
     #joblist[j] <- "dummy"
   }
 
@@ -418,4 +332,3 @@ run_feat_sepjobs <- function(gpa, level=1L, model_names=NULL, rerun=FALSE, wait_
 
   return(joblist)
 }
-

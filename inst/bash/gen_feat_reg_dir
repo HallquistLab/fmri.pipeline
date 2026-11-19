@@ -31,11 +31,14 @@ if [ $# -eq 2 ]; then
   fi
 fi
 
-cd "$1"
+if [[ "$1" == *.feat ]]; then
+  featDirs=("$1")
+else
+  featDirs=()
+  while IFS= read -r -d '' dir; do featDirs+=("$dir"); done < <(find "$1" -maxdepth 1 -iname "FEAT_LVL1_run*.feat" -type d -print0)
+fi
 
-featDirs=$(find $PWD -maxdepth 1 -iname "FEAT_LVL1_run*.feat" -type d)
-
-for dir in ${featDirs}; do
+for dir in "${featDirs[@]}"; do
     if [ -d "${dir}/reg" ]; then
 	    echo "Registration directory already exists: ${dir}/reg. Skipping run."
 	    continue
@@ -57,7 +60,7 @@ for dir in ${featDirs}; do
     cp "${FSLDIR}/etc/flirtsch/ident.mat" "${dir}/reg/example_standard2example_func.mat"
 
     if [ -n "$std" ]; then
-      ln -sfn "$std" "${dir}/reg/standard{suffix}"
+      ln -sfn "$std" "${dir}/reg/standard${suffix}"
     else
       imcp "${dir}/example_func" "${dir}/reg/standard"
     fi
