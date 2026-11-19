@@ -11,15 +11,17 @@ run_fwe_plan(
   dry_run = FALSE,
   allow_blocked = FALSE,
   worker_script = NULL,
-  commands_per_cpu = 1L,
-  cpus_per_job = 1L,
-  memgb_per_command = 8,
-  time_per_command = "12:00",
+  commands_per_cpu = NULL,
+  cpus_per_job = NULL,
+  memgb_per_command = NULL,
+  time_per_command = NULL,
   sched_args = NULL,
   env_variables = NULL,
   wait_jobs = NULL,
   stop_on_error = TRUE,
-  persist_results = TRUE
+  persist_results = TRUE,
+  tracking_sqlite_db = NULL,
+  tracking_args = list()
 )
 }
 \arguments{
@@ -52,6 +54,9 @@ fails. The condition contains the run report in its \code{run} field.}
 \item{persist_results}{if \code{TRUE}, real executions and submissions update
 the persistent artifact manifest and RDS result snapshot. Dry runs never
 write result files.}
+
+\item{tracking_sqlite_db, tracking_args}{optional SQLite database and metadata
+for registering submitted correction jobs in pipeline job tracking.}
 }
 \value{
 an \code{fwe_run} containing the execution report and refreshed

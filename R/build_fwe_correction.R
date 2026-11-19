@@ -1,90 +1,20 @@
 #' helper function to create an FWE object that specifies the type of FWE correction and the 
 #'   model outputs to which it is applied
-#' @param gpa a \code{glm_pipeline_arguments} object that already contains model output information in $l3_model_setup$fsl
+#' @param gpa a \code{glm_pipeline_arguments} object containing configured L3 models; estimation need not be complete
 #' @param level an integer indicating what modeling level this FWE correction applies to (1, 2, or 3)
 #' @param lg a logger object for logging messages
 #' @details note that this only works for level = 3 for now
 #' @importFrom utils capture.output menu select.list
-create_fwe_spec <- function(gpa, level = level, lg = NULL) {
+create_fwe_spec <- function(gpa, level = 3L, lg = NULL) {
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
-  checkmate::assert_integerish(level, lower = 1, upper = 3)
-  checkmate::assert_class(lg, "Logger")
-
-  cat("Welcome to the FWE setup menu\n")
-  cat("At present, we offer 4 forms of FWE correction: pTFCE, AFNI 3dFWHMx + 3dClustSim, 3dttest++ residual permutation + 3dClustSim, and PALM permutation\n")
-
-  which_fwe <- select.list(
-    choices = c("pTFCE", "3dFWHMx + 3dClustSim", "3dtest++ -randomsign + 3dClustSim", "PALM"),
-    title = c("Which correction would you like to add?")
-  )
-
-  stopifnot(level == 3L) # only support 3rd-level FWE for now
-
-  # need to choose to which models this applies...
-  # for now, skip the model lookup from the run step and just rely on l3_model_setup
-  # if (level == 3L) {
-  #   l3_set <- choose_glm_models(gpa, "prompt", level = 3L, lg = lg)
-  #   if (is.null(l3_set)) {
-  #     message("No l3 models were selected for this FWE.")
-  #     return(NULL) #maybe it's okay not to have any models?
-  #   }
-  # }
-
-  fwe_set <- list()
-  fields <- c("l1_model", "l1_cope_name", "l2_model", "l2_cope_name", "l3_model")
-  for (ff in fields) {
-    fwe_set[[ff]] <- select.list(unique(gpa$l3_model_setup$fsl[[ff]]),
-      multiple = TRUE,
-      title = paste("For this FWE, choose which", ff, "to include in this FWE.")
-    )
-  }
-
-  # build filter statement
-  filter_expr <- paste(lapply(seq_along(fwe_set), function(x) {
-    paste(names(fwe_set)[x], "%in%", paste(deparse(fwe_set[[x]]), collapse = ""))
-  }), collapse = " & ")
-
-  # https://www.r-bloggers.com/2020/05/filtering-with-string-statements-in-dplyr/
-  to_fwe <- gpa$l3_model_setup$fsl %>% dplyr::filter(rlang::eval_tidy(rlang::parse_expr(filter_expr)))
-
-  if (nrow(to_fwe) == 0L) {
-    msg <- "No model outputs match this combination of selections."
-    lg$error(msg)
-    stop(msg)
-  }
-
-  if (any(to_fwe$feat_complete == FALSE)) {
-    lg$warn("Some L3 models requested are currently incompleted, preventing FWE correction.")
-    lg$warn("%s", capture.output(print(to_fwe %>% dplyr::filter(.data$feat_complete == FALSE))))
-    to_fwe <- to_fwe %>% dplyr::filter(.data$feat_complete == TRUE)
-    if (nrow(to_fwe) == 0L) {
-      msg <-"All L3 models requested are incomplete and this function cannot continue."
-      lg$error(msg)
-      stop(msg)
-    }
-  }
-
-
-  # I guess we could have lower level subsetting, too.
-  # gfeat_set <- gpa$l3_model_setup$fsl %>% dplyr::filter(l3_model == !!l3_set & feat_complete == TRUE)
-  
-  #choices = c("pTFCE", "3dFWHMx + 3dClustSim", "3dtest++ -randomsign + 3dClustSim", "PALM"),
-
-  # all objects here should support $submit(force = X)
-  if (which_fwe == "pTFCE") {
-    fwe_obj <- ptfce_spec$new(gfeat_dir = to_fwe$feat_dir)
-  } else if (which_fwe == "3dFWHMx + 3dClustSim") {
-    warning("3dFWHMx is not quite in here yet!")
-    fwe_obj <- NULL
-  } else if (which_fwe == "3dtest++ -randomsign + 3dClustSim") {
-    fwe_obj <- build_3dclustsim_permutation(to_fwe)
-  } else if (which_fwe == "PALM") {
-    warning("PALM is not quite in here yet!")
-    fwe_obj <- NULL
-  }
-
-  return(fwe_obj)
-
+  if (level != 3L) stop("Automatic FWE correction supports L3 only.")
+  models <- names(gpa$l3_models$models)
+  backends <- get_effective_model_backends(gpa, 3L, models)
+  models <- models[vapply(backends, function(x) identical(x, "fsl"), logical(1L))]
+  if (!length(models)) stop("No FSL L3 models are configured for pTFCE correction.")
+  selected <- utils::select.list(models, title = "L3 model to correct")
+  if (!nzchar(selected)) return(NULL)
+  prompt_ptfce_spec(gpa$l3_models$models[[selected]])
 }
 
 #' helper function for setting up 3dClustSim objects for permutation (via 3dttest++).
@@ -274,7 +204,7 @@ build_3dclustsim_permutation <- function(to_fwe) {
 }
 
 #' Function to walk user through setting up FWE corrections for model outputs
-#' @param gpa a \code{glm_pipeline_arguments} object containing model outputs in l3_model_setup
+#' @param gpa a \code{glm_pipeline_arguments} object containing configured L3 models
 #' @param lg a logger object for logging messages
 #' @return returns a modified gpa object that contains FWE specifications in $fwe_correction
 #' @details currently only looks a level 3
@@ -282,83 +212,38 @@ build_3dclustsim_permutation <- function(to_fwe) {
 #' @export
 build_fwe_correction <- function(gpa, lg = NULL) {
   checkmate::assert_class(gpa, "glm_pipeline_arguments")
-  if (is.null(lg)) {
-    lg <- lgr::get_logger("glm_pipeline/fwe_correction")
-    lg$set_threshold(gpa$lgr_threshold)
-  }
-  checkmate::assert_class(lg, "Logger")
-
-  level <- 3L # for now, only supporting FWE at group analysis level
-
-  if (!checkmate::test_class(gpa$l3_models, "hi_model_set")) {
-    msg <- "Cannot setup FWE correction until build_l3_models is complete and $l3_models is populated."
-    lg$error(msg)
-    stop(msg)
-  }
-
-  if (is.null(gpa$fwe_correction)) {
-    gpa$fwe_correction <- list()
-  }
-
-  if ("fsl" %in% gpa$glm_software) {
-    # enforce that at least some L3 models are complete
-    enforce_glms_complete(gpa, level = 3L, lg)
-
-    # complete_l3 <- #gpa$
-  } else if ("spm" %in% gpa$glm_software) {
-    stop("Not supported yet")
-  } else if ("afni" %in% gpa$glm_software) {
-    stop("Not supported yet")
-  }
-
-  # to setup an FWE specification, we only need the models in place, but they need not be complete.
-  # cat(glue("\n\n---\nCurrent {field_desc} columns: {c_string(chosen_cols)}\n\n", .trim=FALSE))
-
-  action <- 0L
-  while (action != 4L) {
-    action <- menu(c("Add FWE correction", "Modify FWE correction", "Delete FWE correction", "Done with FWE setup"),
-      title = "What would you like to like to do?"
-    )
-
+  checkmate::assert_class(gpa$l3_models, "hi_model_set")
+  if (is.null(gpa$fwe_correction)) gpa$fwe_correction <- list()
+  repeat {
+    action <- utils::menu(c("Add correction", "Modify correction", "Delete correction", "Done"),
+      title = "Automatic L3 FWE correction (each map separately)")
+    if (action %in% c(0L, 4L)) break
     if (action == 1L) {
-      fwe_name <- ""
-      while (fwe_name == "") {
-        prompt <- "Enter the unique name for this FWE correction setup: "
-        nm <- readline(prompt)
-        if (nm != "") {
-          if (nm %in% names(gpa$fwe_correction)) {
-            cat("FWE correction cannot have the same name as an existing correction!\n")
-          } else {
-            fwe_name <- nm
-          }
-        }
+      spec <- create_fwe_spec(gpa)
+      if (is.null(spec)) next
+      name <- readline(paste0("Correction name [", spec$name, "]: "))
+      if (nzchar(name)) spec$name <- name
+      validate_fwe_spec(spec)
+      if (spec$name %in% names(gpa$fwe_correction)) {
+        message("That name already exists; use Modify correction.")
+        next
       }
-      fwe_obj <- create_fwe_spec(gpa, level = level, lg = lg)
-      gpa$fwe_correction[[fwe_name]] <- fwe_obj
-    } else if (action == 2L) {
-      cat("Not yet implemented!\n")
-    } else if (action == 3L) {
-      if (length(gpa$fwe_correction) == 0L) {
-        message("Cannot delete an FWE correction because none exist!")
+      gpa$fwe_correction[[spec$name]] <- spec
+    } else {
+      if (!length(gpa$fwe_correction)) { message("No corrections are configured."); next }
+      name <- utils::select.list(names(gpa$fwe_correction), title = "Correction")
+      if (!nzchar(name)) next
+      if (action == 3L) {
+        gpa$fwe_correction[[name]] <- NULL
       } else {
-        fwe_names <- names(gpa$fwe_correction)
-        which_del <- menu(fwe_names, title = "Which FWE correction setup would you like to delete?")
-        if (which_del > 0) {
-          proceed <- menu(c("Proceed", "Cancel"), title = glue("Are you sure you want to delete {fwe_names[which_del]}?"))
-          if (proceed == 1) {
-            cat(glue("  Deleting {fwe_names[which_del]}\n"))
-            gpa$fwe_correction[[which_del]] <- NULL
-          } else {
-            cat(glue("  Not deleting {fwe_names[which_del]}\n"))
-          }
-        }
+        spec <- as_fwe_spec(gpa$fwe_correction[[name]])
+        if (length(spec$targets$l3_model) != 1L) stop("Edit multi-model specifications programmatically with fwe_spec().")
+        model <- gpa$l3_models$models[[spec$targets$l3_model]]
+        gpa$fwe_correction[[name]] <- prompt_ptfce_spec(model, spec)
       }
-    } else if (action == 4L) {
-      cat("Finishing FWE correction setup\n")
     }
   }
-
-  return(gpa)
+  gpa
 }
 
 extract_glm_betas <- function(gpa, beta_definition = NULL) {
