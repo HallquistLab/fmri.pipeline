@@ -26,7 +26,8 @@ fields. Valid fields are \code{session}, \code{l1_model},
 
 \item{method}{correction method name or named method configuration. Currently
 supported specifications are \code{"ptfce"} and
-\code{"afni_3dclustsim_permutation"}.}
+\code{"afni_3dclustsim_permutation"}. Only pTFCE currently has a planning
+and execution adapter; the AFNI specification can be saved for future use.}
 
 \item{level}{GLM level to correct. Only level 3 is currently supported.}
 

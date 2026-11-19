@@ -58,6 +58,9 @@ export_glm_config <- function(gpa, file="glm_config.yaml") {
   l3_str <- get_l3_config(gpa)
 
   str_out <- c(l1_str, l2_str, l3_str)
+  if (length(gpa$fwe_correction)) {
+    str_out$fwe_correction <- lapply(gpa$fwe_correction, function(x) unclass(as_fwe_spec(x)))
+  }
 
   ext <- file_ext(file)
   if (is.na(ext)) { # missing file extension -- default to YAML
@@ -364,6 +367,7 @@ get_l2_config <- function(gpa) {
     if (level == 2L && !is.null(mm$l2_scope)) mobj$l2_scope <- mm$l2_scope
     if (level == 3L && !is.null(mm$l3_input_mode)) mobj$l3_input_mode <- mm$l3_input_mode
     if (level == 3L && !is.null(mm$producer_backend)) mobj$producer_backend <- mm$producer_backend
+    if (level == 3L) mobj$inference <- unclass(normalize_l3_inference(mm$inference, mm$name, rownames(mm$contrasts)))
 
     mobj$contrasts <- format_contrast_spec_for_yaml(
       mm$contrast_spec,

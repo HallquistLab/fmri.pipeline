@@ -253,6 +253,18 @@ analysis_name/
 
 The pipeline writes backend preflight information before submission, then tracks submitted jobs through the SQLite database. `diagnose_pipeline()` summarizes the job tree and helps locate failed or incomplete stages.
 
+FSL group models can include an `inference` configuration to run pTFCE automatically after L3 estimation:
+
+```r
+gpa$l3_models$models$group$inference <- fwe_spec(
+  "group_ptfce", targets = list(l3_model = "group"),
+  fwe_alpha = 0.05, two_sided = TRUE
+)
+run_glm_pipeline(gpa, l3_model_names = "group")
+```
+
+The L3 model builder offers the same settings, and `export_glm_config()` preserves them in YAML. FWE is controlled separately within each selected map. Use `run_fwe_correction(gpa)` to retry correction without fitting models again, and `refresh_fwe_correction(gpa)` to collect scheduled results. See the FWE vignette for custom masks, resource settings, and the standalone planning workflow.
+
 ## SPM execution and reuse
 
 SPM L1 contrasts are matched to the fitted design by regressor name. A missing

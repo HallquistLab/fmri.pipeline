@@ -72,11 +72,14 @@ Imports:
 Suggests:
     knitr,
     pkgload,
+    pTFCE,
     rmarkdown,
     testthat (>= 3.0.0),
     withr
 Enhances:
     medusa
+Remotes:
+    spisakt/pTFCE@v0.2.2.1
 LinkingTo:
     Rcpp,
     RcppArmadillo,
