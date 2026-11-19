@@ -13,7 +13,7 @@ test_that("ClustSim requires exact thresholds and applies its simulation mask", 
     list(run = function(...) invisible(NULL))
   }), .package = "fmri.pipeline")
   sim$apply_clustsim(statistic, add_whereami = FALSE)
-  expect_identical(args$mask, normalizePath(mask))
+  expect_identical(normalizePath(args$mask), normalizePath(mask))
   expect_equal(args$clust_nvox, 11)
   expect_equal(args$upper_thresh, qnorm(0.001 / 2, lower.tail = FALSE))
   expect_error(sim$apply_clustsim(statistic, pthr = 0.0005, add_whereami = FALSE), "Specified pthr")
