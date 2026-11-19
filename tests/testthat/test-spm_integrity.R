@@ -67,6 +67,10 @@ test_that("SPM keeps identically named compressed runs separate and honors leadi
   expect_true(any(grepl("Nt = 3;", lines, fixed = TRUE)))
   expect_true(any(grepl("num2str(i + 2)", lines, fixed = TRUE)))
   tmpdir <- readLines(file.path(out, ".nifti_tmpdir"))
+  out2 <- file.path(td, "another_model")
+  generate_spm_mat(bdm, output_dir = out2, spm_path = td, nifti_tmpdir = file.path(td, "shared_tmp"))
+  expect_false(identical(tmpdir, readLines(file.path(out2, ".nifti_tmpdir"))))
+  skip_on_os("windows") # Keep design assertions above; execution needs Unix paths.
   for (attempt in 1:2) {
     expect_equal(system2("bash", shQuote(file.path(out, "gunzip_commands.sh"))), 0L)
     images <- list.files(tmpdir, full.names = TRUE, pattern = "nii$")
@@ -74,9 +78,6 @@ test_that("SPM keeps identically named compressed runs separate and honors leadi
     expect_equal(vapply(images, function(f) as.numeric(RNifti::readNifti(f)[1]), numeric(1)), c(1, 2), ignore_attr = TRUE)
     unlink(tmpdir, recursive = TRUE)
   }
-  out2 <- file.path(td, "another_model")
-  generate_spm_mat(bdm, output_dir = out2, spm_path = td, nifti_tmpdir = file.path(td, "shared_tmp"))
-  expect_false(identical(tmpdir, readLines(file.path(out2, ".nifti_tmpdir"))))
 })
 
 test_that("SPM BDM cache compares timing and model inputs", {

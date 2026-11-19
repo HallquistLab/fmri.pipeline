@@ -11,6 +11,7 @@ test_that("run_spm_sepjobs final tracking reuses one terminal job status", {
 
 
 test_that("SPM runner stops at failures and validates before marking completion", {
+  skip_on_os("windows") # Executes the Unix HPC runner and its shell utilities.
   td <- tempfile("spm_runner_")
   dir.create(td)
   runner <- system.file("scripts", "spm_runner.sh", package = "fmri.pipeline")
@@ -78,7 +79,8 @@ test_that("SPM submission refreshes stale queue status and refuses stale setup",
   }, .package = "fmri.pipeline")
   expect_equal(run_spm_sepjobs(gpa), "test-job")
   expect_length(submitted, 1L)
-  expect_equal(system2("bash", c("-n", shQuote(submitted))), 0L)
   fmri.pipeline:::spm_invalidate_setup(out)
   expect_error(run_spm_sepjobs(gpa), "setup is missing or stale")
+  skip_on_os("windows") # Windows paths are not Unix shell paths.
+  expect_equal(system2("bash", c("-n", shQuote(submitted))), 0L)
 })
