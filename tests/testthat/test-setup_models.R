@@ -620,6 +620,8 @@ ensure_mock_l1_stats <- function(gpa, n_copes) {
 }
 
 test_that("setup_l2_models creates per-cope L2 analyses and refits design after dropping invalid runs", {
+  # These fixtures exercise downstream model selection with synthetic completed fits.
+  testthat::local_mocked_bindings(feat_outputs_valid = function(...) TRUE, .package = "fmri.pipeline")
   gpa <- create_mock_gpa_for_l2_setup(n_subjects = 1, n_runs = 3)
   gpa$run_data$predictor <- c(10.1, 20.2, 30.3)
 
@@ -694,6 +696,8 @@ test_that("setup_l2_models creates per-cope L2 analyses and refits design after 
 })
 
 test_that("setup_l2_models skips subject/cope when no runs survive validity filtering", {
+  # These fixtures exercise downstream model selection with synthetic completed fits.
+  testthat::local_mocked_bindings(feat_outputs_valid = function(...) TRUE, .package = "fmri.pipeline")
   gpa <- create_mock_gpa_for_l2_setup(n_subjects = 1, n_runs = 3)
   gpa$run_data$predictor <- c(10.1, 20.2, 30.3)
 
@@ -739,6 +743,8 @@ test_that("setup_l2_models skips subject/cope when no runs survive validity filt
 })
 
 test_that("setup_l2_models passes a single surviving run directly through intercept-only L2", {
+  # These fixtures exercise downstream model selection with synthetic completed fits.
+  testthat::local_mocked_bindings(feat_outputs_valid = function(...) TRUE, .package = "fmri.pipeline")
   gpa <- create_mock_gpa_for_l2_setup(n_subjects = 1, n_runs = 2)
 
   contrasts <- matrix(1, nrow = 1, ncol = 1, dimnames = list("copeA", "regA"))
@@ -813,6 +819,8 @@ test_that("setup_l2_models passes a single surviving run directly through interc
 })
 
 test_that("setup_l2_models skips single surviving run for non-pass-through L2 design", {
+  # These fixtures exercise downstream model selection with synthetic completed fits.
+  testthat::local_mocked_bindings(feat_outputs_valid = function(...) TRUE, .package = "fmri.pipeline")
   gpa <- create_mock_gpa_for_l2_setup(n_subjects = 1, n_runs = 2)
   gpa$run_data$predictor <- c(10.1, 20.2)
 
@@ -855,6 +863,8 @@ test_that("setup_l2_models skips single surviving run for non-pass-through L2 de
 })
 
 test_that("setup_l2_models output feeds setup_l3_models with per-cope L2 inputs", {
+  # These fixtures exercise downstream model selection with synthetic completed fits.
+  testthat::local_mocked_bindings(feat_outputs_valid = function(...) TRUE, .package = "fmri.pipeline")
   gpa <- create_mock_gpa_for_l2_setup(n_subjects = 4, n_runs = 3)
   gpa$run_data$predictor <- gpa$run_data$run_number * 10 + seq_len(nrow(gpa$run_data)) / 100
 

@@ -151,15 +151,6 @@ fsl_l3_model <- function(l3_df=NULL, gpa) {
     dir.create(l3_outdir, recursive = TRUE)
   }
 
-  # add columns regarding whether inputs already exist and FEAT is already complete
-  feat_l3_df <- feat_l3_df %>%
-    dplyr::bind_cols(get_feat_status(feat_dir = l3_feat_dir, feat_fsf = l3_feat_fsf, lg = lg))
-
-  feat_l3_df$to_run <- !feat_l3_df$feat_complete
-
-  lg$debug("Expected L3 feat directory is: %s", l3_feat_dir)
-  lg$debug("Expected L3 feat fsf is: %s", l3_feat_fsf)
-
   # specify output directory (removing .gfeat suffix)
   # .OUTPUTDIR. : the feat output location
   l3_fsf_syntax <- gsub(".OUTPUTDIR.", sub("\\.gfeat$", "", l3_feat_dir), l3_fsf_syntax, fixed = TRUE)
@@ -171,17 +162,12 @@ fsl_l3_model <- function(l3_df=NULL, gpa) {
   deweight <- if(isTRUE(mobj$fsl_outlier_deweighting)) list(robust_yn = 1) else list(robust_yn = 0)
   l3_fsf_syntax <- add_custom_feat_syntax(l3_fsf_syntax, deweight, lg)
 
-  # rewrite FSF whenever this model is queued to run so updated settings (e.g., robust_yn) are not masked by a stale existing file.
-  write_l3_fsf <- !file.exists(l3_feat_fsf) ||
-    isTRUE(gpa$glm_settings$fsl$force_l3_creation) ||
-    isTRUE(feat_l3_df$to_run[1L])
-
-  if (isTRUE(write_l3_fsf)) {
-    lg$info("Writing L3 FSF syntax to: %s", l3_feat_fsf)
-    cat(l3_fsf_syntax, file = l3_feat_fsf, sep = "\n")
-  } else {
-    lg$info("Skipping existing L3 FSF syntax: %s", l3_feat_fsf)
-  }
+  feat_save_setup(l3_feat_fsf, l3_fsf_syntax, inputs = feat_higher_inputs(l3_df$cope_file),
+    level = 3L, spec = list(design = dmat_to_write, contrasts = cmat_to_write),
+    force = isTRUE(gpa$glm_settings$fsl$force_l3_creation))
+  feat_l3_df <- dplyr::bind_cols(feat_l3_df,
+    get_feat_status(feat_dir = feat_output_directory(l3_fsf_syntax), feat_fsf = l3_feat_fsf, lg = lg))
+  feat_l3_df$to_run <- !feat_l3_df$feat_complete
 
   return(feat_l3_df)
 }

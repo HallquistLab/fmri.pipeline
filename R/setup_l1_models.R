@@ -205,6 +205,13 @@ setup_l1_subject <- function(subj_df, gpa, ctx) {
       lg = slg
     )
 
+    if ("fsl" %in% model_ctx$model_backend_names) {
+      feat_dir <- get_output_directory(id = subject_ctx$subj_id, session = subject_ctx$subj_session,
+        l1_model = this_model, gpa = gpa, glm_software = "fsl", what = "l1")
+      locks <- list.files(feat_dir, pattern = "\\.fsf\\.lock$", full.names = TRUE)
+      if (length(locks)) stop("FEAT model is queued/running or locked after interruption: ", locks[1L])
+    }
+
     d_obj <- load_or_build_l1_bdm(
       subject_ctx = subject_ctx,
       model_ctx = model_ctx,
@@ -533,7 +540,7 @@ ensure_l1_output_dir <- function(gpa, subj_id, subj_session, model_name, lg) {
 
 
 # Internal helper: load an existing BDM cache without rebuilding if it is still valid.
-load_cached_l1_bdm <- function(bdm_out_file, lg) {
+load_cached_l1_bdm <- function(bdm_out_file, lg, expected_args = NULL) {
   if (!file.exists(bdm_out_file)) {
     return(list(run_bdm = TRUE, d_obj = NULL))
   }
@@ -543,6 +550,14 @@ load_cached_l1_bdm <- function(bdm_out_file, lg) {
     {
       env <- new.env(parent = baseenv())
       load(bdm_out_file, envir = env)
+      if (!is.null(expected_args)) {
+        saved <- env$bdm_args
+        if (is.null(saved) || !identical(saved[setdiff(names(saved), "lg")],
+            expected_args[setdiff(names(expected_args), "lg")])) return(list(run_bdm = TRUE, d_obj = NULL))
+        if (!identical(env$bdm_input_files, l1_bdm_input_files(expected_args))) {
+          return(list(run_bdm = TRUE, d_obj = NULL))
+        }
+      }
       d_obj <- if (exists("d_obj", envir = env, inherits = FALSE)) env$d_obj else NULL
       if (is.null(d_obj) || !inherits(d_obj, "bdm")) {
         lg$warn("Regenerating design because d_obj is missing or not a valid bdm object in extant BDM file: %s.", bdm_out_file)
@@ -598,12 +613,11 @@ run_l1_build_design_matrix <- function(bdm_args, subj_id, model_name, lg, subj_s
 }
 
 
-# Internal helper: build and cache the standard per-session BDM object.
-build_and_cache_l1_bdm <- function(subject_ctx, model_ctx, gpa, model_name, l1_output_dir, bdm_out_file, lg) {
+l1_bdm_setup_args <- function(subject_ctx, model_ctx, gpa, l1_output_dir, lg) {
   t_out <- model_ctx$model_backend_names
   if (isTRUE(gpa$use_preconvolve)) t_out <- c("convolved", t_out)
 
-  bdm_args <- make_l1_bdm_args(
+  make_l1_bdm_args(
     gpa = gpa,
     events = subject_ctx$m_events,
     signals = model_ctx$m_signals,
@@ -615,6 +629,18 @@ build_and_cache_l1_bdm <- function(subject_ctx, model_ctx, gpa, model_name, l1_o
     lg = lg,
     ts_multipliers = model_ctx$ts_multiplier_data
   )
+}
+
+l1_bdm_input_files <- function(args) {
+  paths <- c(args$run_data$run_nifti,
+    if (is.character(args$ts_multipliers)) args$ts_multipliers,
+    if (is.character(args$additional_regressors)) args$additional_regressors)
+  feat_file_signature(as.character(paths[!is.na(paths) & nzchar(paths)]))
+}
+
+build_and_cache_l1_bdm <- function(subject_ctx, model_ctx, gpa, model_name, l1_output_dir, bdm_out_file, lg) {
+  bdm_args <- l1_bdm_setup_args(subject_ctx, model_ctx, gpa, l1_output_dir, lg)
+  bdm_input_files <- if ("fsl" %in% model_ctx$model_backend_names) l1_bdm_input_files(bdm_args)
 
   d_obj <- run_l1_build_design_matrix(
     bdm_args = bdm_args,
@@ -637,7 +663,7 @@ build_and_cache_l1_bdm <- function(subject_ctx, model_ctx, gpa, model_name, l1_o
   this_model <- model_name
 
   save(
-    d_obj, bdm_args, mr_df, mr_run_nums, subj_mr_dir, run_nifti, run_volumes, exclude_run, nvoxels,
+    d_obj, bdm_args, bdm_input_files, mr_df, mr_run_nums, subj_mr_dir, run_nifti, run_volumes, exclude_run, nvoxels,
     l1_confound_files, subj_id, subj_session, this_model,
     file = bdm_out_file
   )
@@ -653,7 +679,9 @@ load_or_build_l1_bdm <- function(subject_ctx, model_ctx, gpa, model_name, l1_out
     isTRUE(gpa$glm_settings$afni$force_l1_creation)
 
   if (!isTRUE(force_rebuild)) {
-    cache <- load_cached_l1_bdm(bdm_out_file = bdm_out_file, lg = lg)
+    cache <- load_cached_l1_bdm(bdm_out_file = bdm_out_file, lg = lg,
+      expected_args = if ("fsl" %in% model_ctx$model_backend_names)
+        l1_bdm_setup_args(subject_ctx, model_ctx, gpa, l1_output_dir, lg) else NULL)
     if (!isTRUE(cache$run_bdm)) {
       return(cache$d_obj)
     }

@@ -817,6 +817,7 @@ lookup_feat_rows_from_cope_df <- function(cope_df, level, what, feat_dir, feat_f
     cope_df$tstat <- cope_df$t
   }
 
+  status <- get_feat_status(feat_dir, feat_fsf)
   rows <- cope_df
   rows <- rows[, intersect(c("cope_number", "contrast_name", what), names(rows)), drop = FALSE]
   if (!any(what %in% names(rows))) return(lookup_feat_outputs_empty())
@@ -844,8 +845,8 @@ lookup_feat_rows_from_cope_df <- function(cope_df, level, what, feat_dir, feat_f
       feat_fsf = feat_fsf,
       feat_dir = feat_dir,
       stats_dir = stats_dir,
-      feat_complete = file.exists(file.path(feat_dir, ".feat_complete")),
-      feat_failed = ifelse(file.exists(file.path(feat_dir, ".feat_fail")), TRUE, NA)
+      feat_complete = status$feat_complete,
+      feat_failed = status$feat_failed
     )
 
   lookup_feat_select_columns(rows)

@@ -70,7 +70,7 @@ test_that("fsl_l3_model rewrites existing FSF when model is queued to run", {
 })
 
 
-test_that("fsl_l3_model keeps existing FSF when model is already complete", {
+test_that("fsl_l3_model refreshes changed specifications even when cached status says complete", {
   outdir <- tempfile("l3_fsf_skip_")
   dir.create(outdir, recursive = TRUE)
 
@@ -137,8 +137,8 @@ test_that("fsl_l3_model keeps existing FSF when model is already complete", {
   expect_false(isTRUE(result$to_run[1L]))
 
   existing <- readLines(l3_fsf)
-  expect_true(any(grepl("SENTINEL_OLD_FILE", existing, fixed = TRUE)))
-  expect_true(any(grepl("^set fmri\\(robust_yn\\) 1$", existing)))
+  expect_false(any(grepl("SENTINEL_OLD_FILE", existing, fixed = TRUE)))
+  expect_true(any(grepl("^set fmri\\(robust_yn\\) 0$", existing)))
 })
 
 test_that("fsl_l3_model allows pooled multi-session input for pooled_sessions_subject_ev", {
