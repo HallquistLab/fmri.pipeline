@@ -224,7 +224,7 @@ test_that("flame_runner retries failed FLAME12 slices with FLAME1", {
   flame_runner <- source_tree_file("inst", "bin", "flame_runner")
   status <- system2(flame_runner, c(flame_list, "1"), stdout = TRUE, stderr = TRUE)
 
-  expect_false(inherits(status, "status"))
+  expect_null(attr(status, "status"))
   attempts <- readLines(attempt_log)
   expect_length(attempts, 2)
   expect_true(grepl("--runmode=flame12", attempts[[1]], fixed = TRUE))
@@ -243,6 +243,14 @@ test_that("flame_runner retries failed FLAME12 slices with FLAME1", {
   )
   expect_true(grepl("\t42\tstats0007\t", fallback_records[[2]], fixed = TRUE))
   expect_true(grepl("--runmode=flame1", fallback_records[[2]], fixed = TRUE))
+
+  # Multiple retried slices must each contribute one row before the parent returns.
+  original <- readLines(flame_list)
+  writeLines(c(original, sub("--ld=stats0007", "--ld=stats0008", original)), flame_list)
+  status <- system2(flame_runner, c(flame_list, "2"), stdout = TRUE, stderr = TRUE)
+  expect_null(attr(status, "status"))
+  expect_equal(sort(utils::read.delim(audit_file)$ld_dir), c("stats0007", "stats0008"))
+  writeLines(original, flame_list)
 
   withr::local_envvar(c(FAKE_FLAME1_STATUS = "43"))
   failed <- suppressWarnings(system2(flame_runner, c(flame_list, "1"), stdout = TRUE, stderr = TRUE))

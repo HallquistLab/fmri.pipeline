@@ -213,35 +213,24 @@ elif [ "$has_xargs" -eq 1 ] && [ "$xargs_supports_d" -eq 1 ]; then
     "$cmd_xargs" -d '\n' -n 1 -P "$njobs" "$0" --run-command < "$flame_list"
     status=$?
 else
-    running=0
-    fail=0
-
-    wait_one() {
-        local status
-        wait -n
-        status=$?
-        running=$((running - 1))
-        if [ "$status" -ne 0 ]; then
-            fail=1
-        fi
-    }
-
+    # macOS system Bash lacks wait -n. Join the recorded PIDs before
+    # publishing the audit, including children that have already finished.
+    pids=()
+    status=0
     while IFS= read -r line; do
         if [ -z "${line//[[:space:]]/}" ]; then
             continue
         fi
-        while [ "$running" -ge "$njobs" ]; do
-            wait_one
-        done
+        if (( ${#pids[@]} >= njobs )); then
+            wait "${pids[0]}" || status=1
+            pids=("${pids[@]:1}")
+        fi
         run_flame_command "$line" &
-        running=$((running + 1))
+        pids+=("$!")
     done < "$flame_list"
-
-    while [ "$running" -gt 0 ]; do
-        wait_one
+    for pid in "${pids[@]}"; do
+        wait "$pid" || status=1
     done
-
-    status="$fail"
 fi
 
 # A header-only audit records a completed run with zero slice fallbacks.
