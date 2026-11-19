@@ -1348,7 +1348,7 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
     if (!is.null(cmat) && is.matrix(cmat) && nrow(cmat) > 0L) {
       for (i in seq_len(nrow(cmat))) {
         con_name <- rownames(cmat)[i]
-        weights <- cmat[i, ]
+        weights <- stats::setNames(cmat[i, ], colnames(cmat))
         non_zero <- which(abs(weights) > 1e-8)
         vars <- names(weights)[non_zero]
         if (!all(vars %in% names(data))) {
@@ -1356,6 +1356,22 @@ emmeans_to_3dlmer_glt <- function(mobj, data, qVars = NULL, raw_glt_codes = NULL
             sprintf(
               "Cannot convert custom contrast '%s' to AFNI 3dLMEr GLT because regressor(s) are not direct dataTable variables: %s. Provide lmer_glt_codes manually.",
               con_name, paste(setdiff(vars, names(data)), collapse = ", ")
+            ),
+            call. = FALSE
+          )
+        }
+        # AFNI supports one unweighted slope per GLT. Values after ':' are
+        # covariate evaluation offsets, not weights on quantitative coefficients.
+        if (any(vars %in% cont_cols) &&
+            (length(vars) != 1L || any(abs(weights[non_zero] - 1) > 1e-8))) {
+          stop(
+            sprintf(
+              paste0(
+                "Cannot convert custom contrast '%s' to AFNI 3dLMEr GLT: only a single quantitative coefficient ",
+                "with weight +1 is supported. Numeric values after ':' are covariate offsets, not coefficient weights. ",
+                "Reparameterize the model for weighted slopes, or replace this custom contrast with a valid lmer_glt_codes specification."
+              ),
+              con_name
             ),
             call. = FALSE
           )
