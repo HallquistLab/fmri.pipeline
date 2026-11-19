@@ -102,7 +102,7 @@ verify_clock_run <- function(dir, wait = FALSE) {
                   identical(as.character(l1$l1_confound_files[[i]]), as.character(r$l1_confound_file)))
       }
       setup <- readRDS(file.path(group$spm_dir, "spm_setup.rds"))
-      inputs <- rownames(setup$files)
+      inputs <- rownames(setup$signature$files)
     } else {
       for (i in seq_len(nrow(l1))) {
         r <- subset(runs, id == l1$id[i] & session == l1$session[i])
@@ -115,7 +115,8 @@ verify_clock_run <- function(dir, wait = FALSE) {
       stopifnot(setup$estimation == "OLS")
       inputs <- setup$inputs
     }
-    stopifnot(length(inputs) == nrow(subjects), setequal(normalizePath(inputs), normalizePath(l1_maps)))
+    stopifnot(length(inputs) == nrow(subjects),
+              setequal(normalizePath(inputs, mustWork = TRUE), normalizePath(l1_maps, mustWork = TRUE)))
   }
   message("PASS ", engine, " (", nrow(subjects), " subjects, ", nrow(runs), " runs): ", dir)
   invisible(TRUE)
