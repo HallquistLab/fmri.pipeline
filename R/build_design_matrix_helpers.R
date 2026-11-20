@@ -1103,30 +1103,20 @@ center_fsl_regressor <- function(regout, center_values = TRUE) {
 #' @keywords internal
 #' @noRd
 write_afni_timing_files <- function(dmat, output_directory) {
-  # Extract onsets and durations across all runs for each regressor
-  regonsets <- apply(dmat, 2, function(reg) {
-    unname(do.call(c, lapply(reg, function(run) run[, "onset"])))
+  # Modulators can omit occurrences. Compare complete schedules within each
+  # run before combining amplitudes into a single married timing file.
+  schedules <- lapply(seq_len(ncol(dmat)), function(j) {
+    lapply(dmat[, j], function(run) {
+      list(onset = as.numeric(run[, "onset"]), duration = as.numeric(run[, "duration"]))
+    })
   })
-  
-  regdurations <- apply(dmat, 2, function(reg) {
-    unname(do.call(c, lapply(reg, function(run) run[, "duration"])))
-  })
-  
-  # Find regressors that share onset/duration patterns
-  # Uses first row to determine groupings
-  first_onset_duration <- paste(regonsets[1, ], regdurations[1, ])
-  
-  # Group regressors by shared onset/duration patterns
-  dt <- data.table::as.data.table(first_onset_duration)[
-    , list(comb = list(.I)), 
-    by = first_onset_duration
-  ]
-  
-  # Write a file for each group of combined regressors
-  lapply(dt$comb, function(comb) {
-    write_afni_dmblock_file(dmat, comb, output_directory)
-  })
-  
+  remaining <- seq_along(schedules)
+  while (length(remaining)) {
+    same <- vapply(schedules[remaining], identical, logical(1), schedules[[remaining[1L]]])
+    write_afni_dmblock_file(dmat, remaining[same], output_directory)
+    remaining <- remaining[!same]
+  }
+
   invisible(NULL)
 }
 
@@ -1152,6 +1142,11 @@ write_afni_dmblock_file <- function(dmat, comb, output_directory) {
     runonsets <- combmat[[i, 1]][, "onset"]
     rundurations <- combmat[[i, 1]][, "duration"]
     
+    if (!length(runonsets)) {
+      runvec[i] <- "*"
+      next
+    }
+
     # Get values from all regressors in the combination
     runvalues <- do.call(cbind, lapply(combmat[i, ], function(reg) reg[, "value"]))
     
