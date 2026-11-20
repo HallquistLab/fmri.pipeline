@@ -1,22 +1,9 @@
 ---
 title: "Familywise error correction for voxelwise GLMs in fmri.pipeline"
 author: "Michael Hallquist"
-date: "4 Feb 2022"
 output:
-  html_document:
-    code_folding: show
-    df_print: kable
-    mathjax: default
-    number_sections: yes
-    theme: spacelab
-    toc: yes
-    toc_depth: 2
-  pdf_document:
-    code_folding: show
-    df_print: kable
-    number_sections: yes
-    toc: yes
-    toc_depth: 2
+  rmarkdown::html_vignette:
+    toc: true
 vignette: >
   %\VignetteIndexEntry{Familywise error correction for voxelwise GLMs in fmri.pipeline}
   %\VignetteEngine{knitr::rmarkdown}
@@ -24,641 +11,373 @@ vignette: >
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, eval = FALSE) # show code, but do not run HPC- and data-dependent chunks during site builds
-options(digits=3)
+knitr::opts_chunk$set(eval = FALSE)
 ```
 
-This vignette provides an overview of familywise error correction for voxelwise GLM analyses in fmri.pipeline.
+The [whole-brain walkthrough](whole-brain.html) produces a group z-statistic
+map for the participant-level faces-minus-houses contrast. This guide corrects
+that map for the many spatial tests inside its model mask. You can register
+pTFCE when specifying the GLM, run it after estimation, or use the standalone
+AFNI tools to make cluster-level inferences.
 
-# Automatic correction at the end of L3
+| Workflow | Inputs | What to inspect |
+|---|---|---|
+| pTFCE, automatically after L3 or from a saved analysis | Completed FSL L3 z-statistic, model mask, and FEAT smoothness file | Enhanced statistic, FWE threshold table, and a signed thresholded image for each requested alpha |
+| AFNI spatial ACF and `3dClustSim` | First-level residuals and corresponding masks, group statistic, and group search mask | Cluster extent threshold, surviving cluster table, and integer cluster labels |
+| AFNI residual sign randomization and `3dClustSim` | Residual maps from an appropriate group test and its search mask | Cluster thresholds calibrated from randomized group residuals |
 
-FSL L3 models can request pTFCE when they are specified, before any images
-exist. The last step of the interactive `build_l3_models()` dialog offers
-group inference. The equivalent YAML configuration is:
+Specify the search region, alpha, and sidedness before looking at the result.
+A whole-brain correction covers the voxels in the model mask. Each correction
+controls the spatial family for one map. If you make a single claim across
+several contrasts, models, or visits, account for those additional tests
+in the analysis plan. pTFCE uses spatial support to enhance the statistic
+without a single cluster-forming threshold. AFNI extent correction uses a
+specified voxelwise threshold and makes an inference about the extent of
+the resulting clusters. Report the method that produced the result.
+[Spisák et al. (2019)](https://pmc.ncbi.nlm.nih.gov/articles/PMC6834440/), [Cox et al. (2017)](https://pmc.ncbi.nlm.nih.gov/articles/PMC5399747/)
 
-```yaml
-l3_models:
-  group:
-    model_formula: "~ age"
-    execution_backend: fsl
-    l3_input_mode: subject_rows
-    contrasts:
-      diagonal: true
-    inference:
-      method: ptfce
-      fwe_alpha: [0.05, 0.01]
-      two_sided: true
-      correction_mask: model
-      compute:
-        scheduler: inherit
-        memgb_per_command: 1
-        time_per_command: "00:00:45"
-```
+# Correct a completed group analysis
 
-`inference` applies to all contrasts of its model unless `targets` selects a
-subset, for example `targets: {l3_cope_name: age}`. Correction controls FWE
-separately within each selected map, including both tails when `two_sided`
-is true. It does **not** jointly correct across contrasts or models.
-Omit `inference` or set it to `false` to leave correction disabled.
+The declarative interface uses the completed `gpa` from the
+[batch cache](whole-brain.html#run-and-reload-the-analysis). The package
+currently supports planned and automatic pTFCE for FSL L3. Install
+`fmri.pipeline` and the HallquistLab pTFCE fork (version 0.4.0 or later)
+on the host that runs correction. The tested revision is pinned in the package's `DESCRIPTION`
+under `Remotes`. Verify that the R interpreter used by your job can load both
+packages.
 
-Install the HallquistLab fork of pTFCE on each execution host. The package
-DESCRIPTION pins the tested revision. To run a completed FEAT group directory
-in the current R session, use `ptfce_spec$new(gfeat_dir = "group.gfeat")$run()`.
-Directory runs recompute maps with older threshold tables. Use `$run(force = TRUE)`
-to replace existing outputs after changing the input images or smoothness.
-Declarative FWE plans automatically invalidate receipts from the old worker.
+## Specify the target and search region
 
-The installed CLI accepts either a single map or a whole group directory:
+Select the map by session, model, and contrast at each level. Here the two
+higher-level `~ 1` models carry the lower-level comparison forward. The
+statistical question is the group mean face-minus-house effect.
 
-```{r ptfce-cli}
-script <- system.file("bin", "ptfce_zstat.R", package = "fmri.pipeline")
-system2("Rscript", c("--vanilla", shQuote(script), "--gfeat", "group.gfeat",
-  "--twosided", "--fwep", "0.05", "0.01", "--write_thresh_imgs"))
-```
+```{r fwe-specification}
+library(fmri.pipeline)
 
-For programmatic configuration, assign the same specification to the model:
-
-```{r automatic-fwe}
-gpa$l3_models$models$group$inference <- fwe_spec(
-  "group_ptfce", targets = list(l3_model = "group"),
-  fwe_alpha = c(0.05, 0.01), two_sided = TRUE
-)
-export_glm_config(gpa, "glm_config.yaml")
-run_glm_pipeline(gpa, l3_model_names = "group")
-```
-
-The pipeline waits for L3 estimation, collects its output metadata, then
-submits a separate `run_fwe` stage. That stage waits for correction workers
-and collects their results before completing. `run_glm_pipeline(...,
-run_fwe = FALSE)` skips correction for that invocation. Only implemented,
-compatible methods are offered; this release supports automatic pTFCE for
-FSL L3 outputs. Unsupported backend/method combinations fail before submission.
-Automatic correction uses the pipeline scheduler, or runs synchronously with
-`compute: {scheduler: local}`. Use the correction-only entry point to submit
-to a different scheduler.
-
-The main YAML export/import preserves model-level inference and any additional
-declarative specifications in `gpa$fwe_correction`. `build_fwe_correction()`
-can configure these additional specifications before estimation is complete.
-Older live R6 correction objects remain usable through their standalone APIs,
-but must be replaced with declarative specifications for automatic execution.
-
-To inspect or retry correction after estimation, reload the saved pipeline
-object and use the correction-only entry point:
-
-```{r automatic-fwe-retry}
-gpa <- readRDS(gpa$output_locations$object_cache)
-gpa <- run_fwe_correction(gpa, l3_model_names = "group")
-# After scheduler jobs finish:
-gpa <- refresh_fwe_correction(gpa, require_complete = TRUE)
-gpa$fwe_status
-gpa$fwe_runs$group_ptfce$result
-```
-
-This does not refit GLMs. Local execution completes synchronously; scheduler
-execution returns after submission. Correction status is stored separately
-from estimation status. A valid result with zero significant voxels is still
-complete; `significant_voxels` in the threshold table records that outcome.
-
-Completion requires a successful worker receipt, matching content hashes of
-inputs and inference settings, and intact validated outputs. Old results
-without receipts are unverified and will be recomputed. Changing a mask,
-statistic image, alpha, or sidedness invalidates completion even when filenames
-are unchanged. A forced or failed rerun cannot reuse an earlier success receipt.
-Use `collect_fwe_results()` to refresh a saved result snapshot before reuse.
-
-For a custom ROI, supply a nonempty binary mask aligned with and contained
-within the model mask. pTFCE reuses the model's stationary smoothness estimate
-but recalculates search volume and resel count for the correction region.
-The worker rejects incompatible geometry and non-finite values inside the
-mask. Install `pTFCE` and `fmri.pipeline` in the R environment used by compute
-jobs; workers do not install packages automatically. `min_cluster_voxels` is
-deprecated because it never filtered inference outputs; cluster-size filtering
-belongs to separate reporting with `ptfce_spec$get_clusters(clust_nvox = ...)`.
-
-# Standalone declarative pTFCE planning and execution
-
-For completed level-3 FSL/FEAT analyses, the preferred workflow is to describe
-the intended correction once, compile that description into an inspectable plan,
-and execute the plan locally or through the configured scheduler. The plan
-resolves model and contrast names through the pipeline output inventory, rather
-than requiring you to construct GFEAT paths or call a correction method for each
-map yourself.
-
-At present, pTFCE is the FWE method with a plan-and-execution adapter. A pTFCE
-plan needs, for every selected level-3 statistic map, the `zstat` image, the
-correction mask, and the FEAT `stats/smoothness` file. By default, the
-analysis-specific FEAT mask is used for correction. The R interpreter used on
-the execution host must also be able to load the `pTFCE` package and its image
-I/O dependencies.
-
-## 1. Describe the correction
-
-Create an `fwe_spec` from semantic selectors. For example, the following
-specification applies pTFCE to every level-3 z-statistic map from
-`l3_group`. Narrow the scope by adding selectors such as `l3_cope_name`,
-`l2_model`, or `l1_model`; selector values may be vectors.
-
-```{r preferred-fwe-spec}
-all_l3_spec <- fwe_spec(
-  name = "l3_group_ptfce",
-  targets = list(l3_model = "l3_group"),
+spec <- fwe_spec(
+  name = "facehouse_ptfce",
   method = "ptfce",
+  targets = list(
+    session = 1L,
+    l1_model = "facehouse",
+    l1_cope_name = "faces_minus_houses",
+    l2_model = "run_average", l2_cope_name = "EV_Intercept",
+    l3_model = "group_mean", l3_cope_name = "EV_Intercept"
+  ),
+  correction_mask = "model",
   fwe_alpha = c(0.05, 0.01),
   two_sided = TRUE,
-  write_threshold_images = TRUE,
-  correction_mask = "model",
-  compute = list(scheduler = "slurm")
+  write_threshold_images = TRUE
 )
-
-all_l3_spec
+spec
 ```
 
-`fwe_alpha` controls the FWE thresholds reported and, when
-`write_threshold_images = TRUE`, the thresholded pTFCE images written for each
-selected map. With `two_sided = TRUE`, pTFCE enhances both tails on a shared threshold grid and uses half of each requested FWE alpha for the per-tail
-threshold. Set `two_sided = FALSE` when a one-sided positive-tail analysis is
-the intended inferential test.
+With `two_sided = TRUE`, pTFCE enhances both tails on a shared threshold
+grid and uses half of the requested alpha per tail. Positive surviving
+values favor faces in this example and negative values favor houses.
+Use `two_sided = FALSE` for a pre-specified positive-tail test. A planned
+test in the opposite direction can use an explicitly reversed contrast.
 
-Use `correction_mask = "model"` for the FEAT mask associated with each target,
-or supply one explicit NIfTI mask when the same small-volume mask should be
-used for every selected map. Specifications are ordinary serializable objects,
-so they can be kept under version control as YAML.
+For a pre-specified small-volume correction, set `correction_mask` to one
+nonempty binary NIfTI that is inside and aligned with each target's model
+mask. pTFCE reuses the model smoothness estimate and recalculates the search
+volume and number of resels for the smaller region. Report this as a
+small-volume result. Atlas masks used to summarize beta estimates can have
+multiple labels, whereas the correction mask is binary.
 
-```{r preferred-fwe-spec-yaml}
-write_fwe_spec(all_l3_spec, "config/fwe/l3_group_ptfce.yaml")
+Keep the correction specification with the analysis script. A saved YAML
+specification can be compiled again after refitting.
 
-# In a later R session:
-all_l3_spec <- read_fwe_spec("config/fwe/l3_group_ptfce.yaml")
+```{r save-spec}
+write_fwe_spec(spec, "config/facehouse_ptfce.yaml")
+spec <- read_fwe_spec("config/facehouse_ptfce.yaml")
 ```
 
-## 2. Compile and inspect the plan
+## Inspect the plan and run it
 
-Compile the specification against a `glm_pipeline_arguments` object after the
-selected level-3 FEAT analyses have completed. Planning is side-effect free: it
-does not create output directories, submit jobs, or run pTFCE.
+Planning resolves the named contrasts to files. The default output
+directory is `<analysis>/fwe/<spec name>/`. Planning itself creates no files
+and runs no jobs.
 
-```{r preferred-fwe-plan}
-fwe_plan <- plan_fwe_correction(gpa, all_l3_spec)
+```{r inspect-plan}
+fwe_plan <- plan_fwe_correction(gpa, spec, refresh_status = TRUE)
 fwe_plan
 
-# One ready task per selected level-3 z-statistic map.
+fwe_plan$targets[, c("target_id", "session", "l1_cope_name", "l3_cope_name")]
 fwe_plan$tasks[, c(
-  "task_id", "l3_cope_name", "zstat_file",
+  "task_id", "target_id", "zstat_file",
   "correction_mask_file", "smoothness_file", "status"
 )]
-
-# Expected pTFCE image, threshold table, and thresholded maps.
 fwe_plan$artifacts[, c("task_id", "artifact_role", "fwe_alpha", "artifact_file")]
+stopifnot(nrow(fwe_plan$tasks) == 1L)
 ```
 
-If you are planning before all inputs exist, use a non-strict preview. Blocked
-tasks identify the missing input instead of running with an incomplete setup.
+Expect one task for the face/house example. For a zero-match error, look up
+the maps with `lookup_feat_outputs(gpa, level = 3L)$l3` and compare the
+semantic labels and session to `spec$targets`. If you expect the results but
+some files are still missing, use `require_inputs = FALSE` on the plan to
+inspect the `status` and `missing_inputs` columns. A blocked task cannot
+run until its inputs are available.
 
-```{r preferred-fwe-plan-preview}
-fwe_plan <- plan_fwe_correction(
-  gpa, all_l3_spec, require_inputs = FALSE
-)
-fwe_plan$tasks[, c("task_id", "l3_cope_name", "status", "missing_inputs")]
-```
+```{r execute-plan}
+preview <- run_fwe_plan(fwe_plan, dry_run = TRUE)
+preview$execution[, c("task_id", "execution_status", "command")]
 
-Once the plan is ready, it may also be saved and executed from another R
-session or submission script.
+write_fwe_plan(fwe_plan, "config/facehouse_ptfce_plan.rds")
 
-```{r preferred-fwe-plan-rds}
-write_fwe_plan(fwe_plan, "derivatives/fwe/l3_group_ptfce/plan.rds")
-```
-
-## 3. Preview, execute, and collect results
-
-First use a dry run to inspect the generated command for each task without
-creating files or submitting work.
-
-```{r preferred-fwe-dry-run}
-dry_run <- run_fwe_plan(fwe_plan, dry_run = TRUE)
-dry_run$execution[, c("task_id", "execution_status", "command")]
-```
-
-For a small analysis, run pTFCE synchronously on the current host. Otherwise,
-omit `scheduler` to use the scheduler compiled into the plan, or set it
-explicitly to `"slurm"` or `"torque"` and provide task-appropriate resources.
-
-```{r preferred-fwe-run}
-# Local execution
 fwe_run <- run_fwe_plan(fwe_plan, scheduler = "local")
-
-# Example scheduler submission (use this instead of the local call above).
-# fwe_run <- run_fwe_plan(
-#   fwe_plan,
-#   scheduler = "slurm",
-#   commands_per_cpu = 1L,
-#   cpus_per_job = 1L,
-#   memgb_per_command = 1,
-#   time_per_command = "00:00:45"
-# )
 ```
 
-Local execution returns after pTFCE has finished. Scheduler execution returns
-after submission, so refresh and collect after those jobs have completed. Real
-runs automatically persist a result snapshot and `manifest/artifacts.csv` in
-the correction output directory; collecting again updates those canonical
-files with the current artifact state.
+The dry run lets you check exact files and commands before starting. Local
+execution is synchronous. For batch processing, call `run_fwe_plan()` with
+`scheduler = "slurm"` or `"torque"` and set resources for the correction
+jobs, such as `memgb_per_command` and `time_per_command`. Collect after the
+jobs finish. In a new R session, `read_fwe_plan()` reloads the saved plan.
 
-```{r preferred-fwe-results}
-fwe_plan <- refresh_fwe_plan(fwe_run$plan)
-fwe_result <- collect_fwe_results(
-  fwe_plan,
-  require_complete = TRUE
-)
+## Collect and interpret the results
 
-# Select thresholded pTFCE maps by their semantic contrast and FWE alpha.
-fwe_masks <- fwe_result_artifacts(
+```{r collect-results}
+fwe_result <- collect_fwe_results(fwe_run, require_complete = TRUE)
+
+thresholds <- fwe_result_artifacts(fwe_result, artifact_role = "threshold_table")
+stopifnot(nrow(thresholds) == 1L)
+readr::read_csv(thresholds$artifact_file, show_col_types = FALSE)
+
+surviving <- fwe_result_artifacts(
   fwe_result,
   artifact_role = "thresholded_statistic",
-  l3_cope_name = "age",
   fwe_alpha = 0.05
 )
-fwe_masks[, c("target_id", "artifact_file", "can_use_as_mask")]
+surviving[, c("target_id", "l1_cope_name", "l3_cope_name",
+              "artifact_file", "can_use_as_mask")]
 ```
 
-The artifact manifest retains the target, method, threshold, and source-map
-metadata alongside each output path. It is therefore the stable handoff point
-for downstream analysis: select the desired `artifact_file` rather than
-reconstructing a path from a GFEAT directory. The legacy sections below remain
-available for manually configuring and running the earlier correction tools.
+The threshold table records the enhanced statistic cutoff (`z_ptfce`),
+requested FWE alpha (`p_value`), search volume in voxels, and number of
+surviving voxels. A row with `significant_voxels = 0` is a valid result.
+The thresholded image preserves the sign of surviving values and is zero
+elsewhere. Use the [beta extraction guide](beta-extraction.html#use-surviving-voxels-after-ptfce)
+to turn its support into an ROI mask and extract unthresholded COPEs.
+The enhanced values in that image describe inference, while COPEs carry
+the effect size.
 
-# AFNI 3dClustSim
+Collecting writes `manifest/artifacts.csv` and `manifest/result.rds` under
+the correction output directory. The manifest preserves target labels,
+source files, and threshold settings. To review a previously saved result,
+call `collect_fwe_results()` on its directory or result RDS.
 
-As outlined in Cox et al. (2017, Brain Connectivity), the conventional Gaussian random field theory approach to cluster correction in fMRI 
-analysis is anticonservative in many cases because the empirical autocorrelation function of noise in fMRI has a much longer tail than the 
-Gaussian distribution would predict. This was highlighted in Woo & Wager (2014) and elaborated by Eklund (2016, to greater effect).
+If collection fails, run `collect_fwe_results(fwe_run, require_complete = FALSE)`
+and inspect the manifest's `artifact_status`, `task_status`, and `log_file`
+columns. If `run_fwe_plan()` stopped before returning a run object, collect
+from the plan's output directory when a result snapshot exists there.
+You can also use `stop_on_error = FALSE` to retain task statuses when
+rerunning. Check that all inputs are readable and that the worker can load
+pTFCE. Verified completion requires matching input content and settings,
+a successful worker receipt, and validated output files. Files from older
+runs without a receipt are unverified. A rerun skips verified tasks by
+default and recomputes stale or incomplete outputs. Use `force = TRUE` to
+rerun verified tasks as well.
 
-There are a couple of improvements proposed and tested by Cox to control the familywise error rate to (nearly) .05. The package supports both
-of these methods. Let's do a quick walkthrough.
+# Run pTFCE automatically after L3
 
-## Method 1: AFNI 3dClustSim + 3dFWHMx -ACF
+To put correction in the original pipeline submission, add the following
+`inference` block to the existing `group_mean` model in `facehouse.yaml`.
+The [interactive model builder](interactive-model-builder.html#level-3-builder)
+also offers group inference for compatible models.
 
-The basic approach to 3dClustSim (using -fwhm or -fwhmxyz) assumes a Gaussian-distributed noise structure. As noted above, this is not
-realistic in fMRI data. The first correction attempts to overcome the assumption of Gaussianity by fitting a long-tailed distribution
-to the noise structure of empirical data. Specifically, one passes in the first-level GLM residuals (one volume per timepoint) as inputs to
-3dFWHMx and includes the -ACF flag. This flag will estimate the autocorrelation function from the data by fitting parameters of a mono-exponential
-+ Gaussian mixture that can better accommodate the long-tailed spatial autocorrelations in fMRI data.
-
-3dFWHMx produces ACF parameters for every volume in each run's residuals file. The usual approach (per AFNI) is to take the average of these
-parameters per run as the best estimate of the spatial structure of noise in that run. Then, to estimate cluster correction thresholds in
-3dClustSim, one further averages these run-averaged ACF parameters across all runs to achieve an overall ACF for the entire dataset. In
-Cox et al., 2017, the median ACF parameters across datasets are input to 3dClustSim -- I suppose the mean could work, too, depending on whether
-there are outliers that would sway it. The estimated values of this averaged 3-parameter ACF are passed to 3dClustSim with the -acf argument.
-
-Based on the -acf input, 3dClustSim now estimates null datasets that have the spatial distribution of noise derived from the empirical data,
-which better controls for FWE relative to the standard Gaussian assumption/distribution. Cox and colleagues show that at reasonable voxelwise
-thresholds (p < .005 or p < .001), the -ACF approach is close to the nominal .05 alpha level (4 - 8%) when a) the spatial smoothing kernel is > 4mm FWHM,
-and b) the test/contrast comes from an event-related design with many repeats of relatively brief stimuli. The false positive rate (FPR) for
-block designs and small smoothing kernels (4mm FWHM) are worse, sometimes > 15%. Also, note that a voxelwise threshold of .01 or more (e.g., .02)
-is far too generous for cluster correction and should be avoided in general (see Woo and Wager for more info). The above summary is depicted in Cox
-et al., 2017, Fig 1 G, H, I.
-
-### Implementing the -ACF correction in fmri.pipeline
-
-#### Example 1: Setting up a 3dFWHMx object yourself
-
-If you would like to run 3dFWHMx yourself using the afni_3dfwhmx wrapper class, here is an example:
-
-```{r fwhmx}
-# example FEAT LVL1 output
-path <- "/proj/mnhallqlab/studies/MMClock/MR_Proc/10637_20140304/mni_5mm_aroma/sceptic_vchosen_ventropy_dauc_pemax_vtime_preconvolve/FEAT_LVL1_run1.feat"
-res4d_file <- file.path(path, "stats", "res4d.nii.gz")
-fwhmx_mask_file <- file.path(path, "mask.nii.gz")
-
-test <- afni_3dfwhmx$new(input_file = res4d_file, mask_file = fwhmx_mask_file, average = "geometric")
-test$run() # will run 3dFWHMx in the local compute environment (use force = TRUE to re-run completed file)
-test$is_complete() # TRUE if 3dFWHMx has already completed and has generated its output files
-test$get_acf_params() # average ACF params (typically combined with other datasets, then averaged, for 3dClustSim)
-test$get_fwhm_by_volume() %>% head() # FWHM for each sub-brik (volume)
-test$get_acf_by_radius() %>% head() # FWHM for each sub-brik (volume)
-
-# commented out to avoid deleting files of interest
-#test$delete_outputs(prompt = TRUE) # delete files generated by this input -- it will ask you to confirm each
+```yaml
+    inference:
+      method: ptfce
+      targets:
+        l1_cope_name: faces_minus_houses
+      correction_mask: model
+      fwe_alpha: [0.05, 0.01]
+      two_sided: true
+      compute:
+        scheduler: inherit
 ```
 
-This shows how you can run 3dFWHMx through R and read the outputs of the ACF fitting and FWHM calculation.
+Rebuild L3 from the edited specification. Alternatively, attach the spec
+created above using `gpa$l3_models$models$group_mean$inference <- spec`.
+`export_glm_config()` preserves declarative inference settings.
 
-#### Example 2: Running 3dFWHMx for a set of residual files
+```{r automatic-fwe}
+gpa <- build_l3_models(gpa, from_spec_file = "facehouse.yaml")
 
-The afni_3dfwhmx class is a wrapper around 3dFWHMx. In the typical ACF approach, we pass the average ACF parameters across all
-datasets to 3dClustSim -acf. That is, we must provide only one set of ACF parameter estimates to 3dClustSim -acf so that the program
-can generate null datasets with this spatial autocorrelation structure. We usually use 3dClustSim to calculate an FWE correction
-on a group analysis that may reflect hundreds of first-level datasets (fMRI runs). The residuals from each first-level GLM must be passed
-through 3dFWHMx so that the ACF parameters can inform the overall (group) ACF estimates.
-
-Said differently, the typical 3dClustSim -acf approach requires ACF parameter averaging at two stages. First, we take the average
-ACF parameters across all volumes from the first-level residuals. This is controlled by the -geom or -arith flag of 3dFWHMx, which
-specifies how volume-wise ACF estimates should be combined to yield a run-wise ACF. Then, we average the run-wise ACF parameters
-to derive a sample-wise ACF average that reflects the average spatial autocorrelation across all datasets in the analysis.
-
-To aid in the estimation of ACF parameters across many runs, we provide the afni_3dfwhmx_list class. Conceptually, this is a list
-of afni_3dfwhmx objects, each of which pertains to a single run of data. The goal of the afni_3fwhmx_list class is to run 3dFWHMx
-for all input datasets and to provide average values for the ACF across the datasets. This average can then be passed directly to
-3dClustSim -acf.
-
-Here's a quick example:
-
-```{r fwhmx_list}
-# get ACF parameters for 8 first-level residual files for testing
-# this example is simpler than typical applications where we have many subject and many runs
-path <- "/proj/mnhallqlab/studies/MMClock/MR_Proc/10637_20140304/mni_5mm_aroma/sceptic_vchosen_ventropy_dauc_pemax_vtime_preconvolve"
-res4d_files <- list.files(pattern = "res4d.nii.gz", path = path, full.names = T, recursive = T)
-fwhmx_mask_files <- list.files(pattern = "mask.nii.gz", path = path, full.names = T, recursive = T)
-
-# these are the files to be passed through 3dFWHMx
-print(res4d_files)
-
-# create the list object requires you to provide input and mask files for each residuals dataset of interest.
-test <- afni_3dfwhmx_list$new(input_files = res4d_files, mask_files = fwhmx_mask_files, scheduler = "slurm")
-
-# submit 3dFWHMx jobs to cluster -- the object will divide the list into smaller jobs if needed
-# if 3dFWHMx has completed for all inputs already, the $submit method will just return immediately and note
-# that there is nothing to submit. If you want to force re-estimation, use $submit(force = TRUE).
-test$submit()
-
-# has 3dFWHMx completed for all datasets provided to the list?
-test$is_complete()
-
-# average a, b, c parameters across datasets -- good for input to 3dClustSim -acf
-test$get_acf_average()
-
-# average effective FWHM estimate using -ACF
-test$get_effective_fwhm()
-
-# per-dataset ACF summary if you want to see what got averaged
-test$get_acf_df()
-```
-
-#### Example 3: Setup 3dClustSim + 3dFWHMx -acf approach
-
-Although you are welcome to use the afni_3dfwhmx and afni_3dfwhmx_list directly, if your purpose is to run 3dClustSim using the ACF approach,
-you can ask the pipeline to run and compile the 3dFWHMx results for all level 1 residuals in a single step.
-
-The afni_3dclustsim object will handle the 3dFWHMx batch estimation as an initial compute job, then pass the averaged ACF parameters to 3dClustSim
-as a dependent compute job (i.e., 3dFWHMx has to complete before 3dClustSim starts).
-
-This is achieved using the `fwhmx_input_files` and `fwhmx_mask_files` arguments to `afni_3dclustsim$new()`. Here, let's pass the
-same level 1 residuals and mask files as above (in the 3dFWHMx list step). Here, we ask 3dClustSim to use 8 cores for parallel estimation
-and we use the MNI 2009c brain mask (at 2.3mm) as the volume over which to correct for FWE (this should match the empirical data).
-
-```{r clustsim_acf}
-clustsim_acf <- afni_3dclustsim$new(
-  fwhmx_input_files = res4d_files, fwhmx_mask_files = fwhmx_mask_files,
-  scheduler = "slurm", out_dir = "/proj/mnhallqlab/users/michael/fmri.pipeline", # where you want the 3dClustSim output files to go
-  clustsim_mask = "/proj/mnhallqlab/lab_resources/standard/mni_icbm152_nlin_asym_09c/mni_icbm152_t1_tal_nlin_asym_09c_mask_2.3mm.nii", ncpus = 8
+run_glm_pipeline(
+  gpa, l1_model_names = "facehouse",
+  l2_model_names = "run_average", l3_model_names = "group_mean"
 )
-
-# Submit the job to the scheduler. If the 3dFWHMx calls have not been completed yet for all fwhmx_input_files, this will occur first via
-# a separate job submission
-clustsim_acf$submit()
-
-# check whether it's complete
-clustsim_acf$is_complete()
 ```
 
-Once the above job completes, we can look at the number of voxels needed at different combinations of voxelwise and clusterwise thresholds.
-```{r}
-clustsim_acf$get_clustsim_df() %>% head()
+The pipeline collects the completed fit metadata and then runs a separate
+`run_fwe` stage. Check the group fit and the correction status in the
+[diagnosis guide](diagnosis.html). Set `run_fwe = FALSE` in
+`run_glm_pipeline()` to skip correction for one submission.
+
+If only correction needs to run again, reload the completed batch's `gpa`
+and use the correction-only entry point. It requires the model's
+`inference` settings or a declarative specification configured with
+`build_fwe_correction()`.
+
+```{r retry-automatic-fwe}
+gpa <- run_fwe_correction(gpa, l3_model_names = "group_mean")
+
+# For scheduler execution, wait until the submitted correction jobs finish.
+gpa <- refresh_fwe_correction(gpa, require_complete = TRUE)
+gpa$fwe_status
+names(gpa$fwe_runs)
 ```
 
-If you were curious about a cluster correction result, you can use the `dplyr::filter` function to obtain this. For example, imagine that I want to look
-at the whole-brain FWE cluster threshold for all clusters defined by NN=1 (faces touching) and a voxelwise significance level of p = .001. Here's the result.
+For a standalone FEAT directory without a pipeline configuration, supply
+the completed `.gfeat` directly. Choose `zstat_numbers` after checking
+the contrast names in FEAT.
 
-```{r}
-clustsim_acf$get_clustsim_df() %>% dplyr::filter(nn==1 & pthr==.001)
+```{r standalone-feat}
+ptfce <- ptfce_spec$new(
+  gfeat_dir = group_map$analysis_dir,
+  zstat_numbers = group_map$l3_cope_number,
+  fwe_p = c(0.05, 0.01),
+  two_sided = TRUE
+)
+ptfce$run()
 ```
 
-If you would like to apply the 3dClustSim correction to your data to obtain an FWE-corrected map and corresponding clusters, use the `$apply_clustsim()` method. Note
-that this method requires a test statistic file as its input and you should only give voxelwise statistic maps that relate to the 3dClustSim that was run. That is,
-if you run 3dFWHMx on 50 L1 residual files, you should only apply the resulting 3dClustSim results to group analyses that pertain to those 50 files.
+The installed `ptfce_zstat.R` script accepts a FEAT group directory or an
+individual z-statistic and its mask and smoothness inputs. Run it with
+`--help` to see both forms.
 
-For now, I violate this here in the interest of computational efficiency (don't want to run 3dFWHMx on a massive set of files for a demo). Still, these are z-statistic maps
-from a larger analysis of which these subjects were a part.
+# Apply cluster thresholds with AFNI
 
-By default, this method clusterizes using a cluster threshold of p = .05 and a voxelwise threshold of p = .001, bisided, NN = 1 (faces touch).
+These standalone helpers run AFNI commands and do not require an
+`fwe_spec`. For the ACF route, estimate the spatial autocorrelation from
+first-level GLM residuals. Then simulate fields with that spatial structure
+to derive cluster extent thresholds for the group search volume.
+The assumptions and performance depend on the design and spatial noise
+properties. [Cox et al. (2017)](https://pmc.ncbi.nlm.nih.gov/articles/PMC5399747/)
 
-Also, by default, this method has `add_whereami = TRUE`, which looks up anatomical labels for each cluster that is found.
+## Estimate ACF from the contributing runs
 
-```{r}
-cobj <- clustsim_acf$apply_clustsim(
-  statistic_nifti = file.path(
-    "/proj/mnhallqlab/studies/MMClock/group_analyses/MMClock_aroma_preconvolve_fse_groupfixed",
-    "sceptic-clock-feedback-v_entropy-preconvolve_fse_groupfixed/v_entropy/v_entropy-Intercept-Age.gfeat/cope4.feat/stats/zstat1.nii.gz"
+Start with the group map and mask selected in the
+[whole-brain walkthrough](whole-brain.html#find-the-group-map-and-its-inputs).
+The example below assumes all participants and both of their runs
+contributed. If any runs were excluded or a group fit used a subset, first
+restrict `run_maps` to the actual contributors. Pair each run's residual
+time series with the mask from that same fit.
+
+```{r afni-acf}
+run_maps <- lookup_feat_outputs(
+  gpa, level = 1L, what = "cope", refresh_status = TRUE
+)$l1 |>
+  dplyr::filter(
+    l1_model == "facehouse", l1_cope_name == "faces_minus_houses",
+    session == 1L, analysis_status == "complete", image_exists
   )
+
+run_dirs <- unique(run_maps$image_feat_dir)
+residuals <- file.path(run_dirs, "stats", "res4d.nii.gz")
+run_masks <- file.path(run_dirs, "mask.nii.gz")
+stopifnot(length(run_dirs) > 0L, all(file.exists(c(residuals, run_masks))))
+
+acf_dir <- file.path(gpa$output_directory, "fwe", "facehouse_acf")
+dir.create(acf_dir, recursive = TRUE, showWarnings = FALSE)
+
+run_acf <- vapply(seq_along(residuals), function(i) {
+  fwhmx <- afni_3dfwhmx$new(
+    input_file = residuals[i], mask_file = run_masks[i]
+  )
+  fwhmx$run()
+  stopifnot(fwhmx$is_complete())
+  setNames(fwhmx$get_acf_params()[1:3], c("a", "b", "c"))
+}, FUN.VALUE = numeric(3))
+
+acf_summary <- data.frame(residuals, t(run_acf))
+acf_summary
+stopifnot(
+  all(is.finite(run_acf)),
+  all(run_acf["a", ] >= 0 & run_acf["a", ] <= 1),
+  all(run_acf[c("b", "c"), ] > 0)
 )
 
-# will include anatomical labels, too, by default
+sim <- afni_3dclustsim$new(
+  fwhmx_input_files = residuals,
+  fwhmx_mask_files = run_masks,
+  clustsim_mask = group_mask,
+  out_dir = acf_dir,
+  prefix = "facehouse_acf",
+  pthr = 0.001, athr = 0.05,
+  scheduler = "local", ncpus = 1L, seed = 42L
+)
+sim$submit()
+sim$is_complete()
+```
+
+Inspect the per-run ACF estimates before pooling them. `3dFWHMx` saves
+its outputs alongside each residual file. `afni_3dclustsim` reads those
+estimates and takes the arithmetic mean of the three parameters across runs.
+If the checks fail, review the affected residuals, masks, and `3dFWHMx`
+output before pooling. If the fit did not retain residuals, obtain them
+from the matching GLM before using this route. Wait until
+`sim$is_complete()` returns `TRUE` before applying the threshold.
+
+## Apply and record the matching threshold
+
+This example uses voxelwise `p = 0.001`, clusterwise alpha `0.05`, and NN1
+(face adjacency). AFNI's bi-sided setting finds positive and negative
+clusters separately using a two-tail threshold. Use the same search
+volume, sidedness, connectivity, and voxelwise p value as in the selected
+simulation row. [AFNI 3dClustSim documentation](https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dClustSim.html)
+
+```{r apply-clustsim}
+stopifnot(sim$is_complete())
+sim$get_clustsim_df() |>
+  dplyr::filter(nn == 1L, sided == "bi", pthr == 0.001, athr == 0.05)
+
+cobj <- sim$apply_clustsim(
+  statistic_nifti = group_map$image_file,
+  NN = 1L, sided = "bi", pthr = 0.001, athr = 0.05,
+  voxelwise_stat = list(stat_type = "z"),
+  output_cluster_mask = TRUE,
+  output_thresholded_image = TRUE,
+  add_whereami = FALSE
+)
 cobj$get_clust_df()
-```
-
-## Method 2: AFNI 3dClustSim with 3dttest++ permutations
-
-The second method proposed by Cox involves generating null datasets from the empirical distribution of residuals in the group analysis. That is,
-if we run our group GLM, we can compute a $Y - \hat{Y}$ value for every voxel and every subject. This results in a voxelwise map per subject
-that contains the residual from the group analysis.
-
-Rather than attempt to approximate the spatial autocorrelation function using a given semiparametric distribution, the permutation-based approach
-tries to get test statistics on a group analysis in which the residuals have been shuffled (permuted and/or sign-flipped) to create a set of null
-maps that have a spatial correlation structure that is directly based on the data. These datasets are then thresholded and clusterized by 3dClustSim
-directly, rather tha having 3dClustSim simulate data with a given spatial noise structure.
-
-Here is the direct text from Cox et al., 2017
-```
-1. Compute the residuals of the model at each voxel at the group level.
-2. Generate a null distribution by randomizing among subjects the signs of the residuals in the test (and permuting subject data sets between groups, if doing a two-sample test without covariates), 
-  repeat the t-tests (with covariates, if present), and iterate 10,000 times.
-3. Take the 10,000 3D t-statistic maps from the randomization and use those as input to 3dClustSim (with no additional smoothing or random deviate generation): 
-  threshold the maps at a large number of p values (e.g., 0.01, 0.005, and 0.001), clusterize them, then record the maximum cluster size for each p value from each t-map, 
-  accumulate statistics across the 10,000 t-maps, and then determine the cluster-size threshold to achieve a given FPR, for each p value.
-```
-
-At present, we adopt the potentially flawed, but likely awfully close and usually correct, approach of just doing sign-flipping on the residuals -- the approach advocated for one-sample t-tests.
-That is, the signs of residuals are randomized across subjects, but we do not permute group labels, nor do we permute the covariates.
-
-```{r}
-clustsim_perm <- afni_3dclustsim$new(
-  residuals_file = "/proj/mnhallqlab/users/michael/mmclock_pe/mmclock_nov2021/feat_l3/L1m-pe/L2m-l2_l2c-overall/L3m-age_sex/FEAT_l1c-EV_pe.gfeat/cope1.feat/stats/res4d.nii.gz",
-  residuals_mask_file = "/proj/mnhallqlab/users/michael/mmclock_pe/mmclock_nov2021/feat_l3/L1m-pe/L2m-l2_l2c-overall/L3m-age_sex/FEAT_l1c-EV_pe.gfeat/cope1.feat/mask.nii.gz",
-  residuals_njobs = 32,  scheduler = "slurm", prefix = "res4d", iter = 30000,
-  clustsim_mask = "/proj/mnhallqlab/lab_resources/standard/mni_icbm152_nlin_asym_09c/mni_icbm152_t1_tal_nlin_asym_09c_mask_2.3mm.nii", ncpus = 8
-)
-```
-
-In this approach, the number of null datasets generated is identical to the number of iterations of 3dClustSim operations to estimate the cluster thresholds for FWE correction.
-In the permutation/sign-flipping approach, we can split up the total number of null datasets (here: 30000) across a number of separate HPC scheduler jobs. This is controlled by
-`residuals_njobs` and it's reasonable to park 1000-3000 iterations/datasets in each job (i.e., `iter / residuals_njobs ~ 10`).
-
-You can submit the 3dttest++ permutation + 3dClustSim jobs using the `$submit()` method. Note that if the permutations have already completed (and are saved), this step will not
-be repeated. Likewise, if 3dClustSim is already complete, the `$submit()` method will tell you this and not re-run the simulation unless you use `$submit(force = TRUE)`.
-
-```{r}
-clustsim_perm$submit()
-
-clustsim_perm$is_complete()
-```
-
-Now that we have the 3dClustSim results, we can adopt the same approach as with the -ACF object above.
-
-```{r}
-clustsim_perm$get_clustsim_df() %>% dplyr::filter(nn==1 & pthr==.001)
-```
-
-And if we want to clusterize and threshold a statistic file that relates to this analysis, we can use `$apply_clustsim()` to any statistics from the GLM whose residuals we used for
-permutation.
-
-What are the contrasts in this analysis? If you don't recall from setting this up manually (or otherwise), we can use the handy `read_feat_dir` function in fmri.pipeline.
-
-```{r}
-feat_info <- read_feat_dir("/proj/mnhallqlab/users/michael/mmclock_pe/mmclock_nov2021/feat_l3/L1m-pe/L2m-l2_l2c-overall/L3m-age_sex/FEAT_l1c-EV_pe.gfeat/cope1.feat")
-
-feat_info$cope_df %>% select(cope_number, contrast_name, z)
-```
-
-Let's take a look at FWE clusters from zstat6, the overall contrast.
-
-```{r}
-cobj <- clustsim_perm$apply_clustsim(
-  statistic_nifti = "/proj/mnhallqlab/users/michael/mmclock_pe/mmclock_nov2021/feat_l3/L1m-pe/L2m-l2_l2c-overall/L3m-age_sex/FEAT_l1c-EV_pe.gfeat/cope1.feat/stats/zstat6.nii.gz"
-)
-```
-
-We can get info about the FWE clusters from this map, based on the 3dClustSim permutation-based thresholds (again, default cluster p < .05 and voxel p < .001, bisided).
-
-```{r}
-cobj$get_clust_df()
-```
-
-If we want to look at the file outputs of the clusterize operation, you can obtain them like this:
-
-```{r}
 cobj$get_outputs()
 ```
 
-## AFNI 3dClustSim: how to decide what to do
+Report the cluster-level threshold, observed extent, and location for
+surviving clusters. Cluster-extent inference does not establish a
+voxelwise claim for each voxel in a cluster. The integer `cluster_map`
+is the input for [extracting one effect per cluster](beta-extraction.html#use-a-cluster-map-after-afni-correction).
 
-The nice part about the ACF approach is that the 3dClustSim results can be used for any group analysis that included the lower-level runs whose ACFs were estimated. This means you can get a lot of
-mileage from the 3dClustSim results across essentially all group analyses in a dataset.
+## Use residual sign randomization for a suitable group test
 
-The bad part about the ACF approach is that it may be slightly anticonservative, esp. if you use liberal voxelwise thresholds (e.g. p = .005) or block design effects.
+The `residuals_file` mode of `afni_3dclustsim` generates null statistic
+maps with `3dttest++` and passes them to `3dClustSim`. Use it when
+independent, sign-exchangeable group residuals represent the intended
+one-sample test. This wrapper's residual sign flips do not model repeated
+measures, group-label exchange, or arbitrary covariate designs. Use a
+null-generation method justified for your group design. Supply a
+group-level 4D residual image with one volume per observation and its
+matching 3D search mask.
 
-The nice part about the 3dttest++ permutation approach is that it tightly controls FWE to the nominal level. The bad parts are: how to handle more complex designs (not just one-sample t-tests) and
-that in principle, you need to re-run 3dClustSim for each zstat -- or minimally, FEAT GLM. This is true because each group analysis has a single residuals while, which is used for FWE.
+```{r afni-residuals}
+# Paths from the one-sample analysis being corrected
+residual_dir <- file.path(gpa$output_directory, "fwe", "one_sample_residuals")
+dir.create(residual_dir, recursive = TRUE, showWarnings = FALSE)
 
-In practice, within a set of GLM analyses of a dataset, there is often little difference if you switch from ACF to permutation, or switch from one permutation 3dClustSim 
-result to another (e.g., a different GLM in the same dataset).
-
-# Extracting betas (regression coefficients) from FWE-corrected maps
-
-Okay, great, now I have my FWE clusters for a contrast of interest. How do I get betas (aka regression coefficients) from my whole-brain analyses? This will get easier soon in the pipeline, but for now, we
-can pass the cluster mask from the clusterize operation to the `extract_glm_betas_in_mask` function in the package. This will ask you from which models you wish to extract coefficients and will then
-extract coefficients from each cluster in the FWE mask for all models you specify/request in the prompts. Note that this means that you can extract betas from one model based on FWE clusters drawn from
-another model (that was passed through FWE correction). This is handy for checking representational specificity, testing dissociation of different effects, and so on.
-
-To get the outputs generated by clusterize step of `$apply_clustsim()`, you can use the `$get_outputs()` method of the returned clusterize object.
-
-```{r}
-cobj$get_outputs()
+sim <- afni_3dclustsim$new(
+  residuals_file = "/study/one_sample/group_residuals.nii.gz",
+  residuals_mask_file = "/study/one_sample/group_mask.nii.gz",
+  residuals_njobs = 30L,
+  out_dir = residual_dir,
+  prefix = "one_sample",
+  scheduler = "slurm"
+)
+sim$submit()
 ```
 
-Here, the `cluster_table` is the text file of cluster locations and sizes from 3dClusterize, `cluster_map` is the integer-valued mask of all clusters that survived the corrections requested, and
-`cluster_masked_data` is the map of interest (here zstat1) that has been thresholded at the settings requested (essentially anything in that map is FWE-significant and all non-significant voxels are removed).
-
-For extracting betas, we'd want to hand off the `cluster_map` as the input to `extract_glm_betas_in_mask` like so:
-
-```{r, eval = FALSE}
-extract_glm_betas_in_mask(gpa, mask_files = cobj$get_outputs()$cluster_map)
-```
-
-## Subclustering
-
-Oftentimes, if you have a robust map, a whole-brain FWE correction will produce some remarkably large clusters (e.g., 10,000 voxels). Although it is technically correct that this entire mass is statistically
-significant, it can be deeply dissatisfying as a neuroscientist to see a cluster that spans many brains regions that are functionally and/or anatomically distinct. These 'mega clusters' likely reflect
-the co-activation of potentially distinct neural circuits/systems. If we extract betas from a mega cluster, however, we will be left with just one number (usually the mean) for each subject that represents
-neural activity across the wide array of regions that span the cluster.
-
-It is possible that the voxelwise activation pattern is indeed homogeneous within a mega cluster and that the mean is representative. But I think this is a strong and often untested assumption. Moreover,
-inferences about mega clusters are often awkward, leading to a sentence like, "Individuals who had higher scores on the working memory test also showed stronger reward prediction activity across
-the parietal and occipital cortices." Perhaps it is true that the between-subjects association of prediction errors with working memory spans the expanse of parietal and occipital cortices, yet it is
-even more plausible that the strength of that association may vary by region or subregion in ways that our mean beta coefficient cannot uncover.
-
-When a mega cluster emerges, an intuitive approach is to increase the statistical threshold relative to the FWE p < .05 level in order to see if the mega cluster breaks up into smaller clusters that modulated
-even more strongly (e.g,. at FWE p < .005). If this happens (breaking into smaller clusters as one raises the threshold), it can lead to greater anatomical specificity while still preserving Type I error control
-(indeed, those smaller clusters survive a more stringent correction).
-
-Building on this intuitive approach, I have implemented a simple subclustering algorithm that can be applied to any cluster set identified by 3dClusterize. After setting up an afni_3dclusterize object
-and running it to obtain the cluster data.frame, you run subclustering as follows:
-
-```{r}
-cobj$generate_subclusters(break_nvox = 800, min_subclust_nvox = 100, max_subclust_nvox = 4500, max_iter = 100, print_progress = TRUE)
-```
-
-### Subclustering algorithm
-
-The subclustering algorithm begins by searching for any clusters that exceed the user-specified cluster size (in voxels). This is controlled
-by the `break_nvox` argument and defaults to `800`. If any cluster is larger than this threshold, subclustering will be attempted.
-For each large cluster, the algorithm begins with the threshold applied on the overall map in the initial 3dClusterize setup. 
-It then iteratively increases the threshold by a step size (default .1) and reclusters the data *within the larger cluster*. That is,
-the algorithm attempts to break up each large cluster into 2+ subclusters. The number and size of the subclusters are controlled by the following arguments:
-
-- `min_subclust_nvox`: The minimum number of voxels that must be present in every subcluster. Default: 25.
-- `max_subclust_nvox`: The maximum number of voxels allowed in each subcluster. Default: unlimited.
-- `min_n_subclust`: The lowest number of subclusters that will be accepted. Default: 2 (anything less wouldn't really be subclustering!)
-- `max_n_subclust`: The highest number of subclusters that will be accepted. Default: unlimited.
-
-At each step, the algorithm checks whether the subclusters identified at the current thresholds satisfy the size and number
-criteria provided by the user. If the solution meets these criteria, the algorithm then attempts to refine the solution by walking
-backwards in its thresholding in smaller steps. For example, if a z-statistic threshold of 4.2 did not meet the subclustering criteria,
-whereas a threshold of 4.3 did (one step in according to a .1 step size), the algorithm will try values in between, such as 4.28.
-The lowest threshold that still satisfies the subclustering criteria will be retained, thereby maximizing the size of each subcluster.
-
-### Examining subclusters
-
-Once you have run subclustering, you can see the subclusters (if any) using the `$get_clust_df()` method, as before. Note that you can suppress
-subclusters in this data.frame with `$get_clust_df(include_subclusters = FALSE)`. In the cluster data.frame,
-you'll see a column called `subroi_num`, which is the subcluster number within each corresponding `roi_num`. By default, the subcluster maps
-and 3dClusterize tables are also saved in the same folder as the input/threshold image, with a suffix like "_roi1_subclusters.1D". You can
-view the locations of these files with `$get_outputs()$subcluster_files`.
-
-```{r}
-cobj$get_clust_df()
-cobj$get_outputs()$subcluster_files
-```
-
-## Extracting clusters that overlap with a parcellation or atlas
-
-Although subclustering can be quite useful for finding smaller functional ROIs that may have dissociable statistics, 
-you also tend to lose many FWE-significant voxels from the thresholding process. One solution to this is to extract voxelwise statistics
-from an a priori atlas, as noted above. This is achieved in the pipeline using `extract_glm_betas_in_mask()`.
-
-A related approach is to extract coefficients from the atlas only for parcels that are in the FWE-significant map. That is, we can
-check whether each parcel in the atlas overlaps with the clusterized map. If it does, then we could extract subject- or run-level statistics from 
-that parcel. For parcels that do not overlaps FWE-significant clusters, however, we typically have little reason to interrogate them further.
-
-You can generate an atlas subset that overlaps with your cluster map using the `subset_atlas_against_clusters()` method. This method accepts 
-an integer-valued brain parcellation map of the same resolution as the input/threshold map. For each parcel (unique integer value) in the
-atlas map, it checks whether the parcel overlaps substantially with the clusters in the thresholded statistical map. If there is substantial
-overlap, the atlas parcel is retained. If not, the parcel is removed. The amount of overlap is controlled by the `minimum_overlap` argument,
-which defaults to 0.8 (i.e., 80%; values can be between .01 and 1.0).
-
-After this process, the atlas subset file is saved in the same folder as the 3dclusterize input/threshold image, named according to the
-combination of the threshold file and the atlas file. You can specify a unique name with the `output_atlas` argument to the method. Or
-you can suppress creation of an atlas overlap file with `output_atlas = FALSE`. This will just print the retained and rejected parcels,
-but not generate any new files.
-
-By default, for retained atlas parcels (i.e., those where there is substantial overlap), all voxels within the parcel are retained. This is
-consistent with the view of an atlas as a relatively independent basis for functional region definition. You can, however, ask that only
-voxels within the retained parcels that overlap with the thresholded and clusterized map by retained. This is achieved with `mask_by_overlap = TRUE`, perhaps
-at the expense of somewhat circular/data-dependent parcel definition.
-
-```{r}
-atlas <- "/proj/mnhallqlab/projects/clock_analysis/fmri/pfc_entropy/masks/Schaefer_DorsAttn_2.3mm.nii.gz"
-cobj$subset_atlas_against_clusters(atlas, minimum_overlap = 0.7, output_atlas = "default")
-cobj$get_outputs()
-```
-
-You can now use the atlas subset files of interest as an input mask to `extract_glm_betas_in_mask()`.
+After completion, inspect `sim$get_clustsim_df()` and apply the matching
+threshold to the statistic from that one-sample analysis. Keep the
+simulation settings, mask, and statistic together when recording the result.

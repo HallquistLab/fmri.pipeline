@@ -1153,3 +1153,9 @@ gpa <- build_l3_models(gpa, from_spec_file = "glm_spec.yaml")
 ```
 
 This verifies that your interactive choices can be reproduced non-interactively before you submit a full pipeline run.
+
+
+Continue with [first-level design review](whole-brain.html#build-and-inspect-the-first-level-designs)
+to compare the generated design and contrast weights with these settings.
+For a model that requests group inference, see
+[automatic pTFCE after L3](fwe.html#run-ptfce-automatically-after-l3).

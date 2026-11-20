@@ -1,0 +1,341 @@
+---
+title: "From preprocessed runs to whole-brain group maps"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{From preprocessed runs to whole-brain group maps}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+This walkthrough estimates the group mean **faces minus houses** in a study
+with two fMRI runs per participant and one visit. Both conditions occur in
+each run. We fit one FSL FEAT model per run, combine the two run contrasts
+within participant, and fit a whole-brain group model. The completed maps
+feed the [FWE correction](fwe.html) and [beta extraction](beta-extraction.html)
+walkthroughs. Use your own preprocessed NIfTIs and event timing with the
+example below.
+
+| Pipeline level | Unit of analysis | Estimate passed forward |
+|---|---|---|
+| L1, `facehouse` | One run | Face coefficient minus house coefficient and its estimated variance |
+| L2, `run_average` | One participant and visit | Fixed-effects combination of the retained run contrasts |
+| L3, `group_mean` | One map per participant in the group fit | Group COPE and z-statistic for the mean of the participant contrasts |
+
+For data with several visits, choose the subject/session structure before
+fitting. See [longitudinal analyses](longitudinal.html). To run the time-series
+and group models with AFNI or SPM, see [choosing a GLM engine](glm-engines.html).
+
+# Prepare the analysis inputs
+
+You need a working R installation with `fmri.pipeline`, FSL on the execution
+host, and preprocessed BOLD data. Supply runs in a common volumetric template
+space and on a common voxel grid for group analysis. Check the template,
+orientation, field of view, and voxel sizes. Matching dimensions alone cannot
+establish that two images are aligned. Keep intensity scaling and preprocessing
+consistent across the sample. If you use BrainGnomes, select a single
+postprocessing stream and pair each selected BOLD file with the confound
+table for the same retained volumes. [BrainGnomes postprocessing guide](https://hallquistlab.github.io/BrainGnomes/articles/postprocessing.html)
+
+Create these three CSVs under `inputs/`. The rows are examples of the schema.
+Supply all participants, runs, and trials. Use absolute paths that are also
+visible to compute jobs.
+
+**`trials.csv`** has one row per trial in this task. Times are in seconds
+relative to the start of the supplied BOLD run. The first trial can start at
+zero. Rest between stimuli is captured by the baseline.
+
+| id | session | run_number | trial | onset | duration | condition |
+|---|---:|---:|---:|---:|---:|---|
+| 01 | 1 | 1 | 1 | 8.0 | 2.0 | face |
+| 01 | 1 | 1 | 2 | 15.5 | 2.0 | house |
+| 01 | 1 | 2 | 1 | 10.0 | 2.0 | house |
+
+**`runs.csv`** has one row per `id`, `session`, and `run_number`. Each TSV has
+one row per volume of the corresponding input NIfTI and columns `csf` and
+`white_matter` in this example.
+
+| id | session | run_number | run_nifti | confound_input_file |
+|---|---:|---:|---|---|
+| 01 | 1 | 1 | /study/derivatives/sub-01_run-1_bold.nii.gz | /study/derivatives/sub-01_run-1_confounds.tsv |
+| 01 | 1 | 2 | /study/derivatives/sub-01_run-2_bold.nii.gz | /study/derivatives/sub-01_run-2_confounds.tsv |
+
+**`subjects.csv`** has one row per participant here. Include group-level
+predictors in this table when the L3 formula calls for them.
+
+| id | session |
+|---|---:|
+| 01 | 1 |
+| 02 | 1 |
+
+Read identifiers as characters to retain leading zeros. Check for unmatched
+keys so that a mistyped identifier or run number cannot silently change the
+sample. Verify that both conditions are represented in every modeled run.
+
+```{r read-inputs}
+library(fmri.pipeline)
+library(dplyr)
+
+visit_cols <- readr::cols(
+  id = readr::col_character(), session = readr::col_integer()
+)
+run_cols <- readr::cols(
+  id = readr::col_character(), session = readr::col_integer(),
+  run_number = readr::col_integer()
+)
+trial_df <- readr::read_csv("inputs/trials.csv", col_types = run_cols)
+run_df <- readr::read_csv("inputs/runs.csv", col_types = run_cols)
+subject_df <- readr::read_csv("inputs/subjects.csv", col_types = visit_cols)
+
+visit_key <- c("id", "session")
+run_key <- c(visit_key, "run_number")
+
+stopifnot(
+  !anyNA(run_df[run_key]), !anyNA(trial_df[run_key]),
+  !anyNA(subject_df[visit_key]),
+  !anyDuplicated(run_df[run_key]), !anyDuplicated(subject_df[visit_key]),
+  nrow(anti_join(trial_df, run_df, by = run_key)) == 0L,
+  nrow(anti_join(run_df, trial_df, by = run_key)) == 0L,
+  nrow(anti_join(run_df, subject_df, by = visit_key)) == 0L,
+  all(file.exists(run_df$run_nifti)),
+  all(file.exists(run_df$confound_input_file)),
+  all(is.finite(trial_df$onset) & trial_df$onset >= 0),
+  all(is.finite(trial_df$duration) & trial_df$duration >= 0),
+  all(trial_df$condition %in% c("face", "house"))
+)
+
+trial_counts <- trial_df |>
+  count(id, session, run_number, condition) |>
+  tidyr::pivot_wider(names_from = condition, values_from = n, values_fill = 0)
+
+stopifnot(
+  all(c("face", "house") %in% names(trial_counts)),
+  all(trial_counts$face > 0 & trial_counts$house > 0)
+)
+```
+
+Compare the last event offset to run length (stored volumes × TR) and check
+that confound rows match the NIfTI volume count. If preprocessing already
+removed leading volumes, align event times and nuisance rows to those files
+and leave `drop_volumes = 0L`. When asking the pipeline to remove volumes,
+supply inputs and timing aligned to the image **before** the pipeline drops
+volumes. See the [input reference](design.html#input-data-structures-to-fmri-pipeline)
+and [confounds guide](design.html#fmri-confounds) for more input options.
+
+# Define the contrasts at each level
+
+Save the following as `facehouse.yaml`. The named weights explicitly define
+the L1 comparison. A positive COPE indicates a larger estimated face response.
+The L2 and L3 intercept models each produce a single contrast, `EV_Intercept`.
+Its input differs by level. L2 averages the two **run** effects and L3
+estimates the sample mean of the resulting **participant** effects.
+
+```yaml
+onsets: [onset]
+durations: [duration]
+events:
+  stim:
+    onset: onset
+    duration: duration
+signals:
+  face:
+    event: stim
+    trial_subset_expression: "condition == 'face'"
+    value_fixed: 1
+    normalization: none
+  house:
+    event: stim
+    trial_subset_expression: "condition == 'house'"
+    value_fixed: 1
+    normalization: none
+l1_models:
+  facehouse:
+    signals: [face, house]
+    contrasts:
+      diagonal: false
+      custom:
+        faces_minus_houses: {face: 1, house: -1}
+l2_models:
+  run_average:
+    level: 2
+    model_formula: "~ 1"
+    l2_scope: id_session
+    contrasts:
+      diagonal: true
+l3_models:
+  group_mean:
+    level: 3
+    model_formula: "~ 1"
+    l3_input_mode: per_session
+    fsl_outlier_deweighting: false
+    contrasts:
+      diagonal: true
+```
+
+Use the [model builder guide](interactive-model-builder.html#contrast-builder)
+to add condition effects, custom contrasts, or covariates. Each added L1 or L2
+contrast can produce another group fit. Decide which group contrast answers the
+primary question before looking at the maps.
+
+# Build and inspect the first-level designs
+
+Set `output_root` to a directory you can write to on your analysis filesystem.
+For FEAT batch estimation, use `scheduler = "slurm"` as shown here, or use
+`"torque"` on a Torque system. Set the compute environment so jobs can load R,
+`fmri.pipeline`, and FSL. The TR here is 2 seconds. Set it to the actual value for your data, or
+supply `run_df$tr` when it differs across participants or visits. Use a
+consistent TR across runs that belong to one participant and visit.
+
+```{r build-gpa}
+output_root <- "/study/analysis"
+
+gpa <- setup_glm_pipeline(
+  analysis_name = "facehouse_group",
+  output_directory = output_root,
+  scheduler = "slurm",
+  glm_software = "fsl",
+  trial_data = trial_df,
+  run_data = run_df,
+  subject_data = subject_df,
+  tr = 2,
+  n_expected_runs = 2L,
+  drop_volumes = 0L,
+  confound_settings = list(
+    l1_confound_regressors = c("csf", "white_matter")
+  ),
+  parallel = list(l1_setup_cores = 1L, l2_setup_cores = 1L),
+  additional = list(
+    feat_l2_args = list(featwatcher_yn = 0L),
+    feat_l3_args = list(featwatcher_yn = 0L)
+  ),
+  l1_models = NULL, l2_models = NULL, l3_models = NULL
+)
+gpa <- build_l1_models(gpa, from_spec_file = "facehouse.yaml")
+gpa <- build_l2_models(gpa, from_spec_file = "facehouse.yaml")
+gpa <- build_l3_models(gpa, from_spec_file = "facehouse.yaml")
+```
+
+The FEAT settings above leave report files on disk without opening a
+browser from a batch job.
+
+For a design review before estimation, finalize the configuration and write
+the first-level setup files on a host with FSL and the study data. The
+following steps write analysis files and may prepare run images and nuisance
+regressors. FEAT estimation starts at submission.
+
+```{r review-l1}
+gpa <- finalize_pipeline_configuration(gpa)
+gpa <- setup_l1_models(gpa, l1_model_names = "facehouse")
+
+gpa$l1_model_setup$metadata |>
+  select(id, session, run_number, run_volumes, l1_confound_file, exclude_run)
+
+l1_setup <- gpa$l1_model_setup$fsl |>
+  filter(l1_model == "facehouse")
+readLines(l1_setup$feat_fsf[[1L]]) |>
+  grep(pattern = "evtitle|conname|con_real", value = TRUE)
+
+collinearity <- extract_l1_collinearity(gpa, l1_model_names = "facehouse")
+head(collinearity$high_correlation)
+head(collinearity$high_vif)
+```
+
+Check that the expected runs survived, that each condition regressor has
+variation, and that the face and house weights have the intended signs.
+Review event alignment and high-pass filtering against the task timing.
+Inspect any high correlations or VIFs alongside the underlying design.
+The generated FSF shows what FEAT was asked to fit. After estimation,
+`design.mat`, `design.con`, and the FEAT report let you review the design
+that was fitted.
+
+# Run and reload the analysis
+
+```{r submit}
+run_glm_pipeline(
+  gpa,
+  l1_model_names = "facehouse",
+  l2_model_names = "run_average",
+  l3_model_names = "group_mean"
+)
+
+diagnose_pipeline(gpa)
+```
+
+On a scheduler, submission returns before the fits complete. Inspect the
+submission in `diagnose_pipeline()` and wait for the group fit and cleanup
+steps before using the common cache. For a failed job, follow the
+[diagnosis guide](diagnosis.html) to identify the first failing step and
+its logs.
+
+Reload the batch you just checked. The example reads the last recorded
+submission for this analysis directory. If several people or scripts submit
+to the same project, select the recorded batch for the run you inspected.
+
+```{r reload}
+history <- jsonlite::read_json(gpa$output_locations$project_config_json)$batch_history
+batch_dir <- tail(history, 1L)[[1L]]$batch_directory[[1L]]
+cache <- new.env()
+load(file.path(batch_dir, "run_pipeline_cache.RData"), envir = cache)
+gpa <- cache$gpa
+```
+
+# Find the group map and its inputs
+
+Use `lookup_feat_outputs()` to resolve names to files. The suffix in
+`zstat1.nii.gz` is local to the FEAT fit. Keep the session, model, and contrast
+names together when selecting or recording a map.
+
+```{r group-map}
+feat <- lookup_feat_outputs(
+  gpa, level = c(2L, 3L), what = c("cope", "zstat"),
+  source = "setup", refresh_status = TRUE
+)
+
+group_map <- feat$l3 |>
+  filter(
+    session == 1L, l1_model == "facehouse",
+    l1_cope_name == "faces_minus_houses",
+    l2_model == "run_average", l2_cope_name == "EV_Intercept",
+    l3_model == "group_mean", l3_cope_name == "EV_Intercept",
+    statistic == "zstat", analysis_status == "complete", image_exists
+  )
+stopifnot(nrow(group_map) == 1L)
+group_map |>
+  select(image_file, image_feat_dir, feat_requested_estimator, feat_actual_estimator)
+
+group_mask <- file.path(group_map$image_feat_dir, "mask.nii.gz")
+stopifnot(file.exists(group_mask))
+```
+
+`analysis_status` describes the fit and `image_exists` describes the individual
+image. Check both before using a map. Compare requested and actual FEAT
+estimators to see whether the fit used a fallback. To audit the L3 sample,
+inspect the input filenames in the group FSF and compare them with the
+completed L2 COPEs. The FSF records the images in design-row order.
+
+```{r group-inputs}
+grep("^set feat_files", readLines(group_map$analysis_fsf), value = TRUE)
+
+feat$l2 |>
+  filter(
+    l1_model == "facehouse", l1_cope_name == "faces_minus_houses",
+    l2_model == "run_average", l2_cope_name == "EV_Intercept", statistic == "cope"
+  ) |>
+  select(id, session, analysis_status, is_passthrough, image_exists, image_file)
+```
+
+A participant with only one usable run may appear as an L2 passthrough.
+The inventory points to the underlying L1 COPE and marks the logical L2 row
+as `is_passthrough`. Review which participants actually entered L3 before
+reporting the sample size. Inspect the model mask and the spatial pattern of
+the group maps in a NIfTI viewer.
+
+Use the group z-statistic and its model mask for
+[FWE correction](fwe.html#correct-a-completed-group-analysis). Use the
+participant COPEs to [summarize effects in ROIs](beta-extraction.html),
+and the group COPE when the quantity of interest is the fitted sample effect.

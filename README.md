@@ -357,13 +357,17 @@ The [longitudinal vignette](https://hallquistlab.github.io/fmri.pipeline/article
 
 The pkgdown site is the primary documentation entry point:
 
-- Package website: <https://hallquistlab.github.io/fmri.pipeline/>
-- Quick start: <https://hallquistlab.github.io/fmri.pipeline/articles/quickstart.html>
-- Choosing a GLM engine: <https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.html>
-- Design concepts: <https://hallquistlab.github.io/fmri.pipeline/articles/design.html>
-- Longitudinal analyses: <https://hallquistlab.github.io/fmri.pipeline/articles/longitudinal.html>
-- Pipeline diagnosis: <https://hallquistlab.github.io/fmri.pipeline/articles/diagnosis.html>
-- Reference index: <https://hallquistlab.github.io/fmri.pipeline/reference/index.html>
+- [Package website](https://hallquistlab.github.io/fmri.pipeline/)
+- [Quick start](https://hallquistlab.github.io/fmri.pipeline/articles/quickstart.html)
+- [Whole-brain walkthrough](https://hallquistlab.github.io/fmri.pipeline/articles/whole-brain.html)
+- [Choosing a GLM engine](https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.html)
+- [Design concepts](https://hallquistlab.github.io/fmri.pipeline/articles/design.html)
+- [Interactive model builder](https://hallquistlab.github.io/fmri.pipeline/articles/interactive-model-builder.html)
+- [Longitudinal analyses](https://hallquistlab.github.io/fmri.pipeline/articles/longitudinal.html)
+- [Pipeline diagnosis](https://hallquistlab.github.io/fmri.pipeline/articles/diagnosis.html)
+- [Familywise error correction](https://hallquistlab.github.io/fmri.pipeline/articles/fwe.html)
+- [Beta extraction from masks and atlases](https://hallquistlab.github.io/fmri.pipeline/articles/beta-extraction.html)
+- [Reference index](https://hallquistlab.github.io/fmri.pipeline/reference/index.html)
 
 MEDuSA deconvolution, event-locked alignment, and multilevel trajectory modeling (`mixed_by`, `jlmer`, `meta_mixed_by`) now live in the standalone [`medusa`](https://github.com/HallquistLab/medusa) package. Legacy pre-0.4-1 MEDuSA entry points in `fmri.pipeline` emit deprecation warnings and forward to `medusa` when installed.
 

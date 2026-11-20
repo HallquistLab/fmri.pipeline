@@ -29,7 +29,18 @@ vignette: >
 
 This walkthrough uses FSL for a two-run task. AFNI and SPM can each fit both the time-series and group models. To run this task with either suite, see [Choosing a GLM engine](glm-engines.html).
 
-This guide is meant to get a new user from input tables to a submitted pipeline run. More detailed conceptual material is in `vignette("design")`, longitudinal guidance is in `vignette("longitudinal")`, and run diagnosis is in `vignette("diagnosis")`.
+Use the articles alongside the analysis as you move from model setup to
+results.
+
+| If you want to… | Start here |
+|---|---|
+| Fit a two-condition task and follow a named contrast from timings to the group map | [Whole-brain group maps](whole-brain.html) |
+| Understand table schemas, confounds, and model levels | [Pipeline design](design.html) |
+| Specify custom contrasts or build models interactively | [Interactive model builder](interactive-model-builder.html) |
+| Compare repeated visits | [Longitudinal analyses](longitudinal.html) |
+| Find failed fits or missing results | [Pipeline diagnosis](diagnosis.html) |
+| Correct completed group maps or configure correction before submission | [Familywise error correction](fwe.html) |
+| Summarize effects inside an atlas or corrected map | [Beta extraction](beta-extraction.html) |
 
 # Model Combinations
 
@@ -174,7 +185,7 @@ Typical columns include:
 - `id`, `session`, and `run_number`
 - `run_nifti`, the path to the preprocessed 4D NIfTI for that run
 - `confound_input_file`, the path to a confound TSV/TXT file, often from fMRIPrep or postprocessing
-- `tr`, only when TR varies across runs
+- `tr`, when TR differs across participants or visits
 - run-level predictors for Level 2 models, such as `condition`, `difficulty`, or `scanner`
 
 Example:
@@ -312,14 +323,18 @@ gpa <- setup_glm_pipeline(
 Key setup arguments:
 
 - `analysis_name`: a stable name for this analysis. If `output_directory` does not already end with this name, the pipeline appends it.
-- `scheduler`: `"slurm"`, `"torque"`, or `"local"`. Use `"local"` only for small tests.
-- `tr`: repetition time in seconds. If TR differs by run, provide a `tr` column in `run_data` instead.
+- `scheduler`: use `"slurm"` or `"torque"` for FEAT batch estimation.
+- `tr`: repetition time in seconds. If TR differs across participants or visits, provide a `tr` column in `run_data`. Keep it consistent within a participant and visit.
 - `drop_volumes`: number of leading volumes to remove from timing/confound alignment.
 - `n_expected_runs`: used for warnings and subject/run completeness checks.
 - `confound_settings`: tells the pipeline which nuisance regressors to include, which volumes to spike, and how to exclude or truncate runs.
 - `parallel`: controls setup cores and scheduler time/memory settings.
 
-The confound expressions are evaluated in run-level confound data after motion regressors and `framewise_displacement` have been prepared. Expressions can refer to confound columns plus helper variables such as `time`, `volume`, `last_onset`, `last_offset`, and `last_isi`.
+The exclusion rule uses the combined nuisance and motion table.
+The spike rule uses the separate motion file and its derived parameters.
+To use the spike rule shown above, supply `run_df$motion_params_file`
+alongside the confounds file. See [fMRI confounds](design.html#fmri-confounds)
+for input formats and the scope of each setting.
 
 # Define Models
 
@@ -576,6 +591,7 @@ feat_l2/sub-<id>/ses-<session>/L1m-<l1_model>/l1c-<l1_cope_label>/L2m-<l2_model>
 feat_l3/L3m-<l3_model>/L1m-<l1_model>/L2m-<l2_model>/l2c-<l2_contrast>/FEAT_l1c-<l1_contrast>.gfeat
 ```
 
+For a single visit, the default L1 and L2 paths omit the `ses-<session>` directory.
 The output templates are stored in `gpa$output_locations` and use `glue` syntax. Advanced users can override them before running the pipeline, but new users should start with the defaults.
 
 # Check Status
@@ -712,3 +728,8 @@ diagnose_pipeline(gpa)
 ```
 
 For a first project, start with one task model and one intercept-only group model. Include a run-combination model for multi-run FSL analyses. Once that path submits and status checks are clean, add scientific contrasts, covariates, and alternate backend models.
+
+Once the group fit completes, use [the output inventory](whole-brain.html#find-the-group-map-and-its-inputs)
+to match your model and contrast names to its maps. Continue with
+[FWE correction](fwe.html) for inference or [beta extraction](beta-extraction.html)
+to summarize contrast estimates in a region.

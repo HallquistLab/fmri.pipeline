@@ -6,6 +6,7 @@ articles:
 - title: Getting started
   contents:
   - quickstart
+  - whole-brain
   - glm-engines
 - title: Designing and running analyses
   contents:
@@ -13,4 +14,7 @@ articles:
   - interactive-model-builder
   - longitudinal
   - diagnosis
+- title: Inference and effect estimates
+  contents:
   - fwe
+  - beta-extraction

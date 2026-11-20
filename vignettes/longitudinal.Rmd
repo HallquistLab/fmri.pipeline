@@ -819,6 +819,15 @@ The `"id"` pooling approach should generally be discouraged as a default option 
 - Sessions are spaced by merely hours or minutes (essentially making them contiguous pseudo-runs).
 - The researcher explicitly wishes to compute a grand average across all data for a subject with no interest in temporal dynamics.
 
+## Working with the fitted maps
+
+Use the [output inventory](whole-brain.html#find-the-group-map-and-its-inputs)
+to trace a named FEAT contrast back to its session and inputs. When
+extracting [participant-level betas](beta-extraction.html), keep the
+`id` and `session` keys together so visits remain distinct. For
+[FWE correction](fwe.html), verify that you are correcting the map for the
+desired visit or visit contrast. Planned pTFCE uses FSL L3 outputs.
+
 ## Conclusion
 While `fmri.pipeline` can mathematically construct the `"id"` pooling approach, that route can sacrifice statistical validity and computational modularity. In most real longitudinal studies, the package should prioritize `l2_scope = "id_session"` and then choose between two downstream paths:
 
