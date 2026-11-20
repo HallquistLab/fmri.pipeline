@@ -191,3 +191,13 @@ weights and scaling for one participant first. For the cue example, a
 shared AFNI coefficient, an SPM contrast across run-specific
 coefficients and a precision-weighted FSL estimate can differ even with
 identical event onsets.
+
+The [whole-brain
+walkthrough](https://hallquistlab.github.io/fmri.pipeline/articles/whole-brain.md)
+follows a named contrast through the FSL output inventory. For post-fit
+work, consult the [FWE
+guide](https://hallquistlab.github.io/fmri.pipeline/articles/fwe.md) for
+model-based pTFCE on FSL maps or standalone AFNI cluster correction, and
+the [beta extraction
+guide](https://hallquistlab.github.io/fmri.pipeline/articles/beta-extraction.md)
+for FEAT contrast estimates and masks.

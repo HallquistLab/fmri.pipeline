@@ -1580,6 +1580,17 @@ dynamics.</p>
 </div>
 </div>
 <div class="section level2">
+<h2 id="working-with-the-fitted-maps">Working with the fitted maps<a class="anchor" aria-label="anchor" href="#working-with-the-fitted-maps"></a>
+</h2>
+<p>Use the <a href="whole-brain.html#find-the-group-map-and-its-inputs">output
+inventory</a> to trace a named FEAT contrast back to its session and
+inputs. When extracting <a href="beta-extraction.html">participant-level
+betas</a>, keep the <code>id</code> and <code>session</code> keys
+together so visits remain distinct. For <a href="fwe.html">FWE
+correction</a>, verify that you are correcting the map for the desired
+visit or visit contrast. Planned pTFCE uses FSL L3 outputs.</p>
+</div>
+<div class="section level2">
 <h2 id="conclusion">Conclusion<a class="anchor" aria-label="anchor" href="#conclusion"></a>
 </h2>
 <p>While <code>fmri.pipeline</code> can mathematically construct the

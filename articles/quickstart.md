@@ -13,13 +13,18 @@ both the time-series and group models. To run this task with either
 suite, see [Choosing a GLM
 engine](https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.md).
 
-This guide is meant to get a new user from input tables to a submitted
-pipeline run. More detailed conceptual material is in
-[`vignette("design")`](https://hallquistlab.github.io/fmri.pipeline/articles/design.md),
-longitudinal guidance is in
-[`vignette("longitudinal")`](https://hallquistlab.github.io/fmri.pipeline/articles/longitudinal.md),
-and run diagnosis is in
-[`vignette("diagnosis")`](https://hallquistlab.github.io/fmri.pipeline/articles/diagnosis.md).
+Use the articles alongside the analysis as you move from model setup to
+results.
+
+| If you want to… | Start here |
+|----|----|
+| Fit a two-condition task and follow a named contrast from timings to the group map | [Whole-brain group maps](https://hallquistlab.github.io/fmri.pipeline/articles/whole-brain.md) |
+| Understand table schemas, confounds, and model levels | [Pipeline design](https://hallquistlab.github.io/fmri.pipeline/articles/design.md) |
+| Specify custom contrasts or build models interactively | [Interactive model builder](https://hallquistlab.github.io/fmri.pipeline/articles/interactive-model-builder.md) |
+| Compare repeated visits | [Longitudinal analyses](https://hallquistlab.github.io/fmri.pipeline/articles/longitudinal.md) |
+| Find failed fits or missing results | [Pipeline diagnosis](https://hallquistlab.github.io/fmri.pipeline/articles/diagnosis.md) |
+| Correct completed group maps or configure correction before submission | [Familywise error correction](https://hallquistlab.github.io/fmri.pipeline/articles/fwe.md) |
+| Summarize effects inside an atlas or corrected map | [Beta extraction](https://hallquistlab.github.io/fmri.pipeline/articles/beta-extraction.md) |
 
 ## Model Combinations
 
@@ -226,7 +231,7 @@ Typical columns include:
 - `run_nifti`, the path to the preprocessed 4D NIfTI for that run
 - `confound_input_file`, the path to a confound TSV/TXT file, often from
   fMRIPrep or postprocessing
-- `tr`, only when TR varies across runs
+- `tr`, when TR differs across participants or visits
 - run-level predictors for Level 2 models, such as `condition`,
   `difficulty`, or `scanner`
 
@@ -387,10 +392,10 @@ Key setup arguments:
 - `analysis_name`: a stable name for this analysis. If
   `output_directory` does not already end with this name, the pipeline
   appends it.
-- `scheduler`: `"slurm"`, `"torque"`, or `"local"`. Use `"local"` only
-  for small tests.
-- `tr`: repetition time in seconds. If TR differs by run, provide a `tr`
-  column in `run_data` instead.
+- `scheduler`: use `"slurm"` or `"torque"` for FEAT batch estimation.
+- `tr`: repetition time in seconds. If TR differs across participants or
+  visits, provide a `tr` column in `run_data`. Keep it consistent within
+  a participant and visit.
 - `drop_volumes`: number of leading volumes to remove from
   timing/confound alignment.
 - `n_expected_runs`: used for warnings and subject/run completeness
@@ -399,10 +404,12 @@ Key setup arguments:
   include, which volumes to spike, and how to exclude or truncate runs.
 - `parallel`: controls setup cores and scheduler time/memory settings.
 
-The confound expressions are evaluated in run-level confound data after
-motion regressors and `framewise_displacement` have been prepared.
-Expressions can refer to confound columns plus helper variables such as
-`time`, `volume`, `last_onset`, `last_offset`, and `last_isi`.
+The exclusion rule uses the combined nuisance and motion table. The
+spike rule uses the separate motion file and its derived parameters. To
+use the spike rule shown above, supply `run_df$motion_params_file`
+alongside the confounds file. See [fMRI
+confounds](https://hallquistlab.github.io/fmri.pipeline/articles/design.html#fmri-confounds)
+for input formats and the scope of each setting.
 
 ## Define Models
 
@@ -716,9 +723,10 @@ feat_l2/sub-<id>/ses-<session>/L1m-<l1_model>/l1c-<l1_cope_label>/L2m-<l2_model>
 feat_l3/L3m-<l3_model>/L1m-<l1_model>/L2m-<l2_model>/l2c-<l2_contrast>/FEAT_l1c-<l1_contrast>.gfeat
 ```
 
-The output templates are stored in `gpa$output_locations` and use `glue`
-syntax. Advanced users can override them before running the pipeline,
-but new users should start with the defaults.
+For a single visit, the default L1 and L2 paths omit the `ses-<session>`
+directory. The output templates are stored in `gpa$output_locations` and
+use `glue` syntax. Advanced users can override them before running the
+pipeline, but new users should start with the defaults.
 
 ## Check Status
 
@@ -886,3 +894,11 @@ For a first project, start with one task model and one intercept-only
 group model. Include a run-combination model for multi-run FSL analyses.
 Once that path submits and status checks are clean, add scientific
 contrasts, covariates, and alternate backend models.
+
+Once the group fit completes, use [the output
+inventory](https://hallquistlab.github.io/fmri.pipeline/articles/whole-brain.html#find-the-group-map-and-its-inputs)
+to match your model and contrast names to its maps. Continue with [FWE
+correction](https://hallquistlab.github.io/fmri.pipeline/articles/fwe.md)
+for inference or [beta
+extraction](https://hallquistlab.github.io/fmri.pipeline/articles/beta-extraction.md)
+to summarize contrast estimates in a region.

@@ -1,6 +1,7 @@
 <urlset xmlns = 'http://www.sitemaps.org/schemas/sitemap/0.9'>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/404.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/LICENSE-text.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/beta-extraction.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/design.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/diagnosis.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/fwe.html</loc></url>
@@ -9,6 +10,7 @@
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/interactive-model-builder.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/longitudinal.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/quickstart.html</loc></url>
+<url><loc>https://hallquistlab.github.io/fmri.pipeline/articles/whole-brain.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/authors.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/index.html</loc></url>
 <url><loc>https://hallquistlab.github.io/fmri.pipeline/news/index.html</loc></url>

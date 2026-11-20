@@ -375,17 +375,54 @@ or SPM group analyses, select L1 and L3.
 
 ## fMRI confounds
 
-### Populating
+### Pair nuisance inputs with each run
 
-### Elements of gpa\$confound_settings
+Use `run_data$confound_input_file` for a per-run nuisance table and
+`run_data$motion_params_file` for a separate rigid-body motion file.
+Provide absolute paths or paths relative to `mr_dir`. If every run uses
+the same relative filename, you can set `confound_input_file` or
+`motion_params_file` in `confound_settings` instead. The per-run column
+takes precedence. Before setup, check that the file has one row per
+input BOLD volume in the same order. This is especially important after
+preprocessing that removes volumes.
 
-- motion_params_file:
+| Field in `confound_settings` | What it controls |
+|----|----|
+| `l1_confound_regressors` | Exact column names to put in the model. Specify the desired nuisance terms explicitly. |
+| `confound_input_colnames` | Names to assign to columns if the nuisance file has no usable header. |
+| `motion_params_colnames` | Column names in file order for a separate rigid-body motion file. Check the units and convention of the source. |
+| `na_strings` | Missing-value tokens used when reading confounds. Inspect warnings for values that the pipeline converts to zero. |
+| `spike_volumes` | Volume-wise expression against the motion parameter data. Each flagged volume gets a nuisance column. |
+| `exclude_run` | Expression on the combined confounds that returns one logical value per run. A value of `TRUE` excludes the run. |
+| `truncate_run` | Rule for cropping the end of the run. Review the final retained volume and the fit’s event coverage. |
+| `exclude_subject` | Rule using participant-level run summaries such as `n_good_runs`. |
+
+For a derivatives TSV with `csf`, `white_matter`, and
+`framewise_displacement`, the following settings illustrate selecting
+two nuisance regressors and applying a run exclusion rule. Choose any
+motion thresholds in advance for your own study.
+
+``` r
+
+gpa$confound_settings$l1_confound_regressors <- c("csf", "white_matter")
+gpa$confound_settings$na_strings <- c("NA", "n/a", "")
+gpa$confound_settings$exclude_run <-
+  "mean(framewise_displacement > 0.5) > 0.20"
+```
+
+Specify these settings before finalization. After
+[`setup_l1_models()`](https://hallquistlab.github.io/fmri.pipeline/reference/setup_l1_models.md),
+check `gpa$l1_model_setup$metadata` for each run’s exclusion decision
+and generated confound file. A missing nuisance column can stop design
+generation. A missing variable needed by an exclusion rule can cause the
+run to be excluded. The [whole-brain
+walkthrough](https://hallquistlab.github.io/fmri.pipeline/articles/whole-brain.html#build-and-inspect-the-first-level-designs)
+shows how to inspect the run table and design together.
 
 ### Motion parameters
 
-If a `$motion_params_file` is provided, then this file will be read for
-each subject and the 6 motion parameters will be encoded as columns of a
-data.frame using the following nomenclature:
+A separate motion file is read for each run. The six motion parameters
+use these column names:
 
 - `rx`: rotation in the x dimension
 - `ry`: rotation in the y dimension
@@ -423,14 +460,11 @@ captured by the spike regressor, as opposed to substantive regressors
 from the task. See Siegel et al., 2014, Human Brain Mapping, for
 additional details.
 
-In fmri.pipeline, spike regressors can be added by specifying a
-`$spike_volumes` expression in `$confound_settings`. This R expression
-is evaluated against the motion parameters for the subject, which can
-include any of the 24 possible motion parameters above plus the
-framewise displacement (called `framewise_displacement` by the
-pipeline). Any volume for which the `$spike_volumes` expression is TRUE
-will yield a spike regressor to effectively censors that timepoint from
-estimates of other regressors.
+In `fmri.pipeline`, `spike_volumes` evaluates an R expression against
+motion parameters from the separate motion file. The expression can use
+the motion terms above or the calculated `framewise_displacement`. For
+precomputed spike columns supplied in a confound TSV, select them as
+`l1_confound_regressors`.
 
 Notably, the expression can be amended to censor volumes that precede or
 follow the volume for which `$spike_volumes` was TRUE. For example, when

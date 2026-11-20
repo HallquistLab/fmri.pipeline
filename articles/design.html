@@ -452,22 +452,94 @@ AFNI or SPM group analyses, select L1 and L3.</p>
 <h2 id="fmri-confounds">fMRI confounds<a class="anchor" aria-label="anchor" href="#fmri-confounds"></a>
 </h2>
 <div class="section level3">
-<h3 id="populating">Populating<a class="anchor" aria-label="anchor" href="#populating"></a>
+<h3 id="pair-nuisance-inputs-with-each-run">Pair nuisance inputs with each run<a class="anchor" aria-label="anchor" href="#pair-nuisance-inputs-with-each-run"></a>
 </h3>
-</div>
-<div class="section level3">
-<h3 id="elements-of-gpaconfound_settings">Elements of gpa$confound_settings<a class="anchor" aria-label="anchor" href="#elements-of-gpaconfound_settings"></a>
-</h3>
-<ul>
-<li>motion_params_file:</li>
-</ul>
+<p>Use <code>run_data$confound_input_file</code> for a per-run nuisance
+table and <code>run_data$motion_params_file</code> for a separate
+rigid-body motion file. Provide absolute paths or paths relative to
+<code>mr_dir</code>. If every run uses the same relative filename, you
+can set <code>confound_input_file</code> or
+<code>motion_params_file</code> in <code>confound_settings</code>
+instead. The per-run column takes precedence. Before setup, check that
+the file has one row per input BOLD volume in the same order. This is
+especially important after preprocessing that removes volumes.</p>
+<table class="table">
+<colgroup>
+<col width="50%">
+<col width="50%">
+</colgroup>
+<thead><tr class="header">
+<th>Field in <code>confound_settings</code>
+</th>
+<th>What it controls</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td><code>l1_confound_regressors</code></td>
+<td>Exact column names to put in the model. Specify the desired nuisance
+terms explicitly.</td>
+</tr>
+<tr class="even">
+<td><code>confound_input_colnames</code></td>
+<td>Names to assign to columns if the nuisance file has no usable
+header.</td>
+</tr>
+<tr class="odd">
+<td><code>motion_params_colnames</code></td>
+<td>Column names in file order for a separate rigid-body motion file.
+Check the units and convention of the source.</td>
+</tr>
+<tr class="even">
+<td><code>na_strings</code></td>
+<td>Missing-value tokens used when reading confounds. Inspect warnings
+for values that the pipeline converts to zero.</td>
+</tr>
+<tr class="odd">
+<td><code>spike_volumes</code></td>
+<td>Volume-wise expression against the motion parameter data. Each
+flagged volume gets a nuisance column.</td>
+</tr>
+<tr class="even">
+<td><code>exclude_run</code></td>
+<td>Expression on the combined confounds that returns one logical value
+per run. A value of <code>TRUE</code> excludes the run.</td>
+</tr>
+<tr class="odd">
+<td><code>truncate_run</code></td>
+<td>Rule for cropping the end of the run. Review the final retained
+volume and the fit’s event coverage.</td>
+</tr>
+<tr class="even">
+<td><code>exclude_subject</code></td>
+<td>Rule using participant-level run summaries such as
+<code>n_good_runs</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>For a derivatives TSV with <code>csf</code>,
+<code>white_matter</code>, and <code>framewise_displacement</code>, the
+following settings illustrate selecting two nuisance regressors and
+applying a run exclusion rule. Choose any motion thresholds in advance
+for your own study.</p>
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">gpa</span><span class="op">$</span><span class="va">confound_settings</span><span class="op">$</span><span class="va">l1_confound_regressors</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"csf"</span>, <span class="st">"white_matter"</span><span class="op">)</span></span>
+<span><span class="va">gpa</span><span class="op">$</span><span class="va">confound_settings</span><span class="op">$</span><span class="va">na_strings</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"NA"</span>, <span class="st">"n/a"</span>, <span class="st">""</span><span class="op">)</span></span>
+<span><span class="va">gpa</span><span class="op">$</span><span class="va">confound_settings</span><span class="op">$</span><span class="va">exclude_run</span> <span class="op">&lt;-</span></span>
+<span>  <span class="st">"mean(framewise_displacement &gt; 0.5) &gt; 0.20"</span></span></code></pre></div>
+<p>Specify these settings before finalization. After
+<code><a href="../reference/setup_l1_models.html">setup_l1_models()</a></code>, check
+<code>gpa$l1_model_setup$metadata</code> for each run’s exclusion
+decision and generated confound file. A missing nuisance column can stop
+design generation. A missing variable needed by an exclusion rule can
+cause the run to be excluded. The <a href="whole-brain.html#build-and-inspect-the-first-level-designs">whole-brain
+walkthrough</a> shows how to inspect the run table and design
+together.</p>
 </div>
 <div class="section level3">
 <h3 id="motion-parameters">Motion parameters<a class="anchor" aria-label="anchor" href="#motion-parameters"></a>
 </h3>
-<p>If a <code>$motion_params_file</code> is provided, then this file
-will be read for each subject and the 6 motion parameters will be
-encoded as columns of a data.frame using the following nomenclature:</p>
+<p>A separate motion file is read for each run. The six motion
+parameters use these column names:</p>
 <ul>
 <li>
 <code>rx</code>: rotation in the x dimension</li>
@@ -509,15 +581,12 @@ coding scheme leads the variance attributable to that volume to be
 captured by the spike regressor, as opposed to substantive regressors
 from the task. See Siegel et al., 2014, Human Brain Mapping, for
 additional details.</p>
-<p>In fmri.pipeline, spike regressors can be added by specifying a
-<code>$spike_volumes</code> expression in
-<code>$confound_settings</code>. This R expression is evaluated against
-the motion parameters for the subject, which can include any of the 24
-possible motion parameters above plus the framewise displacement (called
-<code>framewise_displacement</code> by the pipeline). Any volume for
-which the <code>$spike_volumes</code> expression is TRUE will yield a
-spike regressor to effectively censors that timepoint from estimates of
-other regressors.</p>
+<p>In <code>fmri.pipeline</code>, <code>spike_volumes</code> evaluates
+an R expression against motion parameters from the separate motion file.
+The expression can use the motion terms above or the calculated
+<code>framewise_displacement</code>. For precomputed spike columns
+supplied in a confound TSV, select them as
+<code>l1_confound_regressors</code>.</p>
 <p>Notably, the expression can be amended to censor volumes that precede
 or follow the volume for which <code>$spike_volumes</code> was TRUE. For
 example, when a spike occurs, if you would like to remove the previous

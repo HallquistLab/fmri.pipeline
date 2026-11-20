@@ -1196,6 +1196,19 @@ pseudo-runs). - The researcher explicitly wishes to compute a grand
 average across all data for a subject with no interest in temporal
 dynamics.
 
+## Working with the fitted maps
+
+Use the [output
+inventory](https://hallquistlab.github.io/fmri.pipeline/articles/whole-brain.html#find-the-group-map-and-its-inputs)
+to trace a named FEAT contrast back to its session and inputs. When
+extracting [participant-level
+betas](https://hallquistlab.github.io/fmri.pipeline/articles/beta-extraction.md),
+keep the `id` and `session` keys together so visits remain distinct. For
+[FWE
+correction](https://hallquistlab.github.io/fmri.pipeline/articles/fwe.md),
+verify that you are correcting the map for the desired visit or visit
+contrast. Planned pTFCE uses FSL L3 outputs.
+
 ## Conclusion
 
 While `fmri.pipeline` can mathematically construct the `"id"` pooling

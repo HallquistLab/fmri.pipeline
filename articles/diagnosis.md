@@ -181,6 +181,29 @@ its contrast images. The [engine
 guide](https://hallquistlab.github.io/fmri.pipeline/articles/glm-engines.md)
 describes the supported combinations.
 
+## Recover a stalled or failed analysis
+
+Start with the first failing stage in the selected submission. Later
+steps may be blocked by the same upstream failure. Check the step’s
+output and the relevant child job before changing the model or
+resources.
+
+| Symptom | Where to look |
+|----|----|
+| L1 setup did not produce a design | Inspect the run’s timing, volume count, nuisance columns, and exclusion fields in the setup logs. See [run-level design review](https://hallquistlab.github.io/fmri.pipeline/articles/whole-brain.html#build-and-inspect-the-first-level-designs). |
+| A fit started and stopped | Compare scheduler exit status and memory/time usage with the engine’s fit log. For FEAT, `job_manifest.tsv` in the fit directory links the artifact to its job and log. |
+| L3 setup found no eligible inputs | Check the resolved producer, completed lower-level maps, and requested contrasts. Audit the recorded group inputs with the [FEAT output inventory](https://hallquistlab.github.io/fmri.pipeline/articles/whole-brain.html#find-the-group-map-and-its-inputs). |
+| L3 completed and `run_fwe` failed | Inspect the inference worker log and artifact manifest. Retry only correction using [`run_fwe_correction()`](https://hallquistlab.github.io/fmri.pipeline/articles/fwe.html#run-ptfce-automatically-after-l3). |
+
+After correcting a transient fit or resource problem, use the same
+explicit model names in
+[`run_glm_pipeline()`](https://hallquistlab.github.io/fmri.pipeline/reference/run_glm_pipeline.md)
+and inspect the new submission. For FEAT, check the incomplete/failed
+folder actions in `gpa$glm_settings$fsl` if you need to preserve failed
+fit directories and their logs. When changing an input, design, or
+hypothesis, use a separate analysis name to retain a clear record of
+which specification produced each result.
+
 ## Function Output/Tracking Tree
 
 It can be beneficial to assign the initial function call to an object as

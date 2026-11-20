@@ -273,6 +273,56 @@ combinations.</p>
 </div>
 </div>
 <div class="section level2">
+<h2 id="recover-a-stalled-or-failed-analysis">Recover a stalled or failed analysis<a class="anchor" aria-label="anchor" href="#recover-a-stalled-or-failed-analysis"></a>
+</h2>
+<p>Start with the first failing stage in the selected submission. Later
+steps may be blocked by the same upstream failure. Check the step’s
+output and the relevant child job before changing the model or
+resources.</p>
+<table class="table">
+<colgroup>
+<col width="50%">
+<col width="50%">
+</colgroup>
+<thead><tr class="header">
+<th>Symptom</th>
+<th>Where to look</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td>L1 setup did not produce a design</td>
+<td>Inspect the run’s timing, volume count, nuisance columns, and
+exclusion fields in the setup logs. See <a href="whole-brain.html#build-and-inspect-the-first-level-designs">run-level
+design review</a>.</td>
+</tr>
+<tr class="even">
+<td>A fit started and stopped</td>
+<td>Compare scheduler exit status and memory/time usage with the
+engine’s fit log. For FEAT, <code>job_manifest.tsv</code> in the fit
+directory links the artifact to its job and log.</td>
+</tr>
+<tr class="odd">
+<td>L3 setup found no eligible inputs</td>
+<td>Check the resolved producer, completed lower-level maps, and
+requested contrasts. Audit the recorded group inputs with the <a href="whole-brain.html#find-the-group-map-and-its-inputs">FEAT output
+inventory</a>.</td>
+</tr>
+<tr class="even">
+<td>L3 completed and <code>run_fwe</code> failed</td>
+<td>Inspect the inference worker log and artifact manifest. Retry only
+correction using <a href="fwe.html#run-ptfce-automatically-after-l3"><code>run_fwe_correction()</code></a>.</td>
+</tr>
+</tbody>
+</table>
+<p>After correcting a transient fit or resource problem, use the same
+explicit model names in <code><a href="../reference/run_glm_pipeline.html">run_glm_pipeline()</a></code> and inspect the
+new submission. For FEAT, check the incomplete/failed folder actions in
+<code>gpa$glm_settings$fsl</code> if you need to preserve failed fit
+directories and their logs. When changing an input, design, or
+hypothesis, use a separate analysis name to retain a clear record of
+which specification produced each result.</p>
+</div>
+<div class="section level2">
 <h2 id="function-outputtracking-tree">Function Output/Tracking Tree<a class="anchor" aria-label="anchor" href="#function-outputtracking-tree"></a>
 </h2>
 <p>It can be beneficial to assign the initial function call to an object

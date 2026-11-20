@@ -74,11 +74,51 @@ analysis.</p>
 <p>This walkthrough uses FSL for a two-run task. AFNI and SPM can each
 fit both the time-series and group models. To run this task with either
 suite, see <a href="glm-engines.html">Choosing a GLM engine</a>.</p>
-<p>This guide is meant to get a new user from input tables to a
-submitted pipeline run. More detailed conceptual material is in
-<code><a href="../articles/design.html">vignette("design")</a></code>, longitudinal guidance is in
-<code><a href="../articles/longitudinal.html">vignette("longitudinal")</a></code>, and run diagnosis is in
-<code><a href="../articles/diagnosis.html">vignette("diagnosis")</a></code>.</p>
+<p>Use the articles alongside the analysis as you move from model setup
+to results.</p>
+<table class="table">
+<colgroup>
+<col width="50%">
+<col width="50%">
+</colgroup>
+<thead><tr class="header">
+<th>If you want to…</th>
+<th>Start here</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td>Fit a two-condition task and follow a named contrast from timings to
+the group map</td>
+<td><a href="whole-brain.html">Whole-brain group maps</a></td>
+</tr>
+<tr class="even">
+<td>Understand table schemas, confounds, and model levels</td>
+<td><a href="design.html">Pipeline design</a></td>
+</tr>
+<tr class="odd">
+<td>Specify custom contrasts or build models interactively</td>
+<td><a href="interactive-model-builder.html">Interactive model
+builder</a></td>
+</tr>
+<tr class="even">
+<td>Compare repeated visits</td>
+<td><a href="longitudinal.html">Longitudinal analyses</a></td>
+</tr>
+<tr class="odd">
+<td>Find failed fits or missing results</td>
+<td><a href="diagnosis.html">Pipeline diagnosis</a></td>
+</tr>
+<tr class="even">
+<td>Correct completed group maps or configure correction before
+submission</td>
+<td><a href="fwe.html">Familywise error correction</a></td>
+</tr>
+<tr class="odd">
+<td>Summarize effects inside an atlas or corrected map</td>
+<td><a href="beta-extraction.html">Beta extraction</a></td>
+</tr>
+</tbody>
+</table>
 </div>
 <div class="section level2">
 <h2 id="model-combinations">Model Combinations<a class="anchor" aria-label="anchor" href="#model-combinations"></a>
@@ -357,7 +397,7 @@ that run</li>
 <code>confound_input_file</code>, the path to a confound TSV/TXT
 file, often from fMRIPrep or postprocessing</li>
 <li>
-<code>tr</code>, only when TR varies across runs</li>
+<code>tr</code>, when TR differs across participants or visits</li>
 <li>run-level predictors for Level 2 models, such as
 <code>condition</code>, <code>difficulty</code>, or
 <code>scanner</code>
@@ -509,12 +549,13 @@ and stores model specifications. If models are not available yet, pass
 <code>output_directory</code> does not already end with this name, the
 pipeline appends it.</li>
 <li>
-<code>scheduler</code>: <code>"slurm"</code>, <code>"torque"</code>,
-or <code>"local"</code>. Use <code>"local"</code> only for small
-tests.</li>
+<code>scheduler</code>: use <code>"slurm"</code> or
+<code>"torque"</code> for FEAT batch estimation.</li>
 <li>
-<code>tr</code>: repetition time in seconds. If TR differs by run,
-provide a <code>tr</code> column in <code>run_data</code> instead.</li>
+<code>tr</code>: repetition time in seconds. If TR differs across
+participants or visits, provide a <code>tr</code> column in
+<code>run_data</code>. Keep it consistent within a participant and
+visit.</li>
 <li>
 <code>drop_volumes</code>: number of leading volumes to remove from
 timing/confound alignment.</li>
@@ -529,12 +570,12 @@ truncate runs.</li>
 <code>parallel</code>: controls setup cores and scheduler
 time/memory settings.</li>
 </ul>
-<p>The confound expressions are evaluated in run-level confound data
-after motion regressors and <code>framewise_displacement</code> have
-been prepared. Expressions can refer to confound columns plus helper
-variables such as <code>time</code>, <code>volume</code>,
-<code>last_onset</code>, <code>last_offset</code>, and
-<code>last_isi</code>.</p>
+<p>The exclusion rule uses the combined nuisance and motion table. The
+spike rule uses the separate motion file and its derived parameters. To
+use the spike rule shown above, supply
+<code>run_df$motion_params_file</code> alongside the confounds file. See
+<a href="design.html#fmri-confounds">fMRI confounds</a> for input
+formats and the scope of each setting.</p>
 </div>
 <div class="section level2">
 <h2 id="define-models">Define Models<a class="anchor" aria-label="anchor" href="#define-models"></a>
@@ -822,10 +863,11 @@ collisions:</p>
 <pre class="text"><code>feat_l1/sub-&lt;id&gt;/ses-&lt;session&gt;/&lt;l1_model&gt;/FEAT_LVL1_run&lt;run_number&gt;.feat
 feat_l2/sub-&lt;id&gt;/ses-&lt;session&gt;/L1m-&lt;l1_model&gt;/l1c-&lt;l1_cope_label&gt;/L2m-&lt;l2_model&gt;.gfeat
 feat_l3/L3m-&lt;l3_model&gt;/L1m-&lt;l1_model&gt;/L2m-&lt;l2_model&gt;/l2c-&lt;l2_contrast&gt;/FEAT_l1c-&lt;l1_contrast&gt;.gfeat</code></pre>
-<p>The output templates are stored in <code>gpa$output_locations</code>
-and use <code>glue</code> syntax. Advanced users can override them
-before running the pipeline, but new users should start with the
-defaults.</p>
+<p>For a single visit, the default L1 and L2 paths omit the
+<code>ses-&lt;session&gt;</code> directory. The output templates are
+stored in <code>gpa$output_locations</code> and use <code>glue</code>
+syntax. Advanced users can override them before running the pipeline,
+but new users should start with the defaults.</p>
 </div>
 <div class="section level2">
 <h2 id="check-status">Check Status<a class="anchor" aria-label="anchor" href="#check-status"></a>
@@ -987,6 +1029,10 @@ fits.</li>
 group model. Include a run-combination model for multi-run FSL analyses.
 Once that path submits and status checks are clean, add scientific
 contrasts, covariates, and alternate backend models.</p>
+<p>Once the group fit completes, use <a href="whole-brain.html#find-the-group-map-and-its-inputs">the output
+inventory</a> to match your model and contrast names to its maps.
+Continue with <a href="fwe.html">FWE correction</a> for inference or <a href="beta-extraction.html">beta extraction</a> to summarize contrast
+estimates in a region.</p>
 </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside>
