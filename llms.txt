@@ -510,6 +510,13 @@ standalone [`medusa`](https://github.com/HallquistLab/medusa) package.
 Legacy pre-0.4-1 MEDuSA entry points in `fmri.pipeline` emit deprecation
 warnings and forward to `medusa` when installed.
 
+## End-to-end tests
+
+The clock-task suite runs FSL, SPM and AFNI from trial data through
+group contrasts on Slurm. It includes a four-participant smoke profile
+and the complete 80-run fixture. [Run the clock GLM
+suite](https://hallquistlab.github.io/fmri.pipeline/tests/integration/clock-glm/README.md).
+
 ## Development status
 
 `fmri.pipeline` is under active development. For new projects, prefer

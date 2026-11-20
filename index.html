@@ -395,6 +395,11 @@
 <p>MEDuSA deconvolution, event-locked alignment, and multilevel trajectory modeling (<code>mixed_by</code>, <code>jlmer</code>, <code>meta_mixed_by</code>) now live in the standalone <a href="https://github.com/HallquistLab/medusa" class="external-link"><code>medusa</code></a> package. Legacy pre-0.4-1 MEDuSA entry points in <code>fmri.pipeline</code> emit deprecation warnings and forward to <code>medusa</code> when installed.</p>
 </div>
 <div class="section level2">
+<h2 id="end-to-end-tests">End-to-end tests<a class="anchor" aria-label="anchor" href="#end-to-end-tests"></a>
+</h2>
+<p>The clock-task suite runs FSL, SPM and AFNI from trial data through group contrasts on Slurm. It includes a four-participant smoke profile and the complete 80-run fixture. <a href="tests/integration/clock-glm/README.html">Run the clock GLM suite</a>.</p>
+</div>
+<div class="section level2">
 <h2 id="development-status">Development status<a class="anchor" aria-label="anchor" href="#development-status"></a>
 </h2>
 <p><code>fmri.pipeline</code> is under active development. For new projects, prefer YAML model specifications, explicit <code>subject_data</code>/<code>run_data</code>/<code>trial_data</code> tables, and small test runs before launching the full model grid.</p>
